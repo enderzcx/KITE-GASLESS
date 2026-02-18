@@ -2,6 +2,8 @@
 
 KITE GASLESS is an upgraded demo of **[Kite Bot](https://github.com/enderzcx/Kite-Bot-Seamless-Autonomous-Payment-AI-Agent)**, built for real-world AI Agent payment workflows on **KiteAI Testnet**.
 
+Current Version: `v1.0.0`
+
 This repo demonstrates how an AI Agent can:
 - authenticate once,
 - generate and use an Account Abstraction (AA) wallet,
@@ -121,3 +123,9 @@ Before testing, prepare balances on KiteAI Testnet:
 - Use test keys only.
 - Never commit `.env`.
 - For production, move signing to secure backend/HSM; do not keep private keys in frontend runtime.
+
+## Versioning
+
+- We use Semantic Versioning (`MAJOR.MINOR.PATCH`).
+- Stable baseline release: `v1.0.0`
+- See `CHANGELOG.md` for release notes.
