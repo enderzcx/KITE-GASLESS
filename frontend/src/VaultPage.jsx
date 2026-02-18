@@ -118,7 +118,7 @@ function VaultPage({ onBack, walletState }) {
   const rpcUrl =
     import.meta.env.VITE_KITEAI_RPC_URL ||
     import.meta.env.VITE_KITE_RPC_URL ||
-    '/rpc';
+    'https://rpc-testnet.gokite.ai/';
 
   const privateKey =
     import.meta.env.VITE_KITECLAW_PRIVATE_KEY ||
@@ -544,5 +544,6 @@ function VaultPage({ onBack, walletState }) {
 }
 
 export default VaultPage;
+
 
 

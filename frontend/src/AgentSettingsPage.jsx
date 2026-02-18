@@ -81,11 +81,11 @@ function AgentSettingsPage({ onBack, walletState }) {
   const rpcUrl =
     import.meta.env.VITE_KITEAI_RPC_URL ||
     import.meta.env.VITE_KITE_RPC_URL ||
-    '/rpc';
+    'https://rpc-testnet.gokite.ai/';
   const bundlerUrl =
     import.meta.env.VITE_KITEAI_BUNDLER_URL ||
     import.meta.env.VITE_BUNDLER_URL ||
-    '/bundler';
+    'https://bundler-service.staging.gokite.ai/rpc/';
   const privateKey =
     import.meta.env.VITE_KITECLAW_PRIVATE_KEY ||
     import.meta.env.VITE_USER_PRIVATE_KEY ||
@@ -290,6 +290,7 @@ function AgentSettingsPage({ onBack, walletState }) {
 }
 
 export default AgentSettingsPage;
+
 
 
 

@@ -2,7 +2,7 @@
 
 KITE GASLESS is an upgraded demo of **[Kite Bot](https://github.com/enderzcx/Kite-Bot-Seamless-Autonomous-Payment-AI-Agent)**, built for real-world AI Agent payment workflows on **KiteAI Testnet**.
 
-Current Version: `v1.0.0`
+Current Version: `v1.1.0`
 
 This repo demonstrates how an AI Agent can:
 - authenticate once,
@@ -37,6 +37,8 @@ KITE GASLESS/
 - Vault page for create/deposit/withdraw/rule updates
 - Agent settings page for token + session/rule setup
 - Record service (`/api/records`) for tx history playback
+- On-chain Confirmation page backed by Goldsky subgraph queries
+- Transfer page right-side real-time confirmation panel (submitted/indexing/confirmed)
 
 ## Quick start
 
@@ -56,6 +58,7 @@ VITE_KITEAI_BUNDLER_URL=https://bundler-service.staging.gokite.ai/rpc/
 VITE_KITECLAW_PRIVATE_KEY=0x_your_test_private_key
 VITE_KITEAI_SETTLEMENT_TOKEN=0x0fF5393387ad2f9f691FD6Fd28e07E3969e27e63
 VITE_KITECLAW_VAULT_IMPLEMENTATION=0xB5AAFCC6DD4DFc2B80fb8BCcf406E1a2Fd559e23
+VITE_KITECLAW_GOLDSKY_ENDPOINT=https://api.goldsky.com/api/public/project_cmlrmfrtks90001wg8goma8pv/subgraphs/kk/1.0.1/gn
 ```
 
 Then run:
@@ -127,5 +130,5 @@ Before testing, prepare balances on KiteAI Testnet:
 ## Versioning
 
 - We use Semantic Versioning (`MAJOR.MINOR.PATCH`).
-- Stable baseline release: `v1.0.0`
+- Stable baseline release: `v1.1.0`
 - See `CHANGELOG.md` for release notes.

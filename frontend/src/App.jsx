@@ -6,6 +6,7 @@ import RequestPage from './RequestPage';
 import VaultPage from './VaultPage';
 import AgentSettingsPage from './AgentSettingsPage';
 import RecordsPage from './RecordsPage';
+import OnChainPage from './OnChainPage';
 import { GokiteAASDK } from './gokite-aa-sdk';
 import './App.css';
 
@@ -19,11 +20,11 @@ function App() {
   const rpcUrl =
     import.meta.env.VITE_KITEAI_RPC_URL ||
     import.meta.env.VITE_KITE_RPC_URL ||
-    '/rpc';
+    'https://rpc-testnet.gokite.ai/';
   const bundlerUrl =
     import.meta.env.VITE_KITEAI_BUNDLER_URL ||
     import.meta.env.VITE_BUNDLER_URL ||
-    '/bundler';
+    'https://bundler-service.staging.gokite.ai/rpc/';
 
   const connectWalletAndEnter = async () => {
     if (typeof window.ethereum === 'undefined') {
@@ -55,6 +56,7 @@ function App() {
           onOpenVault={() => setView('vault')}
           onOpenAgentSettings={() => setView('agent-settings')}
           onOpenRecords={() => setView('records')}
+          onOpenOnChain={() => setView('on-chain')}
         />
       )}
       {view === 'transfer' && (
@@ -69,9 +71,13 @@ function App() {
       {view === 'records' && (
         <RecordsPage onBack={() => setView('request')} />
       )}
+      {view === 'on-chain' && (
+        <OnChainPage walletState={walletState} onBack={() => setView('request')} />
+      )}
     </div>
   );
 }
 
 export default App;
+
 

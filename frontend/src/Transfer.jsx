@@ -9,6 +9,9 @@ const SETTLEMENT_TOKEN =
   '0x0fF5393387ad2f9f691FD6Fd28e07E3969e27e63';
 const TOKEN_DECIMALS = 18;
 const AUTH_STORAGE_PREFIX = 'kiteclaw_auth_';
+const GOLDSKY_ENDPOINT =
+  import.meta.env.VITE_KITECLAW_GOLDSKY_ENDPOINT ||
+  'https://api.goldsky.com/api/public/project_cmlrmfrtks90001wg8goma8pv/subgraphs/kk/1.0.1/gn';
 
 function Transfer({ onBack, walletState }) {
   const [aaWallet, setAAWallet] = useState(walletState?.aaAddress || '');
@@ -22,15 +25,25 @@ function Transfer({ onBack, walletState }) {
   const [status, setStatus] = useState('');
   const [authStatus, setAuthStatus] = useState('');
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [confirmState, setConfirmState] = useState({
+    stage: 'idle',
+    message: 'Waiting for transfer...',
+    txHash: '',
+    blockNumber: '',
+    from: '',
+    to: '',
+    valueRaw: '',
+    match: null
+  });
 
   const rpcUrl =
     import.meta.env.VITE_KITEAI_RPC_URL ||
     import.meta.env.VITE_KITE_RPC_URL ||
-    '/rpc';
+    'https://rpc-testnet.gokite.ai/';
   const bundlerUrl =
     import.meta.env.VITE_KITEAI_BUNDLER_URL ||
     import.meta.env.VITE_BUNDLER_URL ||
-    '/bundler';
+    'https://bundler-service.staging.gokite.ai/rpc/';
 
   const sdk = new GokiteAASDK({
     network: 'kite_testnet',
@@ -173,6 +186,16 @@ function Transfer({ onBack, walletState }) {
         setStatus('success');
         setTxHash(result.transactionHash);
         setUserOpHash(result.userOpHash);
+        setConfirmState({
+          stage: 'submitted',
+          message: 'Transaction submitted. Waiting for on-chain confirmation...',
+          txHash: result.transactionHash || '',
+          blockNumber: '',
+          from: '',
+          to: '',
+          valueRaw: '',
+          match: null
+        });
 
         const newBalance = await sdk.getERC20Balance(SETTLEMENT_TOKEN);
         setSenderBalance(ethers.formatUnits(newBalance, TOKEN_DECIMALS));
@@ -185,8 +208,19 @@ function Transfer({ onBack, walletState }) {
           txHash: result.transactionHash,
           status: 'success'
         });
+        void pollOnChainConfirmation(result.transactionHash, recipient, amount);
       } else {
         setStatus('failed');
+        setConfirmState({
+          stage: 'failed',
+          message: `Transfer failed before on-chain confirmation: ${result.reason || 'unknown reason'}`,
+          txHash: result.transactionHash || '',
+          blockNumber: '',
+          from: '',
+          to: '',
+          valueRaw: '',
+          match: false
+        });
         await logRecord({
           type: 'TransferPage',
           amount,
@@ -199,6 +233,16 @@ function Transfer({ onBack, walletState }) {
       }
     } catch (error) {
       setStatus('error');
+      setConfirmState({
+        stage: 'failed',
+        message: `Transfer request error: ${error.message}`,
+        txHash: '',
+        blockNumber: '',
+        from: '',
+        to: '',
+        valueRaw: '',
+        match: false
+      });
       await logRecord({
         type: 'TransferPage',
         amount,
@@ -211,6 +255,81 @@ function Transfer({ onBack, walletState }) {
     } finally {
       setLoading(false);
     }
+  };
+
+  const pollOnChainConfirmation = async (hash, expectedTo, expectedAmount) => {
+    const expectedToLc = (expectedTo || '').toLowerCase();
+    let expectedRaw = '';
+    try {
+      expectedRaw = ethers.parseUnits(String(expectedAmount || '0'), TOKEN_DECIMALS).toString();
+    } catch {
+      expectedRaw = '';
+    }
+
+    for (let i = 0; i < 12; i += 1) {
+      try {
+        const query = `
+          {
+            transfers(
+              first: 1,
+              where: { transactionHash: "${String(hash || '').toLowerCase()}" },
+              orderBy: blockTimestamp,
+              orderDirection: desc
+            ) {
+              transactionHash
+              blockNumber
+              from
+              to
+              value
+            }
+          }
+        `;
+        const res = await fetch(GOLDSKY_ENDPOINT, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query })
+        });
+        const json = await res.json();
+        const row = json?.data?.transfers?.[0];
+
+        if (row) {
+          const isMatch =
+            (!expectedToLc || String(row.to || '').toLowerCase() === expectedToLc) &&
+            (!expectedRaw || String(row.value) === expectedRaw);
+          setConfirmState({
+            stage: 'confirmed',
+            message: 'On-chain confirmation received.',
+            txHash: row.transactionHash || hash,
+            blockNumber: String(row.blockNumber || ''),
+            from: row.from || '',
+            to: row.to || '',
+            valueRaw: String(row.value || ''),
+            match: isMatch
+          });
+          return;
+        }
+
+        setConfirmState((prev) => ({
+          ...prev,
+          stage: 'indexing',
+          message: `Indexing on-chain data... retry ${i + 1}/12`
+        }));
+      } catch {
+        setConfirmState((prev) => ({
+          ...prev,
+          stage: 'indexing',
+          message: `Querying Goldsky... retry ${i + 1}/12`
+        }));
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+    }
+
+    setConfirmState((prev) => ({
+      ...prev,
+      stage: 'timeout',
+      message: 'Timed out waiting for indexed confirmation. You can verify by tx hash in On-chain page.'
+    }));
   };
 
   return (
@@ -245,50 +364,90 @@ function Transfer({ onBack, walletState }) {
         </div>
       </div>
 
-      <div className="transfer-card">
-        <h2>Transfer</h2>
-        <button
-          onClick={handleConnectWallet}
-          className="connect-btn"
-        >
-          {owner ? 'Connected' : 'Connect Wallet'}
-        </button>
-        <button onClick={handleAuthentication} className="connect-btn" disabled={loading || !owner}>
-          {isAuthenticated ? 'Authenticated' : 'Authentication'}
-        </button>
-        {authStatus && <div className="request-error">{authStatus}</div>}
+      <div className="transfer-layout">
+        <div className="transfer-card">
+          <h2>Transfer</h2>
+          <button
+            onClick={handleConnectWallet}
+            className="connect-btn"
+          >
+            {owner ? 'Connected' : 'Connect Wallet'}
+          </button>
+          <button onClick={handleAuthentication} className="connect-btn" disabled={loading || !owner}>
+            {isAuthenticated ? 'Authenticated' : 'Authentication'}
+          </button>
+          {authStatus && <div className="request-error">{authStatus}</div>}
 
-        <div className="form-group">
-          <label>
-            Recipient Address:
-            <input
-              type="text"
-              value={recipient}
-              onChange={(e) => setRecipient(e.target.value)}
-              placeholder="0x..."
-              disabled={loading}
-            />
-          </label>
+          <div className="form-group">
+            <label>
+              Recipient Address:
+              <input
+                type="text"
+                value={recipient}
+                onChange={(e) => setRecipient(e.target.value)}
+                placeholder="0x..."
+                disabled={loading}
+              />
+            </label>
+          </div>
+          <div className="form-group">
+            <label>
+              Amount (USDT):
+              <input
+                type="text"
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+                placeholder="0.3"
+                disabled={loading}
+              />
+            </label>
+          </div>
+          <button
+            onClick={handleTransfer}
+            disabled={loading}
+            className={loading ? 'loading' : ''}
+          >
+            {loading ? 'Transferring...' : 'Transfer'}
+          </button>
         </div>
-        <div className="form-group">
-          <label>
-            Amount (USDT):
-            <input
-              type="text"
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-              placeholder="0.3"
-              disabled={loading}
-            />
-          </label>
+
+        <div className="transfer-card confirm-card">
+          <h2>On-chain Confirmation</h2>
+          <div className="result-row">
+            <span className="label">Stage:</span>
+            <span className="value">{confirmState.stage}</span>
+          </div>
+          <div className="result-row">
+            <span className="label">Message:</span>
+            <span className="value">{confirmState.message}</span>
+          </div>
+          <div className="result-row">
+            <span className="label">Tx Hash:</span>
+            <span className="value hash">{confirmState.txHash || '-'}</span>
+          </div>
+          <div className="result-row">
+            <span className="label">Block:</span>
+            <span className="value">{confirmState.blockNumber || '-'}</span>
+          </div>
+          <div className="result-row">
+            <span className="label">From:</span>
+            <span className="value hash">{confirmState.from || '-'}</span>
+          </div>
+          <div className="result-row">
+            <span className="label">To:</span>
+            <span className="value hash">{confirmState.to || '-'}</span>
+          </div>
+          <div className="result-row">
+            <span className="label">Amount (raw):</span>
+            <span className="value">{confirmState.valueRaw || '-'}</span>
+          </div>
+          <div className="result-row">
+            <span className="label">Match:</span>
+            <span className="value">
+              {confirmState.match === null ? '-' : String(confirmState.match)}
+            </span>
+          </div>
         </div>
-        <button
-          onClick={handleTransfer}
-          disabled={loading}
-          className={loading ? 'loading' : ''}
-        >
-          {loading ? 'Transferring...' : 'Transfer'}
-        </button>
       </div>
 
       {status === 'success' && (
@@ -328,5 +487,6 @@ function Transfer({ onBack, walletState }) {
 }
 
 export default Transfer;
+
 
 

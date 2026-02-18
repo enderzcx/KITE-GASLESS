@@ -16,7 +16,7 @@ const TOKEN_DECIMALS = 18;
 const MERCHANT_ADDRESS = '0x6D705b93F0Da7DC26e46cB39Decc3baA4fb4dd29';
 const AUTH_STORAGE_PREFIX = 'kiteclaw_auth_';
 
-function RequestPage({ onOpenTransfer, onOpenVault, onOpenAgentSettings, onOpenRecords, walletState }) {
+function RequestPage({ onOpenTransfer, onOpenVault, onOpenAgentSettings, onOpenRecords, onOpenOnChain, walletState }) {
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
@@ -28,11 +28,11 @@ function RequestPage({ onOpenTransfer, onOpenVault, onOpenAgentSettings, onOpenR
   const rpcUrl =
     import.meta.env.VITE_KITEAI_RPC_URL ||
     import.meta.env.VITE_KITE_RPC_URL ||
-    '/rpc';
+    'https://rpc-testnet.gokite.ai/';
   const bundlerUrl =
     import.meta.env.VITE_KITEAI_BUNDLER_URL ||
     import.meta.env.VITE_BUNDLER_URL ||
-    '/bundler';
+    'https://bundler-service.staging.gokite.ai/rpc/';
 
   const sdk = new GokiteAASDK({
     network: 'kite_testnet',
@@ -219,6 +219,9 @@ function RequestPage({ onOpenTransfer, onOpenVault, onOpenAgentSettings, onOpenR
         <button className="link-btn" onClick={onOpenRecords}>
           Transfer Records
         </button>
+        <button className="link-btn" onClick={onOpenOnChain}>
+          On-chain Confirmation
+        </button>
       </div>
 
       <div className="request-card">
@@ -269,4 +272,5 @@ function RequestPage({ onOpenTransfer, onOpenVault, onOpenAgentSettings, onOpenR
 }
 
 export default RequestPage;
+
 
