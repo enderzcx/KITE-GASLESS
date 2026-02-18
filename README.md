@@ -62,6 +62,8 @@ Then run:
 npm run dev
 ```
 
+Frontend default URL: `http://localhost:5173`
+
 ### 2) Backend
 
 ```bash
@@ -71,6 +73,13 @@ npm start
 ```
 
 Backend default: `http://localhost:3001`
+
+### 3) Open the app
+
+Run frontend and backend in two terminals, then open:
+
+- App UI: `http://localhost:5173`
+- Records API check: `http://localhost:3001/api/records`
 
 ## Funding prerequisites (important)
 

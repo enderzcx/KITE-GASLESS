@@ -44,6 +44,8 @@ VITE_KITECLAW_VAULT_ADDRESS=0x_your_vault_address
 npm run dev
 ```
 
+Frontend default URL: `http://localhost:5173`
+
 ## Funding prerequisites (important)
 
 Before using the demo, prepare test balances:
@@ -72,6 +74,10 @@ cd ../backend
 npm install
 npm start
 ```
+
+Use two terminals:
+- Terminal A: frontend (`npm run dev`) -> open `http://localhost:5173`
+- Terminal B: backend (`npm start`) -> API at `http://localhost:3001/api/records`
 
 ## Notes
 
