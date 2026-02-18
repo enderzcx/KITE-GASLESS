@@ -1,0 +1,17 @@
+﻿{
+  "version": "1",
+  "name": "kiteclaw-settlement",
+  "abis": {
+    "erc20": {
+      "path": "./erc20-transfer-abi.json"
+    }
+  },
+  "instances": [
+    {
+      "abi": "erc20",
+      "address": "0x0fF5393387ad2f9f691FD6Fd28e07E3969e27e63",
+      "chain": "kite-ai-testnet",
+      "startBlock": 1
+    }
+  ]
+}

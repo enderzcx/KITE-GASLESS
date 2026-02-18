@@ -10,3 +10,7 @@
 # logs
 *.log
 npm-debug.log*
+
+# runtime data
+backend/data/*.json
+!backend/data/.gitkeep

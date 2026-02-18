@@ -13,7 +13,6 @@ const SETTLEMENT_TOKEN =
   import.meta.env.VITE_SETTLEMENT_TOKEN ||
   '0x0fF5393387ad2f9f691FD6Fd28e07E3969e27e63';
 const TOKEN_DECIMALS = 18;
-const MERCHANT_ADDRESS = '0x6D705b93F0Da7DC26e46cB39Decc3baA4fb4dd29';
 const AUTH_STORAGE_PREFIX = 'kiteclaw_auth_';
 
 function RequestPage({ onOpenTransfer, onOpenVault, onOpenAgentSettings, onOpenRecords, onOpenOnChain, walletState }) {
@@ -124,6 +123,22 @@ function RequestPage({ onOpenTransfer, onOpenVault, onOpenAgentSettings, onOpenR
     }
   };
 
+  const requestPaidResource = async ({ queryText, payer, requestId, paymentProof }) => {
+    const resp = await fetch('/api/x402/kol-score', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        query: queryText,
+        payer,
+        requestId,
+        paymentProof
+      })
+    });
+
+    const body = await resp.json();
+    return { status: resp.status, body };
+  };
+
   const handleSubmit = async () => {
     if (loading) return;
     if (!query.trim()) {
@@ -139,59 +154,103 @@ function RequestPage({ onOpenTransfer, onOpenVault, onOpenAgentSettings, onOpenR
       if (walletState?.ownerAddress && !isAuthenticated) {
         throw new Error('Please complete Authentication once before sending.');
       }
+
       const { signer, ownerAddress, mode } = await resolveSigner();
       const derivedAA = sdk.ensureAccountAddress(ownerAddress);
       if (derivedAA !== aaWallet) {
         setAAWallet(derivedAA);
       }
 
-      const signFunction = async (userOpHash) => {
-        return signer.signMessage(ethers.getBytes(userOpHash));
-      };
+      setAuthStatus('Step 1/3: requesting paid resource (expecting 402)...');
+      const firstTry = await requestPaidResource({ queryText: query, payer: derivedAA });
+      if (firstTry.status !== 402) {
+        throw new Error(`Expected 402, got ${firstTry.status}.`);
+      }
 
-      const transferResult = await sdk.sendERC20({
-        tokenAddress: SETTLEMENT_TOKEN,
-        recipient: MERCHANT_ADDRESS,
-        amount: ethers.parseUnits('0.05', TOKEN_DECIMALS)
-      }, signFunction);
+      const challenge = firstTry.body?.x402;
+      const payInfo = challenge?.accepts?.[0];
+      if (!challenge?.requestId || !payInfo) {
+        throw new Error('Invalid x402 challenge response.');
+      }
+
+      setAuthStatus('Step 2/3: paying x402 challenge on-chain...');
+      const signFunction = async (userOpHash) => signer.signMessage(ethers.getBytes(userOpHash));
+      const transferResult = await sdk.sendERC20(
+        {
+          tokenAddress: payInfo.tokenAddress || SETTLEMENT_TOKEN,
+          recipient: payInfo.recipient,
+          amount: ethers.parseUnits(String(payInfo.amount), payInfo.decimals ?? TOKEN_DECIMALS)
+        },
+        signFunction
+      );
 
       if (transferResult.status !== 'success') {
         await logRecord({
-          type: 'Order',
-          amount: '0.05',
-          token: SETTLEMENT_TOKEN,
-          recipient: MERCHANT_ADDRESS,
+          type: 'x402Payment',
+          amount: String(payInfo.amount),
+          token: payInfo.tokenAddress || SETTLEMENT_TOKEN,
+          recipient: payInfo.recipient,
           txHash: transferResult.transactionHash || '',
-          status: 'failed'
+          status: 'failed',
+          requestId: challenge.requestId,
+          signerMode: mode
         });
-        throw new Error(transferResult.reason || 'Transfer failed');
+        throw new Error(transferResult.reason || 'x402 payment transfer failed');
+      }
+
+      await logRecord({
+        type: 'x402Payment',
+        amount: String(payInfo.amount),
+        token: payInfo.tokenAddress || SETTLEMENT_TOKEN,
+        recipient: payInfo.recipient,
+        txHash: transferResult.transactionHash,
+        status: 'success',
+        requestId: challenge.requestId,
+        signerMode: mode
+      });
+
+      const paymentProof = {
+        requestId: challenge.requestId,
+        txHash: transferResult.transactionHash,
+        payer: derivedAA,
+        tokenAddress: payInfo.tokenAddress || SETTLEMENT_TOKEN,
+        recipient: payInfo.recipient,
+        amount: String(payInfo.amount)
+      };
+
+      setAuthStatus('Step 3/3: retrying resource request with payment proof...');
+      const secondTry = await requestPaidResource({
+        queryText: query,
+        payer: derivedAA,
+        requestId: challenge.requestId,
+        paymentProof
+      });
+
+      if (secondTry.status !== 200 || !secondTry.body?.ok) {
+        throw new Error(secondTry.body?.reason || `x402 verification failed: ${secondTry.status}`);
       }
 
       const randomLink = productLinks[Math.floor(Math.random() * productLinks.length)];
-
       setResult({
         txHash: transferResult.transactionHash,
-        productUrl: randomLink
+        requestId: secondTry.body.requestId,
+        productUrl: randomLink,
+        summary: secondTry.body?.result?.summary || 'Paid resource unlocked',
+        topKOLs: secondTry.body?.result?.topKOLs || []
       });
 
-      await logRecord({
-        type: 'Order',
-        amount: '0.05',
-        token: SETTLEMENT_TOKEN,
-        recipient: MERCHANT_ADDRESS,
-        txHash: transferResult.transactionHash,
-        status: 'success',
-        signerMode: mode
-      });
+      setAuthStatus('x402 flow complete: 402 -> payment -> proof verified -> 200');
     } catch (err) {
       setError(err.message || 'An error occurred');
       await logRecord({
-        type: 'Order',
-        amount: '0.05',
-        token: SETTLEMENT_TOKEN,
-        recipient: MERCHANT_ADDRESS,
+        type: 'x402Payment',
+        amount: '',
+        token: '',
+        recipient: '',
         txHash: '',
-        status: 'error'
+        status: 'error',
+        requestId: '',
+        signerMode: ''
       });
     } finally {
       setLoading(false);
@@ -235,7 +294,7 @@ function RequestPage({ onOpenTransfer, onOpenVault, onOpenAgentSettings, onOpenR
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Example: buy me the top-rated air fryer"
+            placeholder="Example: buy me KOL score report for AI payment campaign"
             disabled={loading}
           />
           <button onClick={handleSubmit} disabled={loading}>
@@ -248,23 +307,29 @@ function RequestPage({ onOpenTransfer, onOpenVault, onOpenAgentSettings, onOpenR
 
       {result && (
         <div className="result-card">
-          <h2>Purchased the top-rated air fryer</h2>
+          <h2>x402-paid Resource Unlocked</h2>
           <div className="result-row">
-            <span className="label">Details:</span>
+            <span className="label">Summary:</span>
+            <span className="value">{result.summary}</span>
+          </div>
+          <div className="result-row">
+            <span className="label">Sample Link:</span>
             <span className="value">{result.productUrl}</span>
           </div>
           <div className="result-row">
-            <span className="label">Price:</span>
-            <span className="value">0.05USDT</span>
+            <span className="label">x402 Request ID:</span>
+            <span className="value hash">{result.requestId}</span>
           </div>
           <div className="result-row">
-            <span className="label">Tracking No.:</span>
-            <span className="value">88886666687</span>
-          </div>
-          <div className="result-row">
-            <span className="label">On-chain Tx Hash:</span>
+            <span className="label">Payment Tx Hash:</span>
             <span className="value hash">{result.txHash}</span>
           </div>
+          {result.topKOLs.length > 0 && (
+            <div className="result-row">
+              <span className="label">Top KOLs:</span>
+              <span className="value">{result.topKOLs.map((item) => `${item.handle}(${item.score})`).join(', ')}</span>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -272,5 +337,3 @@ function RequestPage({ onOpenTransfer, onOpenVault, onOpenAgentSettings, onOpenR
 }
 
 export default RequestPage;
-
-

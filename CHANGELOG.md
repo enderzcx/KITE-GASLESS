@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project follows Semantic Versioning.
 
+## [v1.2.0] - 2026-02-18
+
+### Added
+- x402 demo backend route: `POST /api/x402/kol-score`.
+- End-to-end x402 flow in Request page:
+  - `402 Payment Required`
+  - AA payment execution
+  - proof retry and `200` unlock
+- `DEMO_X402_SCRIPT.md` for judge-facing walkthrough.
+
+### Changed
+- Request page result card now includes:
+  - `x402 Request ID`
+  - `Payment Tx Hash`
+  - sample unlocked payload
+- README updated for x402 flow and demo script reference.
+
 ## [v1.1.0] - 2026-02-18
 
 ### Added

@@ -2,7 +2,7 @@
 
 KITE GASLESS is an upgraded demo of **[Kite Bot](https://github.com/enderzcx/Kite-Bot-Seamless-Autonomous-Payment-AI-Agent)**, built for real-world AI Agent payment workflows on **KiteAI Testnet**.
 
-Current Version: `v1.1.0`
+Current Version: `v1.2.0`
 
 This repo demonstrates how an AI Agent can:
 - authenticate once,
@@ -34,6 +34,7 @@ KITE GASLESS/
 - Auto-sign mode via `VITE_KITECLAW_PRIVATE_KEY` for demo automation
 - Transfer page for manual AA token transfer
 - Request page for agent-like purchase simulation
+- x402-style paid resource flow (`402 -> pay -> proof -> 200`)
 - Vault page for create/deposit/withdraw/rule updates
 - Agent settings page for token + session/rule setup
 - Record service (`/api/records`) for tx history playback
@@ -111,8 +112,14 @@ Before testing, prepare balances on KiteAI Testnet:
 4. Go to **Vault Page** and create vault (if not created).
 5. Optionally set spending rules and fund vault.
 6. On **Request** or **Transfer** page, run one-time Authentication.
-7. Send payment and verify tx hash on KiteScan.
-8. Open **Records** page to show full operation history.
+7. On **Request** page, run x402 flow:
+   - API returns `402 Payment Required`
+   - Agent pays via AA transfer
+   - Frontend retries with payment proof and receives `200`
+8. Verify tx hash on KiteScan / Goldsky page.
+
+Judge demo script: see `DEMO_X402_SCRIPT.md`.
+9. Open **Records** page to show full operation history.
 
 ## Tech stack
 
@@ -130,5 +137,5 @@ Before testing, prepare balances on KiteAI Testnet:
 ## Versioning
 
 - We use Semantic Versioning (`MAJOR.MINOR.PATCH`).
-- Stable baseline release: `v1.1.0`
+- Stable baseline release: `v1.2.0`
 - See `CHANGELOG.md` for release notes.
