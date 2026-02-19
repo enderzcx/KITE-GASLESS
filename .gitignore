@@ -14,3 +14,6 @@ npm-debug.log*
 # runtime data
 backend/data/*.json
 !backend/data/.gitkeep
+
+# local notes
+重要信息.md
