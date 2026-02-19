@@ -94,15 +94,28 @@ function normalizeRecipients(input) {
     .filter((addr, index, self) => addr && ethers.isAddress(addr) && self.indexOf(addr) === index);
 }
 
+function normalizeAddresses(input) {
+  const arr = Array.isArray(input)
+    ? input
+    : String(input || '')
+        .split(',')
+        .map((v) => v.trim());
+  return arr
+    .map((addr) => normalizeAddress(addr))
+    .filter((addr, index, self) => addr && ethers.isAddress(addr) && self.indexOf(addr) === index);
+}
+
 function sanitizePolicy(input = {}) {
   const maxPerTx = Number(input.maxPerTx);
   const dailyLimit = Number(input.dailyLimit);
   const allowedRecipients = normalizeRecipients(input.allowedRecipients);
+  const revokedPayers = normalizeAddresses(input.revokedPayers);
   return {
     maxPerTx: Number.isFinite(maxPerTx) && maxPerTx > 0 ? maxPerTx : POLICY_MAX_PER_TX_DEFAULT,
     dailyLimit: Number.isFinite(dailyLimit) && dailyLimit > 0 ? dailyLimit : POLICY_DAILY_LIMIT_DEFAULT,
     allowedRecipients:
-      allowedRecipients.length > 0 ? allowedRecipients : POLICY_ALLOWED_RECIPIENTS_DEFAULT
+      allowedRecipients.length > 0 ? allowedRecipients : POLICY_ALLOWED_RECIPIENTS_DEFAULT,
+    revokedPayers
   };
 }
 
@@ -224,6 +237,31 @@ function sumPaidAmountByPayerForUtcDay(requests, payer, utcDateKey) {
 
 function evaluateTransferPolicy({ payer, recipient, amount, requests }) {
   const policy = buildPolicySnapshot();
+  const payerLc = normalizeAddress(payer);
+
+  if (!payerLc || !ethers.isAddress(payerLc)) {
+    return {
+      ok: false,
+      code: 'invalid_payer',
+      message: 'Payer must be a valid address.',
+      evidence: {
+        actual: payer
+      }
+    };
+  }
+
+  if (Array.isArray(policy.revokedPayers) && policy.revokedPayers.includes(payerLc)) {
+    return {
+      ok: false,
+      code: 'payer_revoked',
+      message: 'Payer is revoked by gateway guardrail.',
+      evidence: {
+        payer: payerLc,
+        revokedPayers: policy.revokedPayers
+      }
+    };
+  }
+
   const amountNum = toSafeNumber(amount);
   if (!Number.isFinite(amountNum) || amountNum <= 0) {
     return {
@@ -596,9 +634,49 @@ app.post('/api/x402/policy', (req, res) => {
   const nextPolicy = writePolicyConfig({
     maxPerTx: body.maxPerTx,
     dailyLimit: body.dailyLimit,
-    allowedRecipients: body.allowedRecipients
+    allowedRecipients: body.allowedRecipients,
+    revokedPayers: body.revokedPayers
   });
   res.json({ ok: true, policy: nextPolicy });
+});
+
+app.post('/api/x402/policy/revoke', (req, res) => {
+  const payer = normalizeAddress(req.body?.payer || '');
+  if (!payer || !ethers.isAddress(payer)) {
+    return res.status(400).json({ error: 'invalid_payer' });
+  }
+  const current = buildPolicySnapshot();
+  const revoked = new Set(current.revokedPayers || []);
+  revoked.add(payer);
+  const next = writePolicyConfig({
+    ...current,
+    revokedPayers: Array.from(revoked)
+  });
+  return res.json({
+    ok: true,
+    action: 'revoked',
+    payer,
+    policy: next
+  });
+});
+
+app.post('/api/x402/policy/unrevoke', (req, res) => {
+  const payer = normalizeAddress(req.body?.payer || '');
+  if (!payer || !ethers.isAddress(payer)) {
+    return res.status(400).json({ error: 'invalid_payer' });
+  }
+  const current = buildPolicySnapshot();
+  const revoked = new Set((current.revokedPayers || []).filter((addr) => addr !== payer));
+  const next = writePolicyConfig({
+    ...current,
+    revokedPayers: Array.from(revoked)
+  });
+  return res.json({
+    ok: true,
+    action: 'unrevoked',
+    payer,
+    policy: next
+  });
 });
 
 app.get('/api/x402/policy-failures', (req, res) => {

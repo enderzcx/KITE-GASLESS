@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project follows Semantic Versioning.
 
+## [v1.4.0] - 2026-02-19
+
+### Added
+- Gateway revoke guardrail for payer-level kill switch:
+  - `POST /api/x402/policy/revoke`
+  - `POST /api/x402/policy/unrevoke`
+- Revoked payer policy enforcement with explicit `payer_revoked` rejection path.
+- Agent Settings UI controls for:
+  - revoke current payer
+  - unrevoke current payer
+  - revoked payer list visualization
+
+### Changed
+- Security guardrails expanded from `limits + scope` to `limits + scope + revocation`.
+- README demo flow updated with kill-switch walkthrough.
+
 ## [v1.3.0] - 2026-02-19
 
 ### Added

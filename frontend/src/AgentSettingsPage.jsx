@@ -77,6 +77,7 @@ function AgentSettingsPage({ onBack, walletState }) {
   const [singleLimit, setSingleLimit] = useState('5');
   const [dailyLimit, setDailyLimit] = useState('50');
   const [gatewayRecipient, setGatewayRecipient] = useState(DEFAULT_GATEWAY_RECIPIENT);
+  const [revokedPayers, setRevokedPayers] = useState([]);
   const [allowedToken, setAllowedToken] = useState(DEFAULT_TOKEN);
   const [status, setStatus] = useState('');
 
@@ -107,6 +108,7 @@ function AgentSettingsPage({ onBack, walletState }) {
         const policy = data?.policy || {};
         if (policy?.maxPerTx) setSingleLimit(String(policy.maxPerTx));
         if (policy?.dailyLimit) setDailyLimit(String(policy.dailyLimit));
+        if (Array.isArray(policy?.revokedPayers)) setRevokedPayers(policy.revokedPayers);
         const firstAllowed = Array.isArray(policy?.allowedRecipients)
           ? policy.allowedRecipients[0]
           : '';
@@ -253,6 +255,66 @@ function AgentSettingsPage({ onBack, walletState }) {
     }
   };
 
+  const refreshGatewayPolicy = async () => {
+    try {
+      const res = await fetch('/api/x402/policy');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const policy = data?.policy || {};
+      if (Array.isArray(policy?.revokedPayers)) setRevokedPayers(policy.revokedPayers);
+    } catch {
+      // ignore refresh errors in UI
+    }
+  };
+
+  const handleRevokeCurrentPayer = async () => {
+    const payer = accountAddress || walletState?.aaAddress || '';
+    if (!payer || !ethers.isAddress(payer)) {
+      setStatus('Cannot revoke: current AA payer address is invalid.');
+      return;
+    }
+    try {
+      setStatus('Revoking current payer at gateway...');
+      const res = await fetch('/api/x402/policy/revoke', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ payer })
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || !body?.ok) {
+        throw new Error(body?.reason || body?.error || `HTTP ${res.status}`);
+      }
+      await refreshGatewayPolicy();
+      setStatus(`Gateway revoke active for payer: ${payer}`);
+    } catch (err) {
+      setStatus(`Revoke failed: ${err.message}`);
+    }
+  };
+
+  const handleUnrevokeCurrentPayer = async () => {
+    const payer = accountAddress || walletState?.aaAddress || '';
+    if (!payer || !ethers.isAddress(payer)) {
+      setStatus('Cannot unrevoke: current AA payer address is invalid.');
+      return;
+    }
+    try {
+      setStatus('Removing gateway revoke for current payer...');
+      const res = await fetch('/api/x402/policy/unrevoke', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ payer })
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || !body?.ok) {
+        throw new Error(body?.reason || body?.error || `HTTP ${res.status}`);
+      }
+      await refreshGatewayPolicy();
+      setStatus(`Gateway revoke removed for payer: ${payer}`);
+    } catch (err) {
+      setStatus(`Unrevoke failed: ${err.message}`);
+    }
+  };
+
   return (
     <div className="transfer-container">
       <div className="top-entry">
@@ -345,6 +407,25 @@ function AgentSettingsPage({ onBack, walletState }) {
         <div className="vault-actions">
           <button onClick={handleCreateSession}>Generate Session Key & Apply Rules</button>
           <button onClick={handleSyncGatewayPolicy}>Sync Gateway Policy Only</button>
+        </div>
+        <div className="vault-actions">
+          <button onClick={handleRevokeCurrentPayer}>Revoke Current Payer (Kill Switch)</button>
+          <button onClick={handleUnrevokeCurrentPayer}>Unrevoke Current Payer</button>
+        </div>
+        <div className="rules-list">
+          <h3>Gateway Revoked Payers</h3>
+          {revokedPayers.length === 0 && (
+            <div className="result-row">
+              <span className="label">-</span>
+              <span className="value">No revoked payer.</span>
+            </div>
+          )}
+          {revokedPayers.map((addr, idx) => (
+            <div className="result-row" key={`revoked-${idx}`}>
+              <span className="label">Payer {idx + 1}:</span>
+              <span className="value hash">{addr}</span>
+            </div>
+          ))}
         </div>
         {status && <div className="request-error">{status}</div>}
       </div>

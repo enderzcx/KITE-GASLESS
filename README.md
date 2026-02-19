@@ -2,7 +2,7 @@
 
 KITE GASLESS is an upgraded demo of **[Kite Bot](https://github.com/enderzcx/Kite-Bot-Seamless-Autonomous-Payment-AI-Agent)**, built for real-world AI Agent payment workflows on **KiteAI Testnet**.
 
-Current Version: `v1.3.0`
+Current Version: `v1.4.0`
 
 This repo demonstrates how an AI Agent can:
 - authenticate once,
@@ -36,6 +36,7 @@ KITE GASLESS/
 - Request page for agent-like purchase simulation
 - x402-style paid resource flow (`402 -> pay -> proof -> 200`)
 - Policy-enforced x402 transfer intent (scope + per-tx + daily limit)
+- Gateway kill switch (revoke/unrevoke payer) for emergency guardrail demo
 - Abuse/over-limit graceful-failure page with evidence logs
 - Vault page for create/deposit/withdraw/rule updates
 - Agent settings page for token + session/rule setup
@@ -139,6 +140,10 @@ Judge demo script: see `DEMO_X402_SCRIPT.md`.
    - fake proof rejection,
    - expired request rejection,
    - insufficient funds graceful messaging.
+11. In **Agent Payment Settings**, test kill switch:
+   - `Revoke Current Payer (Kill Switch)` to block payer at gateway level
+   - retry x402 intent and observe `payer_revoked` failure
+   - `Unrevoke Current Payer` to restore flow
 
 ## Tech stack
 
@@ -157,5 +162,5 @@ Judge demo script: see `DEMO_X402_SCRIPT.md`.
 ## Versioning
 
 - We use Semantic Versioning (`MAJOR.MINOR.PATCH`).
-- Stable baseline release: `v1.3.0`
+- Stable baseline release: `v1.4.0`
 - See `CHANGELOG.md` for release notes.
