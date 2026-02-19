@@ -13,6 +13,7 @@ function OnChainPage({ onBack }) {
   const [status, setStatus] = useState('');
   const [transfers, setTransfers] = useState([]);
   const [appRecords, setAppRecords] = useState([]);
+  const [x402Requests, setX402Requests] = useState([]);
   const [lastQueryMode, setLastQueryMode] = useState('recent');
 
   const loadTransfers = async () => {
@@ -92,9 +93,24 @@ function OnChainPage({ onBack }) {
     }
   };
 
+  const loadX402Requests = async () => {
+    try {
+      const normalizedFilter = txHashFilter.trim().toLowerCase();
+      const isTxHash = normalizedFilter.startsWith('0x') && normalizedFilter.length === 66;
+      const query = isTxHash ? `?txHash=${normalizedFilter}&limit=50` : '?limit=50';
+      const res = await fetch(`/api/x402/requests${query}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setX402Requests(Array.isArray(data?.items) ? data.items : []);
+    } catch {
+      setX402Requests([]);
+    }
+  };
+
   useEffect(() => {
     loadTransfers();
     loadAppRecords();
+    loadX402Requests();
   }, []);
 
   const normalizedTxHash = txHashFilter.trim().toLowerCase();
@@ -171,7 +187,21 @@ function OnChainPage({ onBack }) {
   const handleFilterKeyDown = (event) => {
     if (event.key === 'Enter') {
       loadTransfers();
+      loadX402Requests();
     }
+  };
+
+  const displayedX402Requests = useMemo(() => {
+    const normalizedFilter = txHashFilter.trim().toLowerCase();
+    const isTxHash = normalizedFilter.startsWith('0x') && normalizedFilter.length === 66;
+    if (isTxHash) {
+      return x402Requests.filter((item) => String(item.paymentTxHash || '').toLowerCase() === normalizedFilter);
+    }
+    return x402Requests.slice(0, 10);
+  }, [txHashFilter, x402Requests]);
+
+  const refreshAll = async () => {
+    await Promise.all([loadTransfers(), loadX402Requests(), loadAppRecords()]);
   };
 
   return (
@@ -184,6 +214,9 @@ function OnChainPage({ onBack }) {
         )}
         <button className="link-btn" onClick={loadTransfers} disabled={loading}>
           {loading ? 'Refreshing...' : 'Refresh On-chain Data'}
+        </button>
+        <button className="link-btn" onClick={refreshAll} disabled={loading}>
+          {loading ? 'Refreshing...' : 'Refresh All'}
         </button>
       </div>
 
@@ -226,6 +259,45 @@ function OnChainPage({ onBack }) {
           </div>
         </div>
       )}
+
+      <div className="vault-card">
+        <h2>x402 Payment Mapping</h2>
+        <div className="records-head onchain-head">
+          <span>Action</span>
+          <span>Request ID</span>
+          <span>Payer</span>
+          <span>Amount</span>
+          <span>Status</span>
+          <span>Paid At</span>
+          <span>Payment Tx Hash</span>
+        </div>
+
+        {displayedX402Requests.length === 0 && (
+          <div className="result-row">No x402 mappings match your filter.</div>
+        )}
+
+        {displayedX402Requests.map((item) => (
+          <div className="records-row onchain-row" key={item.requestId}>
+            <span className="records-cell">{item.action || '-'}</span>
+            <span className="records-cell hash">{item.requestId}</span>
+            <span className="records-cell hash">{item.payer || '-'}</span>
+            <span className="records-cell">{item.amount || '-'}</span>
+            <span className="records-cell">{item.status || '-'}</span>
+            <span className="records-cell">
+              {item.paidAt ? new Date(Number(item.paidAt)).toISOString() : '-'}
+            </span>
+            <span className="records-cell hash">
+              {item.paymentTxHash ? (
+                <a className="tx-link" href={explorerTx(item.paymentTxHash)} target="_blank" rel="noreferrer">
+                  {item.paymentTxHash}
+                </a>
+              ) : (
+                '-'
+              )}
+            </span>
+          </div>
+        ))}
+      </div>
 
       <div className="vault-card">
         <div className="records-head onchain-head">

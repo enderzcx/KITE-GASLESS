@@ -4,6 +4,7 @@ import { GokiteAASDK } from './gokite-aa-sdk';
 
 const TOKEN_DECIMALS = 18;
 const DEFAULT_TOKEN = '0x0fF5393387ad2f9f691FD6Fd28e07E3969e27e63';
+const DEFAULT_GATEWAY_RECIPIENT = '0x6D705b93F0Da7DC26e46cB39Decc3baA4fb4dd29';
 const SESSION_KEY_ADDR_STORAGE = 'kiteclaw_session_address';
 const SESSION_KEY_PRIV_STORAGE = 'kiteclaw_session_privkey';
 
@@ -75,6 +76,7 @@ function AgentSettingsPage({ onBack, walletState }) {
   );
   const [singleLimit, setSingleLimit] = useState('5');
   const [dailyLimit, setDailyLimit] = useState('50');
+  const [gatewayRecipient, setGatewayRecipient] = useState(DEFAULT_GATEWAY_RECIPIENT);
   const [allowedToken, setAllowedToken] = useState(DEFAULT_TOKEN);
   const [status, setStatus] = useState('');
 
@@ -86,10 +88,6 @@ function AgentSettingsPage({ onBack, walletState }) {
     import.meta.env.VITE_KITEAI_BUNDLER_URL ||
     import.meta.env.VITE_BUNDLER_URL ||
     'https://bundler-service.staging.gokite.ai/rpc/';
-  const privateKey =
-    import.meta.env.VITE_KITECLAW_PRIVATE_KEY ||
-    import.meta.env.VITE_USER_PRIVATE_KEY ||
-    '';
 
   useEffect(() => {
     const storedSessionAddr = localStorage.getItem(SESSION_KEY_ADDR_STORAGE) || '';
@@ -101,12 +99,30 @@ function AgentSettingsPage({ onBack, walletState }) {
   }, []);
 
   useEffect(() => {
+    const loadGatewayPolicy = async () => {
+      try {
+        const res = await fetch('/api/x402/policy');
+        if (!res.ok) return;
+        const data = await res.json();
+        const policy = data?.policy || {};
+        if (policy?.maxPerTx) setSingleLimit(String(policy.maxPerTx));
+        if (policy?.dailyLimit) setDailyLimit(String(policy.dailyLimit));
+        const firstAllowed = Array.isArray(policy?.allowedRecipients)
+          ? policy.allowedRecipients[0]
+          : '';
+        if (firstAllowed) setGatewayRecipient(firstAllowed);
+      } catch {
+        // keep defaults when backend policy is unavailable
+      }
+    };
+    void loadGatewayPolicy();
+  }, []);
+
+  useEffect(() => {
     try {
       let signerAddress = '';
       if (walletState?.ownerAddress) {
         signerAddress = walletState.ownerAddress;
-      } else if (privateKey) {
-        signerAddress = new ethers.Wallet(privateKey).address;
       } else {
         return;
       }
@@ -123,15 +139,14 @@ function AgentSettingsPage({ onBack, walletState }) {
     } catch {
       // keep fallback address when derivation fails
     }
-  }, [walletState, privateKey, rpcUrl, bundlerUrl]);
+  }, [walletState, rpcUrl, bundlerUrl]);
 
   const getSigner = async () => {
     if (walletState?.ownerAddress && typeof window.ethereum !== 'undefined') {
       const provider = new ethers.BrowserProvider(window.ethereum);
       return provider.getSigner();
     }
-    const provider = new ethers.JsonRpcProvider(rpcUrl);
-    return new ethers.Wallet(privateKey, provider);
+    throw new Error('Please connect wallet to manage session and spending rules.');
   };
 
   const buildRules = async (provider) => {
@@ -144,8 +159,8 @@ function AgentSettingsPage({ onBack, walletState }) {
   };
 
   const handleSetAllowedToken = async () => {
-    if (!walletState?.ownerAddress && !privateKey) {
-      setStatus('No signer available. Connect wallet or configure private key.');
+    if (!walletState?.ownerAddress) {
+      setStatus('No signer available. Please connect wallet.');
       return;
     }
     if (!allowedToken) {
@@ -167,8 +182,8 @@ function AgentSettingsPage({ onBack, walletState }) {
   };
 
   const handleCreateSession = async () => {
-    if (!walletState?.ownerAddress && !privateKey) {
-      setStatus('No signer available. Connect wallet or configure private key.');
+    if (!walletState?.ownerAddress) {
+      setStatus('No signer available. Please connect wallet.');
       return;
     }
     if (!accountAddress) {
@@ -192,11 +207,49 @@ function AgentSettingsPage({ onBack, walletState }) {
       ]);
       const tx = await signer.sendTransaction({ to: accountAddress, data });
       await tx.wait();
+      await syncGatewayPolicy();
       localStorage.setItem(SESSION_KEY_ADDR_STORAGE, generatedSessionWallet.address);
       localStorage.setItem(SESSION_KEY_PRIV_STORAGE, generatedSessionWallet.privateKey);
-      setStatus(`Session generated and rules applied: ${tx.hash}\nSessionId: ${sessionId}`);
+      setStatus(`Session generated, rules applied, gateway policy synced: ${tx.hash}\nSessionId: ${sessionId}`);
     } catch (err) {
       setStatus(`Creation failed: ${err.message}`);
+    }
+  };
+
+  const syncGatewayPolicy = async () => {
+    const maxPerTx = Number(singleLimit);
+    const daily = Number(dailyLimit);
+    if (!Number.isFinite(maxPerTx) || maxPerTx <= 0) {
+      throw new Error('Single Tx Limit must be a positive number.');
+    }
+    if (!Number.isFinite(daily) || daily <= 0) {
+      throw new Error('Daily Limit must be a positive number.');
+    }
+    if (!gatewayRecipient || !ethers.isAddress(gatewayRecipient)) {
+      throw new Error('Gateway allowed recipient must be a valid address.');
+    }
+    const resp = await fetch('/api/x402/policy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        maxPerTx,
+        dailyLimit: daily,
+        allowedRecipients: [gatewayRecipient]
+      })
+    });
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok || !body?.ok) {
+      throw new Error(body?.reason || `Gateway policy sync failed: HTTP ${resp.status}`);
+    }
+  };
+
+  const handleSyncGatewayPolicy = async () => {
+    try {
+      setStatus('Syncing gateway policy...');
+      await syncGatewayPolicy();
+      setStatus('Gateway policy synced successfully.');
+    } catch (err) {
+      setStatus(`Gateway policy sync failed: ${err.message}`);
     }
   };
 
@@ -279,9 +332,19 @@ function AgentSettingsPage({ onBack, walletState }) {
               placeholder="50"
             />
           </div>
+          <div className="vault-input">
+            <label>Gateway Allowed Recipient</label>
+            <input
+              type="text"
+              value={gatewayRecipient}
+              onChange={(e) => setGatewayRecipient(e.target.value)}
+              placeholder={DEFAULT_GATEWAY_RECIPIENT}
+            />
+          </div>
         </div>
         <div className="vault-actions">
           <button onClick={handleCreateSession}>Generate Session Key & Apply Rules</button>
+          <button onClick={handleSyncGatewayPolicy}>Sync Gateway Policy Only</button>
         </div>
         {status && <div className="request-error">{status}</div>}
       </div>

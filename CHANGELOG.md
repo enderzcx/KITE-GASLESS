@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project follows Semantic Versioning.
 
+## [v1.3.0] - 2026-02-19
+
+### Added
+- New Abuse/Over-limit demo page for graceful-failure cases:
+  - over-limit per tx
+  - scope violation
+  - fake proof
+  - expired request
+  - insufficient funds (demo)
+- Policy enforcement evidence logs API:
+  - `GET /api/x402/policy-failures`
+- Backend policy config persistence (`data/policy_config.json`).
+
+### Changed
+- Backend x402 policy became runtime-configurable:
+  - `GET /api/x402/policy`
+  - `POST /api/x402/policy`
+- Agent Settings page now syncs policy to backend gateway after session/rule setup.
+- Transfer page x402 mapping card now displays policy decision/snapshot evidence.
+- README updated with policy controls and abuse-case demo flow.
+
 ## [v1.2.0] - 2026-02-18
 
 ### Added

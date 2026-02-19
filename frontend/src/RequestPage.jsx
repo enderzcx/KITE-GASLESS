@@ -14,8 +14,17 @@ const SETTLEMENT_TOKEN =
   '0x0fF5393387ad2f9f691FD6Fd28e07E3969e27e63';
 const TOKEN_DECIMALS = 18;
 const AUTH_STORAGE_PREFIX = 'kiteclaw_auth_';
+const SESSION_KEY_PRIV_STORAGE = 'kiteclaw_session_privkey';
 
-function RequestPage({ onOpenTransfer, onOpenVault, onOpenAgentSettings, onOpenRecords, onOpenOnChain, walletState }) {
+function RequestPage({
+  onOpenTransfer,
+  onOpenVault,
+  onOpenAgentSettings,
+  onOpenRecords,
+  onOpenOnChain,
+  onOpenAbuseCases,
+  walletState
+}) {
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
@@ -40,11 +49,6 @@ function RequestPage({ onOpenTransfer, onOpenVault, onOpenAgentSettings, onOpenR
     entryPointAddress: '0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108',
     proxyAddress: aaWallet || undefined
   });
-
-  const privateKey =
-    import.meta.env.VITE_KITECLAW_PRIVATE_KEY ||
-    import.meta.env.VITE_USER_PRIVATE_KEY ||
-    '';
 
   useEffect(() => {
     if (walletState?.aaAddress) {
@@ -86,19 +90,48 @@ function RequestPage({ onOpenTransfer, onOpenVault, onOpenAgentSettings, onOpenR
   };
 
   const resolveSigner = async () => {
-    const provider = new ethers.JsonRpcProvider(rpcUrl);
-    if (privateKey) {
-      const autoSigner = new ethers.Wallet(privateKey, provider);
+    const fetchBackendSignerInfo = async () => {
+      const resp = await fetch('/api/signer/info');
+      if (!resp.ok) throw new Error(`backend signer info failed: HTTP ${resp.status}`);
+      return resp.json();
+    };
+    const signByBackend = async (userOpHash) => {
+      const resp = await fetch('/api/signer/sign-userop-hash', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userOpHash })
+      });
+      const body = await resp.json();
+      if (!resp.ok || !body?.signature) {
+        throw new Error(body?.reason || `backend signer failed: HTTP ${resp.status}`);
+      }
+      return body.signature;
+    };
+
+    const sessionPrivKey = localStorage.getItem(SESSION_KEY_PRIV_STORAGE) || '';
+
+    // Session key signs userOpHash, but AA owner remains root owner address.
+    if (sessionPrivKey) {
+      const provider = new ethers.JsonRpcProvider(rpcUrl);
+      const sessionSigner = new ethers.Wallet(sessionPrivKey, provider);
+      let ownerAddress = walletState?.ownerAddress || '';
+      if (!ownerAddress) {
+        const signerInfo = await fetchBackendSignerInfo();
+        ownerAddress = signerInfo?.address || '';
+      }
+      if (!ownerAddress) {
+        throw new Error('Session key found but owner address is missing. Connect wallet once or configure backend signer.');
+      }
       return {
-        signer: autoSigner,
-        ownerAddress: walletState?.ownerAddress || autoSigner.address,
-        mode: 'agent_key'
+        signer: sessionSigner,
+        ownerAddress,
+        mode: 'session_key'
       };
     }
 
     if (walletState?.ownerAddress) {
       if (typeof window.ethereum === 'undefined') {
-        throw new Error('No wallet detected and no auto-sign private key configured.');
+        throw new Error('No wallet detected.');
       }
       const browserProvider = new ethers.BrowserProvider(window.ethereum);
       const ownerSigner = await browserProvider.getSigner();
@@ -108,7 +141,16 @@ function RequestPage({ onOpenTransfer, onOpenVault, onOpenAgentSettings, onOpenR
         mode: 'owner'
       };
     }
-    throw new Error('Wallet not connected and no auto-sign private key configured.');
+
+    const signerInfo = await fetchBackendSignerInfo();
+    if (!signerInfo?.enabled || !signerInfo?.address) {
+      throw new Error('Wallet not connected and backend signer is unavailable.');
+    }
+    return {
+      signer: { signMessage: signByBackend },
+      ownerAddress: signerInfo.address,
+      mode: 'backend_signer'
+    };
   };
 
   const logRecord = async (record) => {
@@ -174,7 +216,15 @@ function RequestPage({ onOpenTransfer, onOpenVault, onOpenAgentSettings, onOpenR
       }
 
       setAuthStatus('Step 2/3: paying x402 challenge on-chain...');
-      const signFunction = async (userOpHash) => signer.signMessage(ethers.getBytes(userOpHash));
+      if (mode === 'session_key') {
+        setAuthStatus('Step 2/3: paying with session key (no wallet popup expected)...');
+      }
+      const signFunction = async (userOpHash) => {
+        if (mode === 'backend_signer') {
+          return signer.signMessage(userOpHash);
+        }
+        return signer.signMessage(ethers.getBytes(userOpHash));
+      };
       const transferResult = await sdk.sendERC20(
         {
           tokenAddress: payInfo.tokenAddress || SETTLEMENT_TOKEN,
@@ -280,6 +330,9 @@ function RequestPage({ onOpenTransfer, onOpenVault, onOpenAgentSettings, onOpenR
         </button>
         <button className="link-btn" onClick={onOpenOnChain}>
           On-chain Confirmation
+        </button>
+        <button className="link-btn" onClick={onOpenAbuseCases}>
+          Abuse / Limit Cases
         </button>
       </div>
 

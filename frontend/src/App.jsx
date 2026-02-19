@@ -7,6 +7,7 @@ import VaultPage from './VaultPage';
 import AgentSettingsPage from './AgentSettingsPage';
 import RecordsPage from './RecordsPage';
 import OnChainPage from './OnChainPage';
+import AbuseCasesPage from './AbuseCasesPage';
 import { GokiteAASDK } from './gokite-aa-sdk';
 import './App.css';
 
@@ -57,6 +58,7 @@ function App() {
           onOpenAgentSettings={() => setView('agent-settings')}
           onOpenRecords={() => setView('records')}
           onOpenOnChain={() => setView('on-chain')}
+          onOpenAbuseCases={() => setView('abuse-cases')}
         />
       )}
       {view === 'transfer' && (
@@ -73,6 +75,9 @@ function App() {
       )}
       {view === 'on-chain' && (
         <OnChainPage walletState={walletState} onBack={() => setView('request')} />
+      )}
+      {view === 'abuse-cases' && (
+        <AbuseCasesPage walletState={walletState} onBack={() => setView('request')} />
       )}
     </div>
   );

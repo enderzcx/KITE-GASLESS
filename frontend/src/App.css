@@ -100,6 +100,8 @@ body::after {
 .top-entry {
   display: flex;
   justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
   margin-bottom: 12px;
 }
 
@@ -189,7 +191,7 @@ body::after {
 }
 
 .transfer-container {
-  max-width: 600px;
+  max-width: 1120px;
   width: 100%;
   background: rgba(10, 15, 22, 0.75);
   backdrop-filter: blur(10px);
@@ -286,11 +288,19 @@ body::after {
 
 .transfer-layout {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(380px, 1fr) minmax(380px, 1fr);
   gap: 16px;
 }
 
 .confirm-card .result-row .label {
+  min-width: 120px;
+}
+
+.confirm-card .result-row .value {
+  word-break: break-word;
+}
+
+.x402-card .result-row .label {
   min-width: 120px;
 }
 
@@ -515,6 +525,17 @@ button.loading {
 .onchain-head,
 .onchain-row {
   grid-template-columns: 140px 170px 1.2fr 1.2fr 0.8fr 90px 1.6fr;
+}
+
+.cases-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.policy-head,
+.policy-row {
+  grid-template-columns: 170px 140px 1.2fr 1.2fr 120px 1.5fr;
 }
 
 @media (max-width: 900px) {

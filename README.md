@@ -2,7 +2,7 @@
 
 KITE GASLESS is an upgraded demo of **[Kite Bot](https://github.com/enderzcx/Kite-Bot-Seamless-Autonomous-Payment-AI-Agent)**, built for real-world AI Agent payment workflows on **KiteAI Testnet**.
 
-Current Version: `v1.2.0`
+Current Version: `v1.3.0`
 
 This repo demonstrates how an AI Agent can:
 - authenticate once,
@@ -31,10 +31,12 @@ KITE GASLESS/
 
 - Wallet login and AA address derivation (`getAccountAddress`)
 - One-time Authentication UX before wallet-sign path sends
-- Auto-sign mode via `VITE_KITECLAW_PRIVATE_KEY` for demo automation
+- Backend signer mode via `/api/signer/*` (no root private key in frontend runtime)
 - Transfer page for manual AA token transfer
 - Request page for agent-like purchase simulation
 - x402-style paid resource flow (`402 -> pay -> proof -> 200`)
+- Policy-enforced x402 transfer intent (scope + per-tx + daily limit)
+- Abuse/over-limit graceful-failure page with evidence logs
 - Vault page for create/deposit/withdraw/rule updates
 - Agent settings page for token + session/rule setup
 - Record service (`/api/records`) for tx history playback
@@ -56,7 +58,6 @@ Fill your own `.env` values (especially private key):
 ```env
 VITE_KITEAI_RPC_URL=https://rpc-testnet.gokite.ai/
 VITE_KITEAI_BUNDLER_URL=https://bundler-service.staging.gokite.ai/rpc/
-VITE_KITECLAW_PRIVATE_KEY=0x_your_test_private_key
 VITE_KITEAI_SETTLEMENT_TOKEN=0x0fF5393387ad2f9f691FD6Fd28e07E3969e27e63
 VITE_KITECLAW_VAULT_IMPLEMENTATION=0xB5AAFCC6DD4DFc2B80fb8BCcf406E1a2Fd559e23
 VITE_KITECLAW_GOLDSKY_ENDPOINT=https://api.goldsky.com/api/public/project_cmlrmfrtks90001wg8goma8pv/subgraphs/kk/1.0.1/gn
@@ -75,10 +76,22 @@ Frontend default URL: `http://localhost:5173`
 ```bash
 cd ../backend
 npm install
+# optional: cp .env.example .env and fill backend signer key
 npm start
 ```
 
 Backend default: `http://localhost:3001`
+
+Backend signer env (recommended for non-direct key access):
+
+```env
+KITEAI_RPC_URL=https://rpc-testnet.gokite.ai/
+KITECLAW_BACKEND_SIGNER_PRIVATE_KEY=0x_your_test_private_key
+# optional policy controls
+KITE_POLICY_MAX_PER_TX=0.20
+KITE_POLICY_DAILY_LIMIT=0.60
+KITE_POLICY_ALLOWED_RECIPIENTS=0x6D705b93F0Da7DC26e46cB39Decc3baA4fb4dd29
+```
 
 ### 3) Open the app
 
@@ -120,6 +133,12 @@ Before testing, prepare balances on KiteAI Testnet:
 
 Judge demo script: see `DEMO_X402_SCRIPT.md`.
 9. Open **Records** page to show full operation history.
+10. Open **Abuse / Limit Cases** page to demonstrate:
+   - scope violation rejection,
+   - over-limit rejection,
+   - fake proof rejection,
+   - expired request rejection,
+   - insufficient funds graceful messaging.
 
 ## Tech stack
 
@@ -132,10 +151,11 @@ Judge demo script: see `DEMO_X402_SCRIPT.md`.
 
 - Use test keys only.
 - Never commit `.env`.
-- For production, move signing to secure backend/HSM; do not keep private keys in frontend runtime.
+- Root signing key is server-side only (`backend` env), not exposed to frontend.
+- For production, use secure backend/HSM/KMS and strict rotation policies.
 
 ## Versioning
 
 - We use Semantic Versioning (`MAJOR.MINOR.PATCH`).
-- Stable baseline release: `v1.2.0`
+- Stable baseline release: `v1.3.0`
 - See `CHANGELOG.md` for release notes.

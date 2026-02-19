@@ -9,6 +9,7 @@ const SETTLEMENT_TOKEN =
   '0x0fF5393387ad2f9f691FD6Fd28e07E3969e27e63';
 const TOKEN_DECIMALS = 18;
 const AUTH_STORAGE_PREFIX = 'kiteclaw_auth_';
+const SESSION_KEY_PRIV_STORAGE = 'kiteclaw_session_privkey';
 const GOLDSKY_ENDPOINT =
   import.meta.env.VITE_KITECLAW_GOLDSKY_ENDPOINT ||
   'https://api.goldsky.com/api/public/project_cmlrmfrtks90001wg8goma8pv/subgraphs/kk/1.0.1/gn';
@@ -35,6 +36,12 @@ function Transfer({ onBack, walletState }) {
     valueRaw: '',
     match: null
   });
+  const [x402Lookup, setX402Lookup] = useState({
+    loading: false,
+    found: false,
+    message: 'No x402 lookup yet.',
+    item: null
+  });
 
   const rpcUrl =
     import.meta.env.VITE_KITEAI_RPC_URL ||
@@ -52,11 +59,6 @@ function Transfer({ onBack, walletState }) {
     entryPointAddress: '0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108',
     proxyAddress: aaWallet || undefined
   });
-
-  const privateKey =
-    import.meta.env.VITE_KITECLAW_PRIVATE_KEY ||
-    import.meta.env.VITE_USER_PRIVATE_KEY ||
-    '';
 
   useEffect(() => {
     if (walletState?.ownerAddress) {
@@ -89,6 +91,53 @@ function Transfer({ onBack, walletState }) {
     }
   };
 
+  const lookupX402ByTxHash = async (hash) => {
+    if (!hash) {
+      setX402Lookup({
+        loading: false,
+        found: false,
+        message: 'Missing tx hash.',
+        item: null
+      });
+      return;
+    }
+    try {
+      setX402Lookup({
+        loading: true,
+        found: false,
+        message: 'Checking x402 mapping by tx hash...',
+        item: null
+      });
+      const res = await fetch(`/api/x402/requests?txHash=${String(hash).toLowerCase()}&limit=1`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const item = Array.isArray(data?.items) ? data.items[0] : null;
+      if (item) {
+        setX402Lookup({
+          loading: false,
+          found: true,
+          message: 'x402 mapping found for this tx hash.',
+          item
+        });
+      } else {
+        setX402Lookup({
+          loading: false,
+          found: false,
+          message:
+            'No x402 mapping found. This is likely a standard transfer (not a 402 paid-action flow).',
+          item: null
+        });
+      }
+    } catch (error) {
+      setX402Lookup({
+        loading: false,
+        found: false,
+        message: `x402 lookup failed: ${error.message}`,
+        item: null
+      });
+    }
+  };
+
   const handleConnectWallet = async () => {
     try {
       if (typeof window.ethereum !== 'undefined') {
@@ -113,16 +162,56 @@ function Transfer({ onBack, walletState }) {
   };
 
   const resolveSigner = async () => {
-    if (privateKey) {
+    const fetchBackendSignerInfo = async () => {
+      const resp = await fetch('/api/signer/info');
+      if (!resp.ok) throw new Error(`backend signer info failed: HTTP ${resp.status}`);
+      return resp.json();
+    };
+    const signByBackend = async (userOpHash) => {
+      const resp = await fetch('/api/signer/sign-userop-hash', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userOpHash })
+      });
+      const body = await resp.json();
+      if (!resp.ok || !body?.signature) {
+        throw new Error(body?.reason || `backend signer failed: HTTP ${resp.status}`);
+      }
+      return body.signature;
+    };
+
+    const sessionPrivKey = localStorage.getItem(SESSION_KEY_PRIV_STORAGE) || '';
+
+    // Session key only signs userOpHash. AA owner remains root owner address.
+    if (sessionPrivKey) {
       const provider = new ethers.JsonRpcProvider(rpcUrl);
-      return new ethers.Wallet(privateKey, provider);
+      const sessionSigner = new ethers.Wallet(sessionPrivKey, provider);
+      let ownerAddress = walletState?.ownerAddress || owner || '';
+      if (!ownerAddress) {
+        const signerInfo = await fetchBackendSignerInfo();
+        ownerAddress = signerInfo?.address || '';
+      }
+      if (!ownerAddress) {
+        throw new Error('Session key found but owner address is missing. Connect wallet once or configure backend signer.');
+      }
+      return { signer: sessionSigner, ownerAddress, mode: 'session_key' };
     }
+
     if (walletState?.ownerAddress && typeof window.ethereum !== 'undefined') {
       const provider = new ethers.BrowserProvider(window.ethereum);
       const signer = await provider.getSigner();
-      return signer;
+      return { signer, ownerAddress: walletState.ownerAddress, mode: 'owner' };
     }
-    throw new Error('Wallet not connected and no auto-sign private key configured.');
+
+    const signerInfo = await fetchBackendSignerInfo();
+    if (!signerInfo?.enabled || !signerInfo?.address) {
+      throw new Error('Wallet not connected and backend signer is unavailable.');
+    }
+    return {
+      signer: { signMessage: signByBackend },
+      ownerAddress: signerInfo.address,
+      mode: 'backend_signer'
+    };
   };
 
   const handleAuthentication = async () => {
@@ -150,6 +239,23 @@ function Transfer({ onBack, walletState }) {
     }
   };
 
+  const requestX402TransferIntent = async ({ payer, recipientAddress, transferAmount, requestId, paymentProof }) => {
+    const res = await fetch('/api/x402/transfer-intent', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        payer,
+        recipient: recipientAddress,
+        amount: transferAmount,
+        tokenAddress: SETTLEMENT_TOKEN,
+        requestId,
+        paymentProof
+      })
+    });
+    const body = await res.json();
+    return { status: res.status, body };
+  };
+
   const handleTransfer = async () => {
     if (!recipient || !amount) {
       alert('Please enter recipient address and amount.');
@@ -159,12 +265,13 @@ function Transfer({ onBack, walletState }) {
     try {
       setLoading(true);
       setStatus('');
-      if (!privateKey && (walletState?.ownerAddress || owner) && !isAuthenticated) {
+      const hasSessionSigner = Boolean(localStorage.getItem(SESSION_KEY_PRIV_STORAGE));
+      if (!hasSessionSigner && (walletState?.ownerAddress || owner) && !isAuthenticated) {
         throw new Error('Please complete Authentication once before sending.');
       }
 
-      const signer = await resolveSigner();
-      const derivedAA = sdk.ensureAccountAddress(await signer.getAddress());
+      const { signer, ownerAddress, mode } = await resolveSigner();
+      const derivedAA = sdk.ensureAccountAddress(ownerAddress);
       if (derivedAA !== aaWallet) {
         setAAWallet(derivedAA);
       }
@@ -173,14 +280,57 @@ function Transfer({ onBack, walletState }) {
       setSenderBalance(ethers.formatUnits(balance, TOKEN_DECIMALS));
 
       const signFunction = async (userOpHash) => {
+        if (mode === 'backend_signer') {
+          return signer.signMessage(userOpHash);
+        }
         return signer.signMessage(ethers.getBytes(userOpHash));
       };
+      if (mode === 'session_key') {
+        setAuthStatus('Using session key signer (no wallet popup expected).');
+      }
 
-      const result = await sdk.sendERC20({
-        tokenAddress: SETTLEMENT_TOKEN,
-        recipient,
-        amount: ethers.parseUnits(amount, TOKEN_DECIMALS)
-      }, signFunction);
+      setConfirmState({
+        stage: 'x402_challenge',
+        message: 'Requesting x402 challenge (expecting 402)...',
+        txHash: '',
+        blockNumber: '',
+        from: '',
+        to: '',
+        valueRaw: '',
+        match: null
+      });
+      const firstTry = await requestX402TransferIntent({
+        payer: derivedAA,
+        recipientAddress: recipient,
+        transferAmount: amount
+      });
+      if (firstTry.status !== 402) {
+        throw new Error(`Expected 402 challenge, got ${firstTry.status}`);
+      }
+      const challenge = firstTry.body?.x402;
+      const payInfo = challenge?.accepts?.[0];
+      if (!challenge?.requestId || !payInfo) {
+        throw new Error('Invalid x402 challenge for transfer intent.');
+      }
+
+      setConfirmState({
+        stage: 'x402_payment',
+        message: 'x402 challenge received. Paying on-chain...',
+        txHash: '',
+        blockNumber: '',
+        from: '',
+        to: '',
+        valueRaw: '',
+        match: null
+      });
+      const result = await sdk.sendERC20(
+        {
+          tokenAddress: payInfo.tokenAddress || SETTLEMENT_TOKEN,
+          recipient: payInfo.recipient,
+          amount: ethers.parseUnits(String(payInfo.amount), payInfo.decimals ?? TOKEN_DECIMALS)
+        },
+        signFunction
+      );
 
       if (result.status === 'success') {
         setStatus('success');
@@ -201,14 +351,42 @@ function Transfer({ onBack, walletState }) {
         setSenderBalance(ethers.formatUnits(newBalance, TOKEN_DECIMALS));
 
         await logRecord({
-          type: 'TransferPage',
-          amount,
-          token: SETTLEMENT_TOKEN,
-          recipient,
+          type: 'x402Transfer',
+          amount: String(payInfo.amount),
+          token: payInfo.tokenAddress || SETTLEMENT_TOKEN,
+          recipient: payInfo.recipient,
           txHash: result.transactionHash,
-          status: 'success'
+          status: 'success',
+          requestId: challenge.requestId,
+          signerMode: mode
         });
-        void pollOnChainConfirmation(result.transactionHash, recipient, amount);
+
+        setConfirmState((prev) => ({
+          ...prev,
+          stage: 'x402_verify',
+          message: 'Submitting payment proof for x402 verification...'
+        }));
+        const paymentProof = {
+          requestId: challenge.requestId,
+          txHash: result.transactionHash,
+          payer: derivedAA,
+          tokenAddress: payInfo.tokenAddress || SETTLEMENT_TOKEN,
+          recipient: payInfo.recipient,
+          amount: String(payInfo.amount)
+        };
+        const secondTry = await requestX402TransferIntent({
+          payer: derivedAA,
+          recipientAddress: payInfo.recipient,
+          transferAmount: String(payInfo.amount),
+          requestId: challenge.requestId,
+          paymentProof
+        });
+        if (secondTry.status !== 200 || !secondTry.body?.ok) {
+          throw new Error(secondTry.body?.reason || `x402 verification failed: ${secondTry.status}`);
+        }
+
+        void lookupX402ByTxHash(result.transactionHash);
+        void pollOnChainConfirmation(result.transactionHash, payInfo.recipient, String(payInfo.amount));
       } else {
         setStatus('failed');
         setConfirmState({
@@ -222,12 +400,13 @@ function Transfer({ onBack, walletState }) {
           match: false
         });
         await logRecord({
-          type: 'TransferPage',
+          type: 'x402Transfer',
           amount,
           token: SETTLEMENT_TOKEN,
           recipient,
           txHash: result.transactionHash || '',
-          status: 'failed'
+          status: 'failed',
+          signerMode: mode
         });
         alert(`Transfer failed: ${result.reason}`);
       }
@@ -448,6 +627,58 @@ function Transfer({ onBack, walletState }) {
             </span>
           </div>
         </div>
+      </div>
+
+      <div className="transfer-card x402-card">
+        <h2>x402 Mapping</h2>
+        <div className="result-row">
+          <span className="label">Lookup:</span>
+          <span className="value">{x402Lookup.loading ? 'loading' : x402Lookup.found ? 'found' : 'not found'}</span>
+        </div>
+        <div className="result-row">
+          <span className="label">Message:</span>
+          <span className="value">{x402Lookup.message}</span>
+        </div>
+        {x402Lookup.item && (
+          <>
+            <div className="result-row">
+              <span className="label">Action:</span>
+              <span className="value">{x402Lookup.item.action || '-'}</span>
+            </div>
+            <div className="result-row">
+              <span className="label">Request ID:</span>
+              <span className="value hash">{x402Lookup.item.requestId || '-'}</span>
+            </div>
+            <div className="result-row">
+              <span className="label">Payer:</span>
+              <span className="value hash">{x402Lookup.item.payer || '-'}</span>
+            </div>
+            <div className="result-row">
+              <span className="label">Status:</span>
+              <span className="value">{x402Lookup.item.status || '-'}</span>
+            </div>
+            <div className="result-row">
+              <span className="label">Amount:</span>
+              <span className="value">{x402Lookup.item.amount || '-'} USDT</span>
+            </div>
+            <div className="result-row">
+              <span className="label">Payment Tx:</span>
+              <span className="value hash">{x402Lookup.item.paymentTxHash || '-'}</span>
+            </div>
+            <div className="result-row">
+              <span className="label">Policy decision:</span>
+              <span className="value">{x402Lookup.item?.policy?.decision || '-'}</span>
+            </div>
+            <div className="result-row">
+              <span className="label">Policy snapshot:</span>
+              <span className="value hash">
+                {x402Lookup.item?.policy?.snapshot
+                  ? JSON.stringify(x402Lookup.item.policy.snapshot)
+                  : '-'}
+              </span>
+            </div>
+          </>
+        )}
       </div>
 
       {status === 'success' && (

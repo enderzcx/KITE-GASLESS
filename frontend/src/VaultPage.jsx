@@ -120,11 +120,6 @@ function VaultPage({ onBack, walletState }) {
     import.meta.env.VITE_KITE_RPC_URL ||
     'https://rpc-testnet.gokite.ai/';
 
-  const privateKey =
-    import.meta.env.VITE_KITECLAW_PRIVATE_KEY ||
-    import.meta.env.VITE_USER_PRIVATE_KEY ||
-    '';
-
   const logRecord = async (record) => {
     try {
       await fetch('/api/records', {
@@ -172,8 +167,7 @@ function VaultPage({ onBack, walletState }) {
       const provider = new ethers.BrowserProvider(window.ethereum);
       return provider.getSigner();
     }
-    const provider = new ethers.JsonRpcProvider(rpcUrl);
-    return new ethers.Wallet(privateKey, provider);
+    throw new Error('Please connect wallet to manage vault operations.');
   };
 
   const ensureVaultAddress = (address = vaultAddress) => {
@@ -189,8 +183,8 @@ function VaultPage({ onBack, walletState }) {
   };
 
   const handleCreateVault = async () => {
-    if (!walletState?.ownerAddress && !privateKey) {
-      setVaultStatus('No signer available. Connect wallet or configure private key.');
+    if (!walletState?.ownerAddress) {
+      setVaultStatus('No signer available. Please connect wallet.');
       return;
     }
     try {
@@ -308,8 +302,8 @@ function VaultPage({ onBack, walletState }) {
 
   const handleSetRules = async () => {
     if (!ensureVaultAddress()) return;
-    if (!walletState?.ownerAddress && !privateKey) {
-      setVaultStatus('No signer available. Connect wallet or configure private key.');
+    if (!walletState?.ownerAddress) {
+      setVaultStatus('No signer available. Please connect wallet.');
       return;
     }
     try {
@@ -338,8 +332,8 @@ function VaultPage({ onBack, walletState }) {
 
   const handleDeposit = async () => {
     if (!ensureVaultAddress()) return;
-    if (!walletState?.ownerAddress && !privateKey) {
-      setVaultStatus('No signer available. Connect wallet or configure private key.');
+    if (!walletState?.ownerAddress) {
+      setVaultStatus('No signer available. Please connect wallet.');
       return;
     }
     if (!depositAmount) {
@@ -385,8 +379,8 @@ function VaultPage({ onBack, walletState }) {
 
   const handleWithdraw = async () => {
     if (!ensureVaultAddress()) return;
-    if (!walletState?.ownerAddress && !privateKey) {
-      setVaultStatus('No signer available. Connect wallet or configure private key.');
+    if (!walletState?.ownerAddress) {
+      setVaultStatus('No signer available. Please connect wallet.');
       return;
     }
     if (!withdrawAmount) {
