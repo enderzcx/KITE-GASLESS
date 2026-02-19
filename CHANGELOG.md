@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project follows Semantic Versioning.
 
+## [v1.5.0] - 2026-02-19
+
+### Added
+- Action-based x402 flow on Transfer page:
+  - `Request Payment Info (402)` -> `Pay & Submit Proof`
+  - challenge details displayed before payment.
+- New paid action:
+  - `reactive-stop-orders` bound to `agent2` AA recipient.
+- Fast pre-check for action recipient validity:
+  - explicit `invalid_action_recipient` error path.
+- Environment loading in backend runtime via `dotenv`:
+  - backend signer `.env` now loaded reliably.
+
+### Changed
+- Removed duplicated Request page and switched to Transfer-first app entry.
+- Updated top navigation to keep all demo pages reachable from Transfer.
+- Applied policy guardrails to action flow (`kol-score` and `reactive-stop-orders`) before issuing 402 challenge.
+- Payment signing preference updated for stable no-popup flow:
+  - prefer backend signer after one-time auth, fallback to owner signer only if backend signer is unavailable.
+
 ## [v1.4.0] - 2026-02-19
 
 ### Added

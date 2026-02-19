@@ -225,7 +225,7 @@ function OnChainPage({ onBack }) {
       <div className="top-entry">
         {onBack && (
           <button className="link-btn" onClick={onBack}>
-            Back to Request Page
+            Back to Transfer Page
           </button>
         )}
         <button className="link-btn" onClick={loadTransfers} disabled={loading}>

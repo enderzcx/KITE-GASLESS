@@ -1,8 +1,7 @@
-﻿import { useState } from 'react';
+import { useState } from 'react';
 import { ethers } from 'ethers';
 import Transfer from './Transfer';
 import LoginPage from './LoginPage';
-import RequestPage from './RequestPage';
 import VaultPage from './VaultPage';
 import AgentSettingsPage from './AgentSettingsPage';
 import RecordsPage from './RecordsPage';
@@ -44,16 +43,16 @@ function App() {
     const aaAddress = sdk.getAccountAddress(ownerAddress);
 
     setWalletState({ ownerAddress, aaAddress });
-    setView('request');
+    setView('transfer');
   };
 
   return (
     <div className="app">
       {view === 'login' && <LoginPage onLogin={connectWalletAndEnter} />}
-      {view === 'request' && (
-        <RequestPage
+      {view === 'transfer' && (
+        <Transfer
           walletState={walletState}
-          onOpenTransfer={() => setView('transfer')}
+          onBack={() => setView('login')}
           onOpenVault={() => setView('vault')}
           onOpenAgentSettings={() => setView('agent-settings')}
           onOpenRecords={() => setView('records')}
@@ -61,28 +60,17 @@ function App() {
           onOpenAbuseCases={() => setView('abuse-cases')}
         />
       )}
-      {view === 'transfer' && (
-        <Transfer walletState={walletState} onBack={() => setView('request')} />
-      )}
-      {view === 'vault' && (
-        <VaultPage walletState={walletState} onBack={() => setView('request')} />
-      )}
+      {view === 'vault' && <VaultPage walletState={walletState} onBack={() => setView('transfer')} />}
       {view === 'agent-settings' && (
-        <AgentSettingsPage walletState={walletState} onBack={() => setView('request')} />
+        <AgentSettingsPage walletState={walletState} onBack={() => setView('transfer')} />
       )}
-      {view === 'records' && (
-        <RecordsPage onBack={() => setView('request')} />
-      )}
-      {view === 'on-chain' && (
-        <OnChainPage walletState={walletState} onBack={() => setView('request')} />
-      )}
+      {view === 'records' && <RecordsPage onBack={() => setView('transfer')} />}
+      {view === 'on-chain' && <OnChainPage walletState={walletState} onBack={() => setView('transfer')} />}
       {view === 'abuse-cases' && (
-        <AbuseCasesPage walletState={walletState} onBack={() => setView('request')} />
+        <AbuseCasesPage walletState={walletState} onBack={() => setView('transfer')} />
       )}
     </div>
   );
 }
 
 export default App;
-
-

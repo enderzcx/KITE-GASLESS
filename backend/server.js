@@ -1,4 +1,5 @@
-ï»¿import express from 'express';
+import 'dotenv/config';
+import express from 'express';
 import cors from 'cors';
 import fs from 'fs';
 import path from 'path';
@@ -17,6 +18,9 @@ const SETTLEMENT_TOKEN =
 const MERCHANT_ADDRESS =
   process.env.KITE_MERCHANT_ADDRESS || '0x6D705b93F0Da7DC26e46cB39Decc3baA4fb4dd29';
 const X402_PRICE = process.env.X402_PRICE || '0.05';
+const KITE_AGENT2_AA_ADDRESS =
+  process.env.KITE_AGENT2_AA_ADDRESS || '0xEd335560178B85f0524FfFf3372e9Bf45aB42aC8';
+const X402_REACTIVE_PRICE = process.env.X402_REACTIVE_PRICE || '0.03';
 const X402_TTL_MS = 10 * 60 * 1000;
 const POLICY_MAX_PER_TX_DEFAULT = Number(process.env.KITE_POLICY_MAX_PER_TX || '0.20');
 const POLICY_DAILY_LIMIT_DEFAULT = Number(process.env.KITE_POLICY_DAILY_LIMIT || '0.60');
@@ -195,6 +199,27 @@ function buildPaymentRequiredResponse(reqItem, reason = '') {
       ]
     }
   };
+}
+
+function getActionConfig(actionRaw = '') {
+  const action = String(actionRaw || 'kol-score').trim().toLowerCase();
+  if (action === 'kol-score') {
+    return {
+      action: 'kol-score',
+      amount: X402_PRICE,
+      recipient: MERCHANT_ADDRESS,
+      summary: 'KOL score report unlocked by x402 payment'
+    };
+  }
+  if (action === 'reactive-stop-orders') {
+    return {
+      action: 'reactive-stop-orders',
+      amount: X402_REACTIVE_PRICE,
+      recipient: KITE_AGENT2_AA_ADDRESS,
+      summary: 'Reactive contracts stop-orders signal unlocked by x402 payment'
+    };
+  }
+  return null;
 }
 
 function validatePaymentProof(reqItem, paymentProof) {
@@ -508,19 +533,64 @@ app.post('/api/x402/kol-score', (req, res) => {
   const body = req.body || {};
   const query = String(body.query || '').trim();
   const payer = String(body.payer || '').trim();
+  const actionRequested = String(body.action || 'kol-score').trim().toLowerCase();
   const requestId = String(body.requestId || '').trim();
   const paymentProof = body.paymentProof;
   const identityInput = body.identity || {};
   if (!query) return res.status(400).json({ error: 'query is required' });
+  const actionCfg = getActionConfig(actionRequested);
+  if (!actionCfg) {
+    return res.status(400).json({
+      error: 'unsupported_action',
+      reason: `Unsupported action: ${actionRequested}`
+    });
+  }
+  if (!ethers.isAddress(actionCfg.recipient)) {
+    return res.status(400).json({
+      error: 'invalid_action_recipient',
+      reason: `·Ç·¨µØÖ·: action recipient is invalid (${actionCfg.recipient})`
+    });
+  }
 
   const requests = readX402Requests();
   if (!requestId || !paymentProof) {
+    const policyResult = evaluateTransferPolicy({
+      payer,
+      recipient: actionCfg.recipient,
+      amount: actionCfg.amount,
+      requests
+    });
+    if (!policyResult.ok) {
+      logPolicyFailure({
+        action: actionCfg.action,
+        payer,
+        recipient: actionCfg.recipient,
+        amount: actionCfg.amount,
+        code: policyResult.code,
+        message: policyResult.message,
+        evidence: policyResult.evidence
+      });
+      return res.status(403).json({
+        error: policyResult.code,
+        reason: policyResult.message,
+        evidence: policyResult.evidence,
+        policy: buildPolicySnapshot()
+      });
+    }
+
     return readIdentityProfile({
       registry: identityInput.identityRegistry || identityInput.registry,
       agentId: identityInput.agentId
     })
       .then((identityProfile) => {
-        const reqItem = createX402Request(query, payer, 'kol-score', {
+        const reqItem = createX402Request(query, payer, actionCfg.action, {
+          amount: actionCfg.amount,
+          recipient: actionCfg.recipient,
+          policy: {
+            decision: 'allowed',
+            snapshot: buildPolicySnapshot(),
+            evidence: policyResult.evidence
+          },
           identity: identityProfile?.configured
         });
         requests.unshift(reqItem);
@@ -556,7 +626,9 @@ app.post('/api/x402/kol-score', (req, res) => {
       requestId: reqItem.requestId,
       reused: true,
       result: {
-        summary: 'KOL score report already unlocked',
+        summary: reqItem.action === 'reactive-stop-orders'
+          ? 'Reactive contracts stop-orders signal already unlocked'
+          : 'KOL score report already unlocked',
         topKOLs: [
           { handle: '@alpha_kol', score: 91 },
           { handle: '@beta_growth', score: 88 },
@@ -596,7 +668,10 @@ app.post('/api/x402/kol-score', (req, res) => {
       recipient: reqItem.recipient
     },
     result: {
-      summary: 'KOL score report unlocked by x402 payment',
+      summary:
+        reqItem.action === 'reactive-stop-orders'
+          ? 'Reactive contracts stop-orders signal unlocked by x402 payment'
+          : 'KOL score report unlocked by x402 payment',
       topKOLs: [
         { handle: '@alpha_kol', score: 91 },
         { handle: '@beta_growth', score: 88 },

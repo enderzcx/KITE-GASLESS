@@ -320,7 +320,7 @@ function AgentSettingsPage({ onBack, walletState }) {
       <div className="top-entry">
         {onBack && (
           <button className="link-btn" onClick={onBack}>
-            Back to Request Page
+            Back to Transfer Page
           </button>
         )}
       </div>

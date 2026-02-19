@@ -14,11 +14,19 @@ const GOLDSKY_ENDPOINT =
   import.meta.env.VITE_KITECLAW_GOLDSKY_ENDPOINT ||
   'https://api.goldsky.com/api/public/project_cmlrmfrtks90001wg8goma8pv/subgraphs/kk/1.0.1/gn';
 
-function Transfer({ onBack, walletState }) {
+function Transfer({
+  onBack,
+  walletState,
+  onOpenVault,
+  onOpenAgentSettings,
+  onOpenRecords,
+  onOpenOnChain,
+  onOpenAbuseCases
+}) {
   const [aaWallet, setAAWallet] = useState(walletState?.aaAddress || '');
   const [owner, setOwner] = useState(walletState?.ownerAddress || '');
-  const [recipient, setRecipient] = useState('');
-  const [amount, setAmount] = useState('0.3');
+  const [actionType, setActionType] = useState('kol-score');
+  const [queryText, setQueryText] = useState('KOL score report for AI payment campaign');
   const [loading, setLoading] = useState(false);
   const [senderBalance, setSenderBalance] = useState('0');
   const [txHash, setTxHash] = useState('');
@@ -42,6 +50,8 @@ function Transfer({ onBack, walletState }) {
     message: 'No x402 lookup yet.',
     item: null
   });
+  const [x402Challenge, setX402Challenge] = useState(null);
+  const [paidResult, setPaidResult] = useState(null);
   const [identity, setIdentity] = useState(null);
   const [identityError, setIdentityError] = useState('');
 
@@ -181,7 +191,7 @@ function Transfer({ onBack, walletState }) {
     }
   };
 
-  const resolveSigner = async () => {
+  const resolveSigner = async ({ allowSessionKey = true, preferBackend = false } = {}) => {
     const fetchBackendSignerInfo = async () => {
       const resp = await fetch('/api/signer/info');
       if (!resp.ok) throw new Error(`backend signer info failed: HTTP ${resp.status}`);
@@ -203,7 +213,7 @@ function Transfer({ onBack, walletState }) {
     const sessionPrivKey = localStorage.getItem(SESSION_KEY_PRIV_STORAGE) || '';
 
     // Session key only signs userOpHash. AA owner remains root owner address.
-    if (sessionPrivKey) {
+    if (allowSessionKey && sessionPrivKey) {
       const provider = new ethers.JsonRpcProvider(rpcUrl);
       const sessionSigner = new ethers.Wallet(sessionPrivKey, provider);
       let ownerAddress = walletState?.ownerAddress || owner || '';
@@ -217,13 +227,21 @@ function Transfer({ onBack, walletState }) {
       return { signer: sessionSigner, ownerAddress, mode: 'session_key' };
     }
 
+    const signerInfo = await fetchBackendSignerInfo();
+    if (preferBackend && signerInfo?.enabled && signerInfo?.address) {
+      return {
+        signer: { signMessage: signByBackend },
+        ownerAddress: signerInfo.address,
+        mode: 'backend_signer'
+      };
+    }
+
     if (walletState?.ownerAddress && typeof window.ethereum !== 'undefined') {
       const provider = new ethers.BrowserProvider(window.ethereum);
       const signer = await provider.getSigner();
       return { signer, ownerAddress: walletState.ownerAddress, mode: 'owner' };
     }
 
-    const signerInfo = await fetchBackendSignerInfo();
     if (!signerInfo?.enabled || !signerInfo?.address) {
       throw new Error('Wallet not connected and backend signer is unavailable.');
     }
@@ -259,19 +277,18 @@ function Transfer({ onBack, walletState }) {
     }
   };
 
-  const requestX402TransferIntent = async ({ payer, recipientAddress, transferAmount, requestId, paymentProof }) => {
+  const requestPaidAction = async ({ payer, query, action, requestId, paymentProof }) => {
     const identityPayload = {
       agentId: identity?.configured?.agentId || '',
       identityRegistry: identity?.configured?.registry || ''
     };
-    const res = await fetch('/api/x402/transfer-intent', {
+    const res = await fetch('/api/x402/kol-score', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         payer,
-        recipient: recipientAddress,
-        amount: transferAmount,
-        tokenAddress: SETTLEMENT_TOKEN,
+        query,
+        action,
         requestId,
         paymentProof,
         identity: identityPayload
@@ -281,21 +298,100 @@ function Transfer({ onBack, walletState }) {
     return { status: res.status, body };
   };
 
-  const handleTransfer = async () => {
-    if (!recipient || !amount) {
-      alert('Please enter recipient address and amount.');
+  const handleRequestPaymentInfo = async () => {
+    try {
+      setLoading(true);
+      setStatus('');
+      const hasSessionSigner = Boolean(localStorage.getItem(SESSION_KEY_PRIV_STORAGE));
+      if (!hasSessionSigner && (walletState?.ownerAddress || owner) && !isAuthenticated) {
+        throw new Error('Please complete Authentication once before requesting payment info.');
+      }
+
+      const { ownerAddress } = await resolveSigner({ allowSessionKey: true });
+      const derivedAA = sdk.ensureAccountAddress(ownerAddress);
+      if (derivedAA !== aaWallet) {
+        setAAWallet(derivedAA);
+      }
+
+      setConfirmState({
+        stage: 'x402_challenge',
+        message: 'Requesting x402 challenge (expecting 402)...',
+        txHash: '',
+        blockNumber: '',
+        from: '',
+        to: '',
+        valueRaw: '',
+        match: null
+      });
+      const normalizedQuery = String(queryText || '').trim() || 'KOL score report for AI payment campaign';
+      const firstTry = await requestPaidAction({
+        payer: derivedAA,
+        query: normalizedQuery,
+        action: actionType
+      });
+      if (firstTry.status !== 402) {
+        throw new Error(`Expected 402 challenge, got ${firstTry.status}`);
+      }
+      const challenge = firstTry.body?.x402;
+      const payInfo = challenge?.accepts?.[0];
+      if (!challenge?.requestId || !payInfo) {
+        throw new Error('Invalid x402 challenge for transfer intent.');
+      }
+
+      setX402Challenge({
+        requestId: challenge.requestId,
+        payer: derivedAA,
+        recipient: payInfo.recipient,
+        amount: String(payInfo.amount),
+        tokenAddress: payInfo.tokenAddress || SETTLEMENT_TOKEN,
+        decimals: payInfo.decimals ?? TOKEN_DECIMALS,
+        query: normalizedQuery,
+        actionType
+      });
+
+      setConfirmState({
+        stage: 'challenge_ready',
+        message: 'x402 challenge ready. Click "Pay & Submit Proof" to continue.',
+        txHash: '',
+        blockNumber: '',
+        from: '',
+        to: '',
+        valueRaw: '',
+        match: null
+      });
+      setStatus('challenge_ready');
+    } catch (error) {
+      setStatus('error');
+      setX402Challenge(null);
+      setConfirmState({
+        stage: 'failed',
+        message: `Request payment info error: ${error.message}`,
+        txHash: '',
+        blockNumber: '',
+        from: '',
+        to: '',
+        valueRaw: '',
+        match: false
+      });
+      alert(`Error: ${error.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handlePayAndSubmitProof = async () => {
+    if (!x402Challenge) {
+      alert('Please request payment info first.');
       return;
     }
 
     try {
       setLoading(true);
       setStatus('');
-      const hasSessionSigner = Boolean(localStorage.getItem(SESSION_KEY_PRIV_STORAGE));
-      if (!hasSessionSigner && (walletState?.ownerAddress || owner) && !isAuthenticated) {
-        throw new Error('Please complete Authentication once before sending.');
-      }
-
-      const { signer, ownerAddress, mode } = await resolveSigner();
+      const { signer, ownerAddress, mode } = await resolveSigner({
+        allowSessionKey: false,
+        preferBackend: true
+      });
       const derivedAA = sdk.ensureAccountAddress(ownerAddress);
       if (derivedAA !== aaWallet) {
         setAAWallet(derivedAA);
@@ -310,37 +406,15 @@ function Transfer({ onBack, walletState }) {
         }
         return signer.signMessage(ethers.getBytes(userOpHash));
       };
-      if (mode === 'session_key') {
-        setAuthStatus('Using session key signer (no wallet popup expected).');
-      }
-
-      setConfirmState({
-        stage: 'x402_challenge',
-        message: 'Requesting x402 challenge (expecting 402)...',
-        txHash: '',
-        blockNumber: '',
-        from: '',
-        to: '',
-        valueRaw: '',
-        match: null
-      });
-      const firstTry = await requestX402TransferIntent({
-        payer: derivedAA,
-        recipientAddress: recipient,
-        transferAmount: amount
-      });
-      if (firstTry.status !== 402) {
-        throw new Error(`Expected 402 challenge, got ${firstTry.status}`);
-      }
-      const challenge = firstTry.body?.x402;
-      const payInfo = challenge?.accepts?.[0];
-      if (!challenge?.requestId || !payInfo) {
-        throw new Error('Invalid x402 challenge for transfer intent.');
-      }
+      setAuthStatus(
+        mode === 'backend_signer'
+          ? 'Authenticated: using backend auto-signer (no wallet popup).'
+          : 'Backend signer unavailable, falling back to owner signature.'
+      );
 
       setConfirmState({
         stage: 'x402_payment',
-        message: 'x402 challenge received. Paying on-chain...',
+        message: 'Paying x402 challenge on-chain...',
         txHash: '',
         blockNumber: '',
         from: '',
@@ -348,11 +422,12 @@ function Transfer({ onBack, walletState }) {
         valueRaw: '',
         match: null
       });
+
       const result = await sdk.sendERC20(
         {
-          tokenAddress: payInfo.tokenAddress || SETTLEMENT_TOKEN,
-          recipient: payInfo.recipient,
-          amount: ethers.parseUnits(String(payInfo.amount), payInfo.decimals ?? TOKEN_DECIMALS)
+          tokenAddress: x402Challenge.tokenAddress,
+          recipient: x402Challenge.recipient,
+          amount: ethers.parseUnits(String(x402Challenge.amount), x402Challenge.decimals)
         },
         signFunction
       );
@@ -376,13 +451,13 @@ function Transfer({ onBack, walletState }) {
         setSenderBalance(ethers.formatUnits(newBalance, TOKEN_DECIMALS));
 
         await logRecord({
-          type: 'x402Transfer',
-          amount: String(payInfo.amount),
-          token: payInfo.tokenAddress || SETTLEMENT_TOKEN,
-          recipient: payInfo.recipient,
+          type: 'x402ActionPayment',
+          amount: x402Challenge.amount,
+          token: x402Challenge.tokenAddress,
+          recipient: x402Challenge.recipient,
           txHash: result.transactionHash,
           status: 'success',
-          requestId: challenge.requestId,
+          requestId: x402Challenge.requestId,
           signerMode: mode
         });
 
@@ -392,26 +467,32 @@ function Transfer({ onBack, walletState }) {
           message: 'Submitting payment proof for x402 verification...'
         }));
         const paymentProof = {
-          requestId: challenge.requestId,
+          requestId: x402Challenge.requestId,
           txHash: result.transactionHash,
-          payer: derivedAA,
-          tokenAddress: payInfo.tokenAddress || SETTLEMENT_TOKEN,
-          recipient: payInfo.recipient,
-          amount: String(payInfo.amount)
+          payer: x402Challenge.payer,
+          tokenAddress: x402Challenge.tokenAddress,
+          recipient: x402Challenge.recipient,
+          amount: x402Challenge.amount
         };
-        const secondTry = await requestX402TransferIntent({
-          payer: derivedAA,
-          recipientAddress: payInfo.recipient,
-          transferAmount: String(payInfo.amount),
-          requestId: challenge.requestId,
+        const secondTry = await requestPaidAction({
+          payer: x402Challenge.payer,
+          query: x402Challenge.query,
+          action: x402Challenge.actionType,
+          requestId: x402Challenge.requestId,
           paymentProof
         });
         if (secondTry.status !== 200 || !secondTry.body?.ok) {
           throw new Error(secondTry.body?.reason || `x402 verification failed: ${secondTry.status}`);
         }
+        setPaidResult({
+          action: x402Challenge.actionType,
+          summary: secondTry.body?.result?.summary || 'Paid action unlocked',
+          topKOLs: secondTry.body?.result?.topKOLs || []
+        });
 
         void lookupX402ByTxHash(result.transactionHash);
-        void pollOnChainConfirmation(result.transactionHash, payInfo.recipient, String(payInfo.amount));
+        void pollOnChainConfirmation(result.transactionHash, x402Challenge.recipient, x402Challenge.amount);
+        setX402Challenge(null);
       } else {
         setStatus('failed');
         setConfirmState({
@@ -425,10 +506,10 @@ function Transfer({ onBack, walletState }) {
           match: false
         });
         await logRecord({
-          type: 'x402Transfer',
-          amount,
+          type: 'x402ActionPayment',
+          amount: x402Challenge.amount,
           token: SETTLEMENT_TOKEN,
-          recipient,
+          recipient: x402Challenge.recipient,
           txHash: result.transactionHash || '',
           status: 'failed',
           signerMode: mode
@@ -448,16 +529,32 @@ function Transfer({ onBack, walletState }) {
         match: false
       });
       await logRecord({
-        type: 'TransferPage',
-        amount,
+        type: 'x402ActionPayment',
+        amount: x402Challenge?.amount || '',
         token: SETTLEMENT_TOKEN,
-        recipient,
+        recipient: x402Challenge?.recipient || '',
         txHash: '',
         status: 'error'
       });
       alert(`Error: ${error.message}`);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const clearChallenge = () => {
+    if (x402Challenge) {
+      setX402Challenge(null);
+      setConfirmState({
+        stage: 'idle',
+        message: 'Challenge cleared. Request payment info again.',
+        txHash: '',
+        blockNumber: '',
+        from: '',
+        to: '',
+        valueRaw: '',
+        match: null
+      });
     }
   };
 
@@ -541,7 +638,32 @@ function Transfer({ onBack, walletState }) {
       <div className="top-entry">
         {onBack && (
           <button className="link-btn" onClick={onBack}>
-            Back to Request Page
+            Switch Wallet
+          </button>
+        )}
+        {onOpenVault && (
+          <button className="link-btn" onClick={onOpenVault}>
+            Open Vault Page
+          </button>
+        )}
+        {onOpenAgentSettings && (
+          <button className="link-btn" onClick={onOpenAgentSettings}>
+            Agent Payment Settings
+          </button>
+        )}
+        {onOpenRecords && (
+          <button className="link-btn" onClick={onOpenRecords}>
+            Transfer Records
+          </button>
+        )}
+        {onOpenOnChain && (
+          <button className="link-btn" onClick={onOpenOnChain}>
+            On-chain Confirmation
+          </button>
+        )}
+        {onOpenAbuseCases && (
+          <button className="link-btn" onClick={onOpenAbuseCases}>
+            Abuse / Limit Cases
           </button>
         )}
       </div>
@@ -557,6 +679,10 @@ function Transfer({ onBack, walletState }) {
         <div className="info-row">
           <span className="label">Owner:</span>
           <span className="value">{owner || 'Not connected'}</span>
+        </div>
+        <div className="info-row">
+          <span className="label">Paid Action:</span>
+          <span className="value">{actionType}</span>
         </div>
       </div>
 
@@ -611,34 +737,38 @@ function Transfer({ onBack, walletState }) {
 
           <div className="form-group">
             <label>
-              Recipient Address:
-              <input
-                type="text"
-                value={recipient}
-                onChange={(e) => setRecipient(e.target.value)}
-                placeholder="0x..."
-                disabled={loading}
-              />
+              Action:
+              <select value={actionType} onChange={(e) => { setActionType(e.target.value); clearChallenge(); }} disabled={loading}>
+                <option value="kol-score">KOL Score Report (x402)</option>
+                <option value="reactive-stop-orders">Reactive Contracts - Stop Orders (agent2)</option>
+              </select>
             </label>
           </div>
           <div className="form-group">
             <label>
-              Amount (USDT):
+              Query:
               <input
                 type="text"
-                value={amount}
-                onChange={(e) => setAmount(e.target.value)}
-                placeholder="0.3"
+                value={queryText}
+                onChange={(e) => { setQueryText(e.target.value); clearChallenge(); }}
+                placeholder="KOL score report for AI payment campaign"
                 disabled={loading}
               />
             </label>
           </div>
           <button
-            onClick={handleTransfer}
+            onClick={handleRequestPaymentInfo}
             disabled={loading}
             className={loading ? 'loading' : ''}
           >
-            {loading ? 'Transferring...' : 'Transfer'}
+            {loading ? 'Requesting...' : 'Request Payment Info (402)'}
+          </button>
+          <button
+            onClick={handlePayAndSubmitProof}
+            disabled={loading || !x402Challenge}
+            className={loading ? 'loading' : ''}
+          >
+            {loading ? 'Paying...' : 'Pay & Submit Proof'}
           </button>
         </div>
 
@@ -731,11 +861,35 @@ function Transfer({ onBack, walletState }) {
             </div>
           </>
         )}
+        <div className="result-row">
+          <span className="label">Challenge:</span>
+          <span className="value">{x402Challenge ? 'ready' : 'none'}</span>
+        </div>
+        {x402Challenge && (
+          <>
+            <div className="result-row">
+              <span className="label">Challenge Request ID:</span>
+              <span className="value hash">{x402Challenge.requestId}</span>
+            </div>
+            <div className="result-row">
+              <span className="label">Challenge Recipient:</span>
+              <span className="value hash">{x402Challenge.recipient}</span>
+            </div>
+            <div className="result-row">
+              <span className="label">Challenge Amount:</span>
+              <span className="value">{x402Challenge.amount} USDT</span>
+            </div>
+            <div className="result-row">
+              <span className="label">Challenge Query:</span>
+              <span className="value">{x402Challenge.query}</span>
+            </div>
+          </>
+        )}
       </div>
 
       {status === 'success' && (
         <div className="success-card">
-          <h2>Transfer Successful!</h2>
+          <h2>Paid Action Successful!</h2>
           <div className="info-row">
             <span className="label">Transaction Hash:</span>
             <span className="value hash">{txHash}</span>
@@ -744,8 +898,28 @@ function Transfer({ onBack, walletState }) {
             <span className="label">UserOp Hash:</span>
             <span className="value hash">{userOpHash}</span>
           </div>
+          {paidResult && (
+            <>
+              <div className="info-row">
+                <span className="label">Action:</span>
+                <span className="value">{paidResult.action}</span>
+              </div>
+              <div className="info-row">
+                <span className="label">Result:</span>
+                <span className="value">{paidResult.summary}</span>
+              </div>
+              {Array.isArray(paidResult.topKOLs) && paidResult.topKOLs.length > 0 && (
+                <div className="info-row">
+                  <span className="label">Top KOLs:</span>
+                  <span className="value">
+                    {paidResult.topKOLs.map((item) => `${item.handle}(${item.score})`).join(', ')}
+                  </span>
+                </div>
+              )}
+            </>
+          )}
           <div className="balance-update">
-            <h3>Post-transfer Balance</h3>
+            <h3>Post-payment Balance</h3>
             <div className="info-row">
               <span className="label">{aaWallet || 'AA Address'}:</span>
               <span className="value">{senderBalance} USDT</span>
