@@ -29,6 +29,11 @@ const POLICY_ALLOWED_RECIPIENTS_DEFAULT = String(
 
 const BACKEND_SIGNER_PRIVATE_KEY = process.env.KITECLAW_BACKEND_SIGNER_PRIVATE_KEY || '';
 const BACKEND_RPC_URL = process.env.KITEAI_RPC_URL || 'https://rpc-testnet.gokite.ai/';
+const ERC8004_IDENTITY_REGISTRY = process.env.ERC8004_IDENTITY_REGISTRY || '';
+const ERC8004_AGENT_ID_RAW = process.env.ERC8004_AGENT_ID || '';
+const ERC8004_AGENT_ID = Number.isFinite(Number(ERC8004_AGENT_ID_RAW))
+  ? Number(ERC8004_AGENT_ID_RAW)
+  : null;
 let backendSigner = null;
 if (BACKEND_SIGNER_PRIVATE_KEY) {
   try {
@@ -162,7 +167,11 @@ function createX402Request(query, payer, action = 'kol-score', options = {}) {
     status: 'pending',
     createdAt: now,
     expiresAt: now + X402_TTL_MS,
-    policy: options.policy || null
+    policy: options.policy || null,
+    identity: options.identity || {
+      registry: ERC8004_IDENTITY_REGISTRY || '',
+      agentId: ERC8004_AGENT_ID !== null ? String(ERC8004_AGENT_ID) : ''
+    }
   };
 }
 
@@ -364,6 +373,65 @@ function getBackendSignerState() {
   };
 }
 
+const ERC8004_IDENTITY_ABI = [
+  'function ownerOf(uint256 tokenId) view returns (address)',
+  'function tokenURI(uint256 tokenId) view returns (string)',
+  'function getAgentWallet(uint256 agentId) view returns (address)'
+];
+
+function parseAgentId(raw) {
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+async function readIdentityProfile(input = {}) {
+  const requestedRegistry = String(input.registry || '').trim();
+  const requestedAgentId = parseAgentId(input.agentId);
+  const configured = {
+    registry: requestedRegistry || ERC8004_IDENTITY_REGISTRY || '',
+    agentId:
+      requestedAgentId !== null
+        ? String(requestedAgentId)
+        : ERC8004_AGENT_ID !== null
+          ? String(ERC8004_AGENT_ID)
+          : ''
+  };
+
+  if (!configured.registry || !ethers.isAddress(configured.registry)) {
+    return {
+      configured,
+      available: false,
+      reason: 'identity_registry_not_configured'
+    };
+  }
+  const resolvedAgentId = parseAgentId(configured.agentId);
+  if (resolvedAgentId === null) {
+    return {
+      configured,
+      available: false,
+      reason: 'agent_id_not_configured'
+    };
+  }
+
+  const provider = new ethers.JsonRpcProvider(BACKEND_RPC_URL);
+  const network = await provider.getNetwork();
+  const contract = new ethers.Contract(configured.registry, ERC8004_IDENTITY_ABI, provider);
+  const [ownerAddress, tokenURI, agentWallet] = await Promise.all([
+    contract.ownerOf(resolvedAgentId),
+    contract.tokenURI(resolvedAgentId),
+    contract.getAgentWallet(resolvedAgentId)
+  ]);
+
+  return {
+    configured,
+    available: true,
+    chainId: String(network.chainId),
+    ownerAddress,
+    tokenURI,
+    agentWallet
+  };
+}
+
 function assertBackendSigner(res) {
   if (!backendSigner) {
     res.status(503).json({
@@ -391,7 +459,11 @@ app.post('/api/records', (req, res) => {
     txHash: record.txHash || '',
     status: record.status || 'unknown',
     requestId: record.requestId || '',
-    signerMode: record.signerMode || ''
+    signerMode: record.signerMode || '',
+    agentId:
+      record.agentId ||
+      (ERC8004_AGENT_ID !== null ? String(ERC8004_AGENT_ID) : ''),
+    identityRegistry: record.identityRegistry || ERC8004_IDENTITY_REGISTRY || ''
   };
   records.unshift(normalized);
   writeRecords(records);
@@ -400,6 +472,22 @@ app.post('/api/records', (req, res) => {
 
 app.get('/api/signer/info', (req, res) => {
   res.json(getBackendSignerState());
+});
+
+app.get('/api/identity', async (req, res) => {
+  try {
+    const profile = await readIdentityProfile({
+      registry: req.query.identityRegistry,
+      agentId: req.query.agentId
+    });
+    res.json({ ok: true, profile });
+  } catch (error) {
+    res.status(500).json({
+      ok: false,
+      error: 'identity_read_failed',
+      reason: error.message
+    });
+  }
 });
 
 app.post('/api/signer/sign-userop-hash', async (req, res) => {
@@ -422,14 +510,29 @@ app.post('/api/x402/kol-score', (req, res) => {
   const payer = String(body.payer || '').trim();
   const requestId = String(body.requestId || '').trim();
   const paymentProof = body.paymentProof;
+  const identityInput = body.identity || {};
   if (!query) return res.status(400).json({ error: 'query is required' });
 
   const requests = readX402Requests();
   if (!requestId || !paymentProof) {
-    const reqItem = createX402Request(query, payer, 'kol-score');
-    requests.unshift(reqItem);
-    writeX402Requests(requests);
-    return res.status(402).json(buildPaymentRequiredResponse(reqItem));
+    return readIdentityProfile({
+      registry: identityInput.identityRegistry || identityInput.registry,
+      agentId: identityInput.agentId
+    })
+      .then((identityProfile) => {
+        const reqItem = createX402Request(query, payer, 'kol-score', {
+          identity: identityProfile?.configured
+        });
+        requests.unshift(reqItem);
+        writeX402Requests(requests);
+        return res.status(402).json(buildPaymentRequiredResponse(reqItem));
+      })
+      .catch((error) =>
+        res.status(400).json({
+          error: 'invalid_identity',
+          reason: error.message
+        })
+      );
   }
 
   const reqItem = requests.find((item) => item.requestId === requestId);
@@ -513,6 +616,7 @@ app.post('/api/x402/transfer-intent', (req, res) => {
   const tokenAddress = String(body.tokenAddress || SETTLEMENT_TOKEN).trim();
   const simulateInsufficientFunds = Boolean(body.simulateInsufficientFunds);
   const forceExpire = Boolean(body.debugForceExpire);
+  const identityInput = body.identity || {};
 
   const requests = readX402Requests();
   if (!requestId || !paymentProof) {
@@ -560,19 +664,32 @@ app.post('/api/x402/transfer-intent', (req, res) => {
       });
     }
 
-    const reqItem = createX402Request(`transfer ${amount} to ${recipient}`, payer, 'transfer-intent', {
-      amount,
-      recipient,
-      tokenAddress,
-      policy: {
-        decision: 'allowed',
-        snapshot: buildPolicySnapshot(),
-        evidence: policyResult.evidence
-      }
-    });
-    requests.unshift(reqItem);
-    writeX402Requests(requests);
-    return res.status(402).json(buildPaymentRequiredResponse(reqItem));
+    return readIdentityProfile({
+      registry: identityInput.identityRegistry || identityInput.registry,
+      agentId: identityInput.agentId
+    })
+      .then((identityProfile) => {
+        const reqItem = createX402Request(`transfer ${amount} to ${recipient}`, payer, 'transfer-intent', {
+          amount,
+          recipient,
+          tokenAddress,
+          policy: {
+            decision: 'allowed',
+            snapshot: buildPolicySnapshot(),
+            evidence: policyResult.evidence
+          },
+          identity: identityProfile?.configured
+        });
+        requests.unshift(reqItem);
+        writeX402Requests(requests);
+        return res.status(402).json(buildPaymentRequiredResponse(reqItem));
+      })
+      .catch((error) =>
+        res.status(400).json({
+          error: 'invalid_identity',
+          reason: error.message
+        })
+      );
   }
 
   const reqItem = requests.find((item) => item.requestId === requestId);

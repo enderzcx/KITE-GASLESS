@@ -42,6 +42,8 @@ function Transfer({ onBack, walletState }) {
     message: 'No x402 lookup yet.',
     item: null
   });
+  const [identity, setIdentity] = useState(null);
+  const [identityError, setIdentityError] = useState('');
 
   const rpcUrl =
     import.meta.env.VITE_KITEAI_RPC_URL ||
@@ -78,6 +80,24 @@ function Transfer({ onBack, walletState }) {
     const authKey = `${AUTH_STORAGE_PREFIX}${currentOwner.toLowerCase()}`;
     setIsAuthenticated(localStorage.getItem(authKey) === 'ok');
   }, [walletState?.ownerAddress, owner]);
+
+  useEffect(() => {
+    const loadIdentity = async () => {
+      try {
+        const res = await fetch('/api/identity');
+        const data = await res.json();
+        if (!res.ok || !data?.ok) {
+          throw new Error(data?.reason || `HTTP ${res.status}`);
+        }
+        setIdentity(data.profile || null);
+        setIdentityError('');
+      } catch (error) {
+        setIdentity(null);
+        setIdentityError(error.message || 'identity load failed');
+      }
+    };
+    loadIdentity();
+  }, []);
 
   const logRecord = async (record) => {
     try {
@@ -240,6 +260,10 @@ function Transfer({ onBack, walletState }) {
   };
 
   const requestX402TransferIntent = async ({ payer, recipientAddress, transferAmount, requestId, paymentProof }) => {
+    const identityPayload = {
+      agentId: identity?.configured?.agentId || '',
+      identityRegistry: identity?.configured?.registry || ''
+    };
     const res = await fetch('/api/x402/transfer-intent', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -249,7 +273,8 @@ function Transfer({ onBack, walletState }) {
         amount: transferAmount,
         tokenAddress: SETTLEMENT_TOKEN,
         requestId,
-        paymentProof
+        paymentProof,
+        identity: identityPayload
       })
     });
     const body = await res.json();
@@ -533,6 +558,33 @@ function Transfer({ onBack, walletState }) {
           <span className="label">Owner:</span>
           <span className="value">{owner || 'Not connected'}</span>
         </div>
+      </div>
+
+      <div className="info-card">
+        <h2>Verifiable Agent Identity</h2>
+        {identityError && <div className="request-error">identity error: {identityError}</div>}
+        {!identityError && !identity?.available && (
+          <div className="info-row">
+            <span className="label">Status:</span>
+            <span className="value">not configured ({identity?.reason || 'unknown'})</span>
+          </div>
+        )}
+        {identity?.available && (
+          <>
+            <div className="info-row">
+              <span className="label">Agent ID:</span>
+              <span className="value">{identity?.configured?.agentId || '-'}</span>
+            </div>
+            <div className="info-row">
+              <span className="label">Registry:</span>
+              <span className="value hash">{identity?.configured?.registry || '-'}</span>
+            </div>
+            <div className="info-row">
+              <span className="label">Agent Wallet:</span>
+              <span className="value hash">{identity?.agentWallet || '-'}</span>
+            </div>
+          </>
+        )}
       </div>
 
       <div className="balance-card">

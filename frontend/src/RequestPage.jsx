@@ -32,6 +32,8 @@ function RequestPage({
   const [authStatus, setAuthStatus] = useState('');
   const [aaWallet, setAAWallet] = useState(walletState?.aaAddress || '');
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [identity, setIdentity] = useState(null);
+  const [identityError, setIdentityError] = useState('');
 
   const rpcUrl =
     import.meta.env.VITE_KITEAI_RPC_URL ||
@@ -64,6 +66,24 @@ function RequestPage({
     const authKey = `${AUTH_STORAGE_PREFIX}${walletState.ownerAddress.toLowerCase()}`;
     setIsAuthenticated(localStorage.getItem(authKey) === 'ok');
   }, [walletState?.ownerAddress]);
+
+  useEffect(() => {
+    const loadIdentity = async () => {
+      try {
+        const res = await fetch('/api/identity');
+        const data = await res.json();
+        if (!res.ok || !data?.ok) {
+          throw new Error(data?.reason || `HTTP ${res.status}`);
+        }
+        setIdentity(data.profile || null);
+        setIdentityError('');
+      } catch (err) {
+        setIdentity(null);
+        setIdentityError(err.message || 'identity load failed');
+      }
+    };
+    loadIdentity();
+  }, []);
 
   const handleAuthentication = async () => {
     if (!walletState?.ownerAddress) {
@@ -166,6 +186,10 @@ function RequestPage({
   };
 
   const requestPaidResource = async ({ queryText, payer, requestId, paymentProof }) => {
+    const identityPayload = {
+      agentId: identity?.configured?.agentId || '',
+      identityRegistry: identity?.configured?.registry || ''
+    };
     const resp = await fetch('/api/x402/kol-score', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -173,7 +197,8 @@ function RequestPage({
         query: queryText,
         payer,
         requestId,
-        paymentProof
+        paymentProof,
+        identity: identityPayload
       })
     });
 
@@ -356,6 +381,41 @@ function RequestPage({
         </div>
         {error && <div className="request-error">{error}</div>}
         {authStatus && <div className="request-error">{authStatus}</div>}
+      </div>
+
+      <div className="result-card">
+        <h2>Verifiable Agent Identity</h2>
+        {identityError && <div className="request-error">identity error: {identityError}</div>}
+        {!identityError && !identity?.available && (
+          <div className="result-row">
+            <span className="label">Status:</span>
+            <span className="value">not configured ({identity?.reason || 'unknown'})</span>
+          </div>
+        )}
+        {identity?.available && (
+          <>
+            <div className="result-row">
+              <span className="label">Agent ID:</span>
+              <span className="value">{identity?.configured?.agentId || '-'}</span>
+            </div>
+            <div className="result-row">
+              <span className="label">Registry:</span>
+              <span className="value hash">{identity?.configured?.registry || '-'}</span>
+            </div>
+            <div className="result-row">
+              <span className="label">Agent Wallet:</span>
+              <span className="value hash">{identity?.agentWallet || '-'}</span>
+            </div>
+            <div className="result-row">
+              <span className="label">Owner:</span>
+              <span className="value hash">{identity?.ownerAddress || '-'}</span>
+            </div>
+            <div className="result-row">
+              <span className="label">Token URI:</span>
+              <span className="value hash">{identity?.tokenURI || '-'}</span>
+            </div>
+          </>
+        )}
       </div>
 
       {result && (

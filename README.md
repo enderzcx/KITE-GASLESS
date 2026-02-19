@@ -159,6 +159,16 @@ Judge demo script: see `DEMO_X402_SCRIPT.md`.
 - Root signing key is server-side only (`backend` env), not exposed to frontend.
 - For production, use secure backend/HSM/KMS and strict rotation policies.
 
+## ERC-8004 identity bootstrap
+
+- Quick guide: `ERC8004_SETUP.md`
+- Probe registry on Kite RPC:
+  - `cd backend && npm run probe:erc8004`
+- Register agent identity (once registry address is available):
+  - `npm run erc8004:register`
+- Read agent profile:
+  - `npm run erc8004:read`
+
 ## Versioning
 
 - We use Semantic Versioning (`MAJOR.MINOR.PATCH`).

@@ -3,7 +3,10 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "probe:erc8004": "node scripts/probe-erc8004-kite.js",
+    "erc8004:register": "node scripts/erc8004-register-kiteclaw.js",
+    "erc8004:read": "node scripts/erc8004-read-agent.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

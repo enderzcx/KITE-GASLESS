@@ -15,6 +15,8 @@ function OnChainPage({ onBack }) {
   const [appRecords, setAppRecords] = useState([]);
   const [x402Requests, setX402Requests] = useState([]);
   const [lastQueryMode, setLastQueryMode] = useState('recent');
+  const [identity, setIdentity] = useState(null);
+  const [identityError, setIdentityError] = useState('');
 
   const loadTransfers = async () => {
     try {
@@ -107,10 +109,24 @@ function OnChainPage({ onBack }) {
     }
   };
 
+  const loadIdentity = async () => {
+    try {
+      const res = await fetch('/api/identity');
+      const data = await res.json();
+      if (!res.ok || !data?.ok) throw new Error(data?.reason || `HTTP ${res.status}`);
+      setIdentity(data.profile || null);
+      setIdentityError('');
+    } catch (error) {
+      setIdentity(null);
+      setIdentityError(error.message || 'identity load failed');
+    }
+  };
+
   useEffect(() => {
     loadTransfers();
     loadAppRecords();
     loadX402Requests();
+    loadIdentity();
   }, []);
 
   const normalizedTxHash = txHashFilter.trim().toLowerCase();
@@ -242,6 +258,33 @@ function OnChainPage({ onBack }) {
         {status && <div className="request-error">{status}</div>}
       </div>
 
+      <div className="vault-card">
+        <h2>Verifiable Agent Identity</h2>
+        {identityError && <div className="request-error">identity error: {identityError}</div>}
+        {!identityError && !identity?.available && (
+          <div className="result-row">
+            <span className="label">Status:</span>
+            <span className="value">not configured ({identity?.reason || 'unknown'})</span>
+          </div>
+        )}
+        {identity?.available && (
+          <>
+            <div className="result-row">
+              <span className="label">Agent ID:</span>
+              <span className="value">{identity?.configured?.agentId || '-'}</span>
+            </div>
+            <div className="result-row">
+              <span className="label">Registry:</span>
+              <span className="value hash">{identity?.configured?.registry || '-'}</span>
+            </div>
+            <div className="result-row">
+              <span className="label">Agent Wallet:</span>
+              <span className="value hash">{identity?.agentWallet || '-'}</span>
+            </div>
+          </>
+        )}
+      </div>
+
       {isTxHashFilter && (
         <div className="vault-card">
           <h2>Reconciliation Card</h2>
@@ -264,6 +307,7 @@ function OnChainPage({ onBack }) {
         <h2>x402 Payment Mapping</h2>
         <div className="records-head onchain-head">
           <span>Action</span>
+          <span>Agent ID</span>
           <span>Request ID</span>
           <span>Payer</span>
           <span>Amount</span>
@@ -279,6 +323,9 @@ function OnChainPage({ onBack }) {
         {displayedX402Requests.map((item) => (
           <div className="records-row onchain-row" key={item.requestId}>
             <span className="records-cell">{item.action || '-'}</span>
+            <span className="records-cell">
+              {item?.identity?.agentId || item?.agentId || identity?.configured?.agentId || '-'}
+            </span>
             <span className="records-cell hash">{item.requestId}</span>
             <span className="records-cell hash">{item.payer || '-'}</span>
             <span className="records-cell">{item.amount || '-'}</span>
