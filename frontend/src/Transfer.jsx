@@ -219,63 +219,82 @@ function Transfer({
   });
 
   return (
-    <div className="transfer-container">
-      <TransferTopNav
-        onBack={onBack}
-        onOpenVault={onOpenVault}
-        onOpenAgentSettings={onOpenAgentSettings}
-        onOpenRecords={onOpenRecords}
-        onOpenOnChain={onOpenOnChain}
-        onOpenAbuseCases={onOpenAbuseCases}
-      />
-
-      <h1>Gokite Account Abstraction</h1>
-
-      <AccountInfoCard aaWallet={aaWallet} owner={owner} actionType={actionType} />
-      <IdentityCard identity={identity} identityError={identityError} />
-      <BalanceCard aaWallet={aaWallet} senderBalance={senderBalance} />
-
-      <div className="transfer-layout">
-        <TransferFormPanel
-          owner={owner}
-          loading={loading}
-          isAuthenticated={isAuthenticated}
-          authStatus={authStatus}
-          actionType={actionType}
-          queryText={queryText}
-          reactiveSymbol={reactiveSymbol}
-          reactiveTakeProfit={reactiveTakeProfit}
-          reactiveStopLoss={reactiveStopLoss}
-          x402Challenge={x402Challenge}
-          onConnect={handleConnectWallet}
-          onAuthenticate={handleAuthentication}
-          onActionChange={(value) => {
-            setActionType(value);
-            clearChallenge();
-          }}
-          onQueryChange={(value) => {
-            setQueryText(value);
-            clearChallenge();
-          }}
-          onReactiveSymbolChange={(value) => {
-            setReactiveSymbol(value);
-            clearChallenge();
-          }}
-          onReactiveTakeProfitChange={(value) => {
-            setReactiveTakeProfit(value);
-            clearChallenge();
-          }}
-          onReactiveStopLossChange={(value) => {
-            setReactiveStopLoss(value);
-            clearChallenge();
-          }}
-          onRequest402={handleRequestPaymentInfo}
-          onPayAndSubmit={handlePayAndSubmitProof}
+    <div className="transfer-container transfer-shell">
+      <header className="shell-header">
+        <div className="shell-brand">
+          <span className="brand-badge">KITECLAW</span>
+          <p>Agent-native Payments Dashboard</p>
+        </div>
+        <TransferTopNav
+          onBack={onBack}
+          onOpenVault={onOpenVault}
+          onOpenAgentSettings={onOpenAgentSettings}
+          onOpenRecords={onOpenRecords}
+          onOpenOnChain={onOpenOnChain}
+          onOpenAbuseCases={onOpenAbuseCases}
         />
-        <ConfirmationPanel confirmState={confirmState} />
-      </div>
+      </header>
 
-      <X402Panel x402Lookup={x402Lookup} x402Challenge={x402Challenge} />
+      <section className="shell-hero">
+        <h1>AI Agent Payment Console</h1>
+        <p>
+          Request x402 payment challenges, execute gasless settlement, and verify
+          identity + on-chain evidence in one workspace.
+        </p>
+      </section>
+
+      <section className="info-grid">
+        <AccountInfoCard aaWallet={aaWallet} owner={owner} actionType={actionType} />
+        <IdentityCard identity={identity} identityError={identityError} />
+        <BalanceCard aaWallet={aaWallet} senderBalance={senderBalance} />
+      </section>
+
+      <section className="workspace-grid">
+        <div className="workspace-main">
+          <TransferFormPanel
+            owner={owner}
+            loading={loading}
+            isAuthenticated={isAuthenticated}
+            authStatus={authStatus}
+            actionType={actionType}
+            queryText={queryText}
+            reactiveSymbol={reactiveSymbol}
+            reactiveTakeProfit={reactiveTakeProfit}
+            reactiveStopLoss={reactiveStopLoss}
+            x402Challenge={x402Challenge}
+            onConnect={handleConnectWallet}
+            onAuthenticate={handleAuthentication}
+            onActionChange={(value) => {
+              setActionType(value);
+              clearChallenge();
+            }}
+            onQueryChange={(value) => {
+              setQueryText(value);
+              clearChallenge();
+            }}
+            onReactiveSymbolChange={(value) => {
+              setReactiveSymbol(value);
+              clearChallenge();
+            }}
+            onReactiveTakeProfitChange={(value) => {
+              setReactiveTakeProfit(value);
+              clearChallenge();
+            }}
+            onReactiveStopLossChange={(value) => {
+              setReactiveStopLoss(value);
+              clearChallenge();
+            }}
+            onRequest402={handleRequestPaymentInfo}
+            onPayAndSubmit={handlePayAndSubmitProof}
+          />
+          <X402Panel x402Lookup={x402Lookup} x402Challenge={x402Challenge} />
+        </div>
+
+        <aside className="workspace-aside">
+          <ConfirmationPanel confirmState={confirmState} />
+        </aside>
+      </section>
+
       <SuccessPanel
         status={status}
         txHash={txHash}
