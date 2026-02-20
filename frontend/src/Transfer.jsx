@@ -2,6 +2,26 @@
 import { ethers } from 'ethers';
 import { GokiteAASDK } from './gokite-aa-sdk';
 import './App.css';
+import {
+  fetchX402ByTxHash,
+  loadIdentityProfile,
+  logRecord,
+  requestPaidAction
+} from './transfer/api';
+import {
+  getServiceProviderBytes32,
+  precheckSession,
+  resolveSessionSigner
+} from './transfer/services/sessionService';
+import { pollOnChainConfirmation } from './transfer/services/confirmationService';
+import TransferTopNav from './transfer/components/TransferTopNav';
+import TransferFormPanel from './transfer/components/TransferFormPanel';
+import ConfirmationPanel from './transfer/components/ConfirmationPanel';
+import X402Panel from './transfer/components/X402Panel';
+import SuccessPanel from './transfer/components/SuccessPanel';
+import AccountInfoCard from './transfer/components/AccountInfoCard';
+import IdentityCard from './transfer/components/IdentityCard';
+import BalanceCard from './transfer/components/BalanceCard';
 
 const SETTLEMENT_TOKEN =
   import.meta.env.VITE_KITEAI_SETTLEMENT_TOKEN ||
@@ -15,11 +35,6 @@ const SESSION_ID_STORAGE = 'kiteclaw_session_id';
 const GOLDSKY_ENDPOINT =
   import.meta.env.VITE_KITECLAW_GOLDSKY_ENDPOINT ||
   'https://api.goldsky.com/api/public/project_cmlrmfrtks90001wg8goma8pv/subgraphs/kk/1.0.1/gn';
-const SESSION_READ_ABI = [
-  'function sessionExists(bytes32 sessionId) view returns (bool)',
-  'function getSessionAgent(bytes32 sessionId) view returns (address)',
-  'function checkSpendingRules(bytes32 sessionId, uint256 normalizedAmount, bytes32 serviceProvider) view returns (bool)'
-];
 
 function Transfer({
   onBack,
@@ -104,12 +119,8 @@ function Transfer({
   useEffect(() => {
     const loadIdentity = async () => {
       try {
-        const res = await fetch('/api/identity');
-        const data = await res.json();
-        if (!res.ok || !data?.ok) {
-          throw new Error(data?.reason || `HTTP ${res.status}`);
-        }
-        setIdentity(data.profile || null);
+        const profile = await loadIdentityProfile();
+        setIdentity(profile);
         setIdentityError('');
       } catch (error) {
         setIdentity(null);
@@ -118,18 +129,6 @@ function Transfer({
     };
     loadIdentity();
   }, []);
-
-  const logRecord = async (record) => {
-    try {
-      await fetch('/api/records', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(record)
-      });
-    } catch {
-      // ignore logging errors
-    }
-  };
 
   const lookupX402ByTxHash = async (hash) => {
     if (!hash) {
@@ -148,10 +147,7 @@ function Transfer({
         message: 'Checking x402 mapping by tx hash...',
         item: null
       });
-      const res = await fetch(`/api/x402/requests?txHash=${String(hash).toLowerCase()}&limit=1`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      const item = Array.isArray(data?.items) ? data.items[0] : null;
+      const item = await fetchX402ByTxHash(hash);
       if (item) {
         setX402Lookup({
           loading: false,
@@ -201,61 +197,6 @@ function Transfer({
     }
   };
 
-  const resolveSigner = async ({ allowSessionKey = true } = {}) => {
-    const sessionPrivKey = localStorage.getItem(SESSION_KEY_PRIV_STORAGE) || '';
-
-    if (allowSessionKey && sessionPrivKey) {
-      const provider = new ethers.JsonRpcProvider(rpcUrl);
-      const sessionSigner = new ethers.Wallet(sessionPrivKey, provider);
-      const ownerAddress = walletState?.ownerAddress || owner || '';
-      if (!ownerAddress) {
-        throw new Error('Session key found but owner address is missing. Connect wallet first.');
-      }
-      return { signer: sessionSigner, ownerAddress, mode: 'session_key' };
-    }
-
-    throw new Error(
-      'No session key found. Please go to Agent Payment Settings and click "Generate Session Key & Apply Rules" first.'
-    );
-  };
-
-  const getServiceProviderBytes32 = (action) => {
-    const normalized = String(action || '').trim().toLowerCase();
-    if (normalized === 'reactive-stop-orders') {
-      return ethers.encodeBytes32String('reactive-stop-orders');
-    }
-    return ethers.encodeBytes32String('kol-score');
-  };
-
-  const precheckSession = async ({
-    accountAddress,
-    sessionId,
-    sessionSignerAddress,
-    amountRaw,
-    serviceProvider
-  }) => {
-    const provider = new ethers.JsonRpcProvider(rpcUrl);
-    const account = new ethers.Contract(accountAddress, SESSION_READ_ABI, provider);
-    const [exists, agentAddr, rulePass] = await Promise.all([
-      account.sessionExists(sessionId),
-      account.getSessionAgent(sessionId),
-      account.checkSpendingRules(sessionId, amountRaw, serviceProvider)
-    ]);
-    if (!exists) {
-      throw new Error(`Session not found on-chain: ${sessionId}`);
-    }
-    if (String(agentAddr || '').toLowerCase() !== String(sessionSignerAddress || '').toLowerCase()) {
-      throw new Error(
-        `Session agent mismatch. on-chain=${agentAddr}, current_session_signer=${sessionSignerAddress}`
-      );
-    }
-    if (!rulePass) {
-      throw new Error(
-        `Session spending rule precheck failed (amount/provider out of scope).`
-      );
-    }
-  };
-
   const handleAuthentication = async () => {
     const currentOwner = walletState?.ownerAddress || owner;
     if (!currentOwner) {
@@ -279,35 +220,6 @@ function Transfer({
     } catch (error) {
       setAuthStatus(`Authentication failed: ${error.message}`);
     }
-  };
-
-  const requestPaidAction = async ({
-    payer,
-    query,
-    action,
-    requestId,
-    paymentProof,
-    actionParams
-  }) => {
-    const identityPayload = {
-      agentId: identity?.configured?.agentId || '',
-      identityRegistry: identity?.configured?.registry || ''
-    };
-    const res = await fetch('/api/x402/kol-score', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        payer,
-        query,
-        action,
-        requestId,
-        paymentProof,
-        actionParams,
-        identity: identityPayload
-      })
-    });
-    const body = await res.json();
-    return { status: res.status, body };
   };
 
   const handleRequestPaymentInfo = async () => {
@@ -367,7 +279,8 @@ function Transfer({
         payer: derivedAA,
         query: normalizedQuery,
         action: actionType,
-        actionParams
+        actionParams,
+        identity
       });
       if (firstTry.status !== 402) {
         throw new Error(`Expected 402 challenge, got ${firstTry.status}`);
@@ -439,7 +352,10 @@ function Transfer({
     try {
       setLoading(true);
       setStatus('');
-      const { signer, ownerAddress, mode } = await resolveSigner({
+      const { signer, ownerAddress, mode } = await resolveSessionSigner({
+        rpcUrl,
+        sessionPrivateKey: localStorage.getItem(SESSION_KEY_PRIV_STORAGE) || '',
+        ownerAddress: walletState?.ownerAddress || owner || '',
         allowSessionKey: true
       });
       const derivedAA = sdk.ensureAccountAddress(ownerAddress);
@@ -471,6 +387,7 @@ function Transfer({
       const nowSec = Math.floor(Date.now() / 1000);
       const serviceProvider = getServiceProviderBytes32(x402Challenge.actionType);
       await precheckSession({
+        rpcUrl,
         accountAddress: derivedAA,
         sessionId,
         sessionSignerAddress,
@@ -561,7 +478,8 @@ function Transfer({
           action: x402Challenge.actionType,
           requestId: x402Challenge.requestId,
           paymentProof,
-          actionParams: x402Challenge.actionParams
+          actionParams: x402Challenge.actionParams,
+          identity
         });
         if (secondTry.status !== 200 || !secondTry.body?.ok) {
           throw new Error(secondTry.body?.reason || `x402 verification failed: ${secondTry.status}`);
@@ -574,7 +492,14 @@ function Transfer({
         });
 
         void lookupX402ByTxHash(result.transactionHash);
-        void pollOnChainConfirmation(result.transactionHash, x402Challenge.recipient, x402Challenge.amount);
+        void pollOnChainConfirmation({
+          endpoint: GOLDSKY_ENDPOINT,
+          hash: result.transactionHash,
+          expectedTo: x402Challenge.recipient,
+          expectedAmount: x402Challenge.amount,
+          tokenDecimals: TOKEN_DECIMALS,
+          onState: setConfirmState
+        });
         setX402Challenge(null);
       } else {
         setStatus('failed');
@@ -641,458 +566,72 @@ function Transfer({
     }
   };
 
-  const pollOnChainConfirmation = async (hash, expectedTo, expectedAmount) => {
-    const expectedToLc = (expectedTo || '').toLowerCase();
-    let expectedRaw = '';
-    try {
-      expectedRaw = ethers.parseUnits(String(expectedAmount || '0'), TOKEN_DECIMALS).toString();
-    } catch {
-      expectedRaw = '';
-    }
-
-    for (let i = 0; i < 12; i += 1) {
-      try {
-        const query = `
-          {
-            transfers(
-              first: 1,
-              where: { transactionHash: "${String(hash || '').toLowerCase()}" },
-              orderBy: blockTimestamp,
-              orderDirection: desc
-            ) {
-              transactionHash
-              blockNumber
-              from
-              to
-              value
-            }
-          }
-        `;
-        const res = await fetch(GOLDSKY_ENDPOINT, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query })
-        });
-        const json = await res.json();
-        const row = json?.data?.transfers?.[0];
-
-        if (row) {
-          const isMatch =
-            (!expectedToLc || String(row.to || '').toLowerCase() === expectedToLc) &&
-            (!expectedRaw || String(row.value) === expectedRaw);
-          setConfirmState({
-            stage: 'confirmed',
-            message: 'On-chain confirmation received.',
-            txHash: row.transactionHash || hash,
-            blockNumber: String(row.blockNumber || ''),
-            from: row.from || '',
-            to: row.to || '',
-            valueRaw: String(row.value || ''),
-            match: isMatch
-          });
-          return;
-        }
-
-        setConfirmState((prev) => ({
-          ...prev,
-          stage: 'indexing',
-          message: `Indexing on-chain data... retry ${i + 1}/12`
-        }));
-      } catch {
-        setConfirmState((prev) => ({
-          ...prev,
-          stage: 'indexing',
-          message: `Querying Goldsky... retry ${i + 1}/12`
-        }));
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 3000));
-    }
-
-    setConfirmState((prev) => ({
-      ...prev,
-      stage: 'timeout',
-      message: 'Timed out waiting for indexed confirmation. You can verify by tx hash in On-chain page.'
-    }));
-  };
-
   return (
     <div className="transfer-container">
-      <div className="top-entry">
-        {onBack && (
-          <button className="link-btn" onClick={onBack}>
-            Switch Wallet
-          </button>
-        )}
-        {onOpenVault && (
-          <button className="link-btn" onClick={onOpenVault}>
-            Open Vault Page
-          </button>
-        )}
-        {onOpenAgentSettings && (
-          <button className="link-btn" onClick={onOpenAgentSettings}>
-            Agent Payment Settings
-          </button>
-        )}
-        {onOpenRecords && (
-          <button className="link-btn" onClick={onOpenRecords}>
-            Transfer Records
-          </button>
-        )}
-        {onOpenOnChain && (
-          <button className="link-btn" onClick={onOpenOnChain}>
-            On-chain Confirmation
-          </button>
-        )}
-        {onOpenAbuseCases && (
-          <button className="link-btn" onClick={onOpenAbuseCases}>
-            Abuse / Limit Cases
-          </button>
-        )}
-      </div>
+      <TransferTopNav
+        onBack={onBack}
+        onOpenVault={onOpenVault}
+        onOpenAgentSettings={onOpenAgentSettings}
+        onOpenRecords={onOpenRecords}
+        onOpenOnChain={onOpenOnChain}
+        onOpenAbuseCases={onOpenAbuseCases}
+      />
 
       <h1>Gokite Account Abstraction</h1>
 
-      <div className="info-card">
-        <h2>Account Info</h2>
-        <div className="info-row">
-          <span className="label">AA Wallet:</span>
-          <span className="value">{aaWallet || 'Not generated'}</span>
-        </div>
-        <div className="info-row">
-          <span className="label">Owner:</span>
-          <span className="value">{owner || 'Not connected'}</span>
-        </div>
-        <div className="info-row">
-          <span className="label">Paid Action:</span>
-          <span className="value">{actionType}</span>
-        </div>
-      </div>
-
-      <div className="info-card">
-        <h2>Verifiable Agent Identity</h2>
-        {identityError && <div className="request-error">identity error: {identityError}</div>}
-        {!identityError && !identity?.available && (
-          <div className="info-row">
-            <span className="label">Status:</span>
-            <span className="value">not configured ({identity?.reason || 'unknown'})</span>
-          </div>
-        )}
-        {identity?.available && (
-          <>
-            <div className="info-row">
-              <span className="label">Agent ID:</span>
-              <span className="value">{identity?.configured?.agentId || '-'}</span>
-            </div>
-            <div className="info-row">
-              <span className="label">Registry:</span>
-              <span className="value hash">{identity?.configured?.registry || '-'}</span>
-            </div>
-            <div className="info-row">
-              <span className="label">Agent Wallet:</span>
-              <span className="value hash">{identity?.agentWallet || '-'}</span>
-            </div>
-          </>
-        )}
-      </div>
-
-      <div className="balance-card">
-        <h2>Balance</h2>
-        <div className="info-row">
-          <span className="label">{aaWallet || 'AA Address'}:</span>
-          <span className="value">{senderBalance} USDT</span>
-        </div>
-      </div>
+      <AccountInfoCard aaWallet={aaWallet} owner={owner} actionType={actionType} />
+      <IdentityCard identity={identity} identityError={identityError} />
+      <BalanceCard aaWallet={aaWallet} senderBalance={senderBalance} />
 
       <div className="transfer-layout">
-        <div className="transfer-card">
-          <h2>Transfer</h2>
-          <button
-            onClick={handleConnectWallet}
-            className="connect-btn"
-          >
-            {owner ? 'Connected' : 'Connect Wallet'}
-          </button>
-          <button onClick={handleAuthentication} className="connect-btn" disabled={loading || !owner}>
-            {isAuthenticated ? 'Authenticated' : 'Authentication'}
-          </button>
-          {authStatus && <div className="request-error">{authStatus}</div>}
-
-          <div className="form-group">
-            <label>
-              Action:
-              <select value={actionType} onChange={(e) => { setActionType(e.target.value); clearChallenge(); }} disabled={loading}>
-                <option value="kol-score">KOL Score Report (x402)</option>
-                <option value="reactive-stop-orders">Reactive Contracts - Stop Orders (agent2)</option>
-              </select>
-            </label>
-          </div>
-          <div className="form-group">
-            <label>
-              Query:
-              <input
-                type="text"
-                value={queryText}
-                onChange={(e) => { setQueryText(e.target.value); clearChallenge(); }}
-                placeholder="KOL score report for AI payment campaign"
-                disabled={loading}
-              />
-            </label>
-          </div>
-          {actionType === 'reactive-stop-orders' && (
-            <>
-              <div className="form-group">
-                <label>
-                  Symbol:
-                  <input
-                    type="text"
-                    value={reactiveSymbol}
-                    onChange={(e) => {
-                      setReactiveSymbol(e.target.value);
-                      clearChallenge();
-                    }}
-                    placeholder="BTC-USDT"
-                    disabled={loading}
-                  />
-                </label>
-              </div>
-              <div className="form-group">
-                <label>
-                  Take Profit:
-                  <input
-                    type="number"
-                    value={reactiveTakeProfit}
-                    onChange={(e) => {
-                      setReactiveTakeProfit(e.target.value);
-                      clearChallenge();
-                    }}
-                    placeholder="70000"
-                    disabled={loading}
-                  />
-                </label>
-              </div>
-              <div className="form-group">
-                <label>
-                  Stop Loss:
-                  <input
-                    type="number"
-                    value={reactiveStopLoss}
-                    onChange={(e) => {
-                      setReactiveStopLoss(e.target.value);
-                      clearChallenge();
-                    }}
-                    placeholder="62000"
-                    disabled={loading}
-                  />
-                </label>
-              </div>
-            </>
-          )}
-          <button
-            onClick={handleRequestPaymentInfo}
-            disabled={loading}
-            className={loading ? 'loading' : ''}
-          >
-            {loading ? 'Requesting...' : 'Request Payment Info (402)'}
-          </button>
-          <button
-            onClick={handlePayAndSubmitProof}
-            disabled={loading || !x402Challenge}
-            className={loading ? 'loading' : ''}
-          >
-            {loading ? 'Paying...' : 'Pay & Submit Proof'}
-          </button>
-        </div>
-
-        <div className="transfer-card confirm-card">
-          <h2>On-chain Confirmation</h2>
-          <div className="result-row">
-            <span className="label">Stage:</span>
-            <span className="value">{confirmState.stage}</span>
-          </div>
-          <div className="result-row">
-            <span className="label">Message:</span>
-            <span className="value">{confirmState.message}</span>
-          </div>
-          <div className="result-row">
-            <span className="label">Tx Hash:</span>
-            <span className="value hash">{confirmState.txHash || '-'}</span>
-          </div>
-          <div className="result-row">
-            <span className="label">Block:</span>
-            <span className="value">{confirmState.blockNumber || '-'}</span>
-          </div>
-          <div className="result-row">
-            <span className="label">From:</span>
-            <span className="value hash">{confirmState.from || '-'}</span>
-          </div>
-          <div className="result-row">
-            <span className="label">To:</span>
-            <span className="value hash">{confirmState.to || '-'}</span>
-          </div>
-          <div className="result-row">
-            <span className="label">Amount (raw):</span>
-            <span className="value">{confirmState.valueRaw || '-'}</span>
-          </div>
-          <div className="result-row">
-            <span className="label">Match:</span>
-            <span className="value">
-              {confirmState.match === null ? '-' : String(confirmState.match)}
-            </span>
-          </div>
-        </div>
+        <TransferFormPanel
+          owner={owner}
+          loading={loading}
+          isAuthenticated={isAuthenticated}
+          authStatus={authStatus}
+          actionType={actionType}
+          queryText={queryText}
+          reactiveSymbol={reactiveSymbol}
+          reactiveTakeProfit={reactiveTakeProfit}
+          reactiveStopLoss={reactiveStopLoss}
+          x402Challenge={x402Challenge}
+          onConnect={handleConnectWallet}
+          onAuthenticate={handleAuthentication}
+          onActionChange={(value) => {
+            setActionType(value);
+            clearChallenge();
+          }}
+          onQueryChange={(value) => {
+            setQueryText(value);
+            clearChallenge();
+          }}
+          onReactiveSymbolChange={(value) => {
+            setReactiveSymbol(value);
+            clearChallenge();
+          }}
+          onReactiveTakeProfitChange={(value) => {
+            setReactiveTakeProfit(value);
+            clearChallenge();
+          }}
+          onReactiveStopLossChange={(value) => {
+            setReactiveStopLoss(value);
+            clearChallenge();
+          }}
+          onRequest402={handleRequestPaymentInfo}
+          onPayAndSubmit={handlePayAndSubmitProof}
+        />
+        <ConfirmationPanel confirmState={confirmState} />
       </div>
 
-      <div className="transfer-card x402-card">
-        <h2>x402 Mapping</h2>
-        <div className="result-row">
-          <span className="label">Lookup:</span>
-          <span className="value">{x402Lookup.loading ? 'loading' : x402Lookup.found ? 'found' : 'not found'}</span>
-        </div>
-        <div className="result-row">
-          <span className="label">Message:</span>
-          <span className="value">{x402Lookup.message}</span>
-        </div>
-        {x402Lookup.item && (
-          <>
-            <div className="result-row">
-              <span className="label">Action:</span>
-              <span className="value">{x402Lookup.item.action || '-'}</span>
-            </div>
-            <div className="result-row">
-              <span className="label">Request ID:</span>
-              <span className="value hash">{x402Lookup.item.requestId || '-'}</span>
-            </div>
-            <div className="result-row">
-              <span className="label">Payer:</span>
-              <span className="value hash">{x402Lookup.item.payer || '-'}</span>
-            </div>
-            <div className="result-row">
-              <span className="label">Status:</span>
-              <span className="value">{x402Lookup.item.status || '-'}</span>
-            </div>
-            <div className="result-row">
-              <span className="label">Amount:</span>
-              <span className="value">{x402Lookup.item.amount || '-'} USDT</span>
-            </div>
-            <div className="result-row">
-              <span className="label">Payment Tx:</span>
-              <span className="value hash">{x402Lookup.item.paymentTxHash || '-'}</span>
-            </div>
-            <div className="result-row">
-              <span className="label">Policy decision:</span>
-              <span className="value">{x402Lookup.item?.policy?.decision || '-'}</span>
-            </div>
-            <div className="result-row">
-              <span className="label">Policy snapshot:</span>
-              <span className="value hash">
-                {x402Lookup.item?.policy?.snapshot
-                  ? JSON.stringify(x402Lookup.item.policy.snapshot)
-                  : '-'}
-              </span>
-            </div>
-          </>
-        )}
-        <div className="result-row">
-          <span className="label">Challenge:</span>
-          <span className="value">{x402Challenge ? 'ready' : 'none'}</span>
-        </div>
-        {x402Challenge && (
-          <>
-            <div className="result-row">
-              <span className="label">Challenge Request ID:</span>
-              <span className="value hash">{x402Challenge.requestId}</span>
-            </div>
-            <div className="result-row">
-              <span className="label">Challenge Recipient:</span>
-              <span className="value hash">{x402Challenge.recipient}</span>
-            </div>
-            <div className="result-row">
-              <span className="label">Challenge Amount:</span>
-              <span className="value">{x402Challenge.amount} USDT</span>
-            </div>
-            <div className="result-row">
-              <span className="label">Challenge Query:</span>
-              <span className="value">{x402Challenge.query}</span>
-            </div>
-            {x402Challenge.actionType === 'reactive-stop-orders' && (
-              <>
-                <div className="result-row">
-                  <span className="label">Symbol:</span>
-                  <span className="value">{x402Challenge?.actionParams?.symbol || '-'}</span>
-                </div>
-                <div className="result-row">
-                  <span className="label">Take Profit:</span>
-                  <span className="value">{x402Challenge?.actionParams?.takeProfit ?? '-'}</span>
-                </div>
-                <div className="result-row">
-                  <span className="label">Stop Loss:</span>
-                  <span className="value">{x402Challenge?.actionParams?.stopLoss ?? '-'}</span>
-                </div>
-              </>
-            )}
-          </>
-        )}
-      </div>
-
-      {status === 'success' && (
-        <div className="success-card">
-          <h2>Paid Action Successful!</h2>
-          <div className="info-row">
-            <span className="label">Transaction Hash:</span>
-            <span className="value hash">{txHash}</span>
-          </div>
-          <div className="info-row">
-            <span className="label">UserOp Hash:</span>
-            <span className="value hash">{userOpHash}</span>
-          </div>
-          {paidResult && (
-            <>
-              <div className="info-row">
-                <span className="label">Action:</span>
-                <span className="value">{paidResult.action}</span>
-              </div>
-              <div className="info-row">
-                <span className="label">Result:</span>
-                <span className="value">{paidResult.summary}</span>
-              </div>
-              {paidResult.orderPlan && (
-                <>
-                  <div className="info-row">
-                    <span className="label">Symbol:</span>
-                    <span className="value">{paidResult.orderPlan.symbol}</span>
-                  </div>
-                  <div className="info-row">
-                    <span className="label">Take Profit:</span>
-                    <span className="value">{paidResult.orderPlan.takeProfit}</span>
-                  </div>
-                  <div className="info-row">
-                    <span className="label">Stop Loss:</span>
-                    <span className="value">{paidResult.orderPlan.stopLoss}</span>
-                  </div>
-                </>
-              )}
-              {!paidResult.orderPlan &&
-                Array.isArray(paidResult.topKOLs) &&
-                paidResult.topKOLs.length > 0 && (
-                <div className="info-row">
-                  <span className="label">Top KOLs:</span>
-                  <span className="value">
-                    {paidResult.topKOLs.map((item) => `${item.handle}(${item.score})`).join(', ')}
-                  </span>
-                </div>
-                )}
-            </>
-          )}
-          <div className="balance-update">
-            <h3>Post-payment Balance</h3>
-            <div className="info-row">
-              <span className="label">{aaWallet || 'AA Address'}:</span>
-              <span className="value">{senderBalance} USDT</span>
-            </div>
-          </div>
-        </div>
-      )}
+      <X402Panel x402Lookup={x402Lookup} x402Challenge={x402Challenge} />
+      <SuccessPanel
+        status={status}
+        txHash={txHash}
+        userOpHash={userOpHash}
+        paidResult={paidResult}
+        aaWallet={aaWallet}
+        senderBalance={senderBalance}
+      />
 
       {status === 'failed' && (
         <div className="error-card">
@@ -1110,6 +649,7 @@ function Transfer({
 }
 
 export default Transfer;
+
 
 
 
