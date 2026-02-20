@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project follows Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+- `STABLE_BASELINE.md` for reproducible demo parameters and run order.
+- `KNOWN_ISSUES.md` for timeout/mapping/identity troubleshooting.
+- README pre-demo checklist and stable-baseline section.
+
 ## [v1.5.2-stable] - 2026-02-20
 
 ### Added

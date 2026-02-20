@@ -80,9 +80,9 @@ Status: `Done`
 7. Backend verifies proof and unlocks resource with 200 response.
 8. UI shows x402 mapping, on-chain confirmation, and records.
 
-## Judge-facing evidence path
+## Demo Walkthrough
 
-When demoing to judges, show these in order:
+For a complete end-to-end demonstration, follow this order:
 
 1. `Transfer` page:
 - request 402 challenge
@@ -97,6 +97,15 @@ When demoing to judges, show these in order:
 - policy failure evidence logs
 5. `Verifiable Agent Identity` card:
 - identity registry + agent id + resolved wallet
+
+## Stable Demo Baseline
+
+Use the frozen baseline in `STABLE_BASELINE.md` for maximum success rate.
+
+Quick defaults:
+- `kol-score`: amount `0.05`
+- `reactive-stop-orders`: amount `0.03`, `BTC-USDT / TP 70000 / SL 62000`
+- policy: per-tx `0.20`, daily `0.60`
 
 ## Repository structure
 
@@ -188,6 +197,18 @@ KITE faucet: https://faucet.gokite.ai/
    - transfer records page
    - abuse/limit graceful failure page
 
+## Pre-demo Checklist
+
+Run this quick check before recording or live demo:
+
+1. `frontend/.env` and `backend/.env` point to Kite testnet RPC/Bundler
+2. EOA has `KITE > 0`
+3. AA wallet has enough `USDT` for planned actions
+4. Complete one-time `Authentication`
+5. In `Agent Payment Settings`, run `Generate Session Key & Apply Rules`
+6. Keep policy aligned with selected action recipients
+7. Backend and frontend are both restarted after env changes
+
 ## Security Notes
 
 - Session key is scoped by rules (limits/scope/time window).
@@ -202,10 +223,16 @@ This project meets bounty demo requirements, but still has non-production parts:
 - key management should move to managed KMS/HSM/MPC in production deployment
 - additional monitoring/alerting and audits are required before mainnet-grade use
 
+## Known Issues
+
+For timeout and mapping edge cases, see `KNOWN_ISSUES.md`.
+
 ## Related Docs
 
 - Demo script: `DEMO_X402_SCRIPT.md`
 - ERC-8004 setup: `ERC8004_SETUP.md`
+- Stable baseline: `STABLE_BASELINE.md`
+- Known issues: `KNOWN_ISSUES.md`
 - Changelog: `CHANGELOG.md`
 
 ## License
