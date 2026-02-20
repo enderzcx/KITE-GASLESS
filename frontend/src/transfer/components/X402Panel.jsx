@@ -22,6 +22,13 @@
       <div className="result-row"><span className="label">Challenge:</span><span className="value">{x402Challenge ? 'ready' : 'none'}</span></div>
       {x402Challenge && (
         <>
+          <div className="result-row"><span className="label">Flow Mode:</span><span className="value">{x402Challenge.flowMode || '-'}</span></div>
+          {x402Challenge.flowMode === 'a2a+x402' && (
+            <>
+              <div className="result-row"><span className="label">Source Agent ID:</span><span className="value">{x402Challenge.sourceAgentId || '-'}</span></div>
+              <div className="result-row"><span className="label">Target Agent ID:</span><span className="value">{x402Challenge.targetAgentId || '-'}</span></div>
+            </>
+          )}
           <div className="result-row"><span className="label">Challenge Request ID:</span><span className="value hash">{x402Challenge.requestId}</span></div>
           <div className="result-row"><span className="label">Challenge Recipient:</span><span className="value hash">{x402Challenge.recipient}</span></div>
           <div className="result-row"><span className="label">Challenge Amount:</span><span className="value">{x402Challenge.amount} USDT</span></div>

@@ -1,5 +1,9 @@
 ﻿# KITE GASLESS
 
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
+[![Version](https://img.shields.io/badge/version-v1.5.2--stable-blue)](./CHANGELOG.md)
+[![Demo Status](https://img.shields.io/badge/demo-ready-brightgreen)](#demo-walkthrough)
+
 KITE GASLESS is an upgraded demo of **[Kite Bot](https://github.com/enderzcx/Kite-Bot-Seamless-Autonomous-Payment-AI-Agent)** built on **KiteAI Testnet**.
 
 Current Version: `v1.5.2-stable`
@@ -19,6 +23,25 @@ Goal: build an **agent-native payment app** with:
 - Verifiable identity read from ERC-8004-style registry
 - On-chain confirmation and reconciliation UI
 - Abuse/over-limit graceful failure with evidence logs
+
+## x402 Layer Mapping (this project)
+
+| x402 Layer | This project |
+|---|---|
+| Application | Paid agent actions (`kol-score`, `reactive-stop-orders`) |
+| Declaration | x402 challenge + proof payload (`requestId`, token, amount, recipient, action) |
+| Transport | HTTP APIs between frontend and backend |
+| Scheme | exact-style per-action payment |
+| Network | KiteAI Testnet |
+| Asset | USDT settlement token (with KITE used for testnet operation path) |
+| Mechanism | ERC-4337 AA + session/rule checks + transfer authorization path |
+
+## Action Implementation Status
+
+| Action | Type | Current status |
+|---|---|---|
+| `kol-score` | agent-to-API reference action | Implemented as a demo/mock paid API. Full x402 flow is live (`402 -> pay -> proof -> 200`), but business payload is sample data. |
+| `reactive-stop-orders` | agent-to-agent/business action | Payment and parameter flow are implemented (`symbol`, `takeProfit`, `stopLoss`), while full stop-order execution backend is still in progress. |
 
 ## ETHDenver KiteAI Requirement Mapping
 
@@ -197,6 +220,26 @@ KITE faucet: https://faucet.gokite.ai/
    - transfer records page
    - abuse/limit graceful failure page
 
+## A2A Demo Evidence Checklist
+
+For `reactive-stop-orders` (A2A route), show these in sequence:
+
+1. Transfer page:
+- select `Reactive Contracts - Stop Orders (agent2)`
+- fill `symbol / takeProfit / stopLoss`
+- click `Request Payment Info (402)`
+2. Transfer `x402 Mapping` card:
+- confirm `Flow Mode = a2a+x402`
+- confirm `Source Agent ID` and `Target Agent ID`
+3. Click `Pay & Submit Proof`:
+- show transaction hash and paid result
+4. On-chain Confirmation page:
+- filter by tx hash
+- in `x402 Payment Mapping`, show:
+  - flow mode
+  - source/target agent id
+  - request id -> payment tx hash linkage
+
 ## Pre-demo Checklist
 
 Run this quick check before recording or live demo:
@@ -238,3 +281,4 @@ For timeout and mapping edge cases, see `KNOWN_ISSUES.md`.
 ## License
 
 This project is licensed under the **MIT License**. See `LICENSE`.
+

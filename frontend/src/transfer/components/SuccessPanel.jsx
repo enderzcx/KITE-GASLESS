@@ -9,6 +9,13 @@
       {paidResult && (
         <>
           <div className="info-row"><span className="label">Action:</span><span className="value">{paidResult.action}</span></div>
+          <div className="info-row"><span className="label">Flow Mode:</span><span className="value">{paidResult.flowMode || '-'}</span></div>
+          {paidResult.flowMode === 'a2a+x402' && (
+            <>
+              <div className="info-row"><span className="label">Source Agent ID:</span><span className="value">{paidResult.sourceAgentId || '-'}</span></div>
+              <div className="info-row"><span className="label">Target Agent ID:</span><span className="value">{paidResult.targetAgentId || '-'}</span></div>
+            </>
+          )}
           <div className="info-row"><span className="label">Result:</span><span className="value">{paidResult.summary}</span></div>
           {paidResult.orderPlan && (
             <>

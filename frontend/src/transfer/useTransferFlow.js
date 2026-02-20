@@ -127,6 +127,7 @@ export function useTransferFlow({
       if (!challenge?.requestId || !payInfo) {
         throw new Error('Invalid x402 challenge for transfer intent.');
       }
+      const a2aMeta = firstTry.body?.a2a || null;
 
       setX402Challenge({
         requestId: challenge.requestId,
@@ -137,7 +138,10 @@ export function useTransferFlow({
         decimals: payInfo.decimals ?? TOKEN_DECIMALS,
         query: normalizedQuery,
         actionType,
-        actionParams
+        actionParams,
+        flowMode: actionType === 'reactive-stop-orders' ? 'a2a+x402' : 'api+x402',
+        sourceAgentId: a2aMeta?.sourceAgentId || '',
+        targetAgentId: a2aMeta?.targetAgentId || ''
       });
 
       setConfirmState({
@@ -324,7 +328,10 @@ export function useTransferFlow({
           action: x402Challenge.actionType,
           summary: secondTry.body?.result?.summary || 'Paid action unlocked',
           topKOLs: secondTry.body?.result?.topKOLs || [],
-          orderPlan: secondTry.body?.result?.orderPlan || null
+          orderPlan: secondTry.body?.result?.orderPlan || null,
+          flowMode: x402Challenge.flowMode || 'api+x402',
+          sourceAgentId: secondTry.body?.a2a?.sourceAgentId || x402Challenge.sourceAgentId || '',
+          targetAgentId: secondTry.body?.a2a?.targetAgentId || x402Challenge.targetAgentId || ''
         });
 
         void lookupX402ByTxHash(result.transactionHash);

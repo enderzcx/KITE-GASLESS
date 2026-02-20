@@ -220,6 +220,12 @@ function OnChainPage({ onBack }) {
     await Promise.all([loadTransfers(), loadX402Requests(), loadAppRecords()]);
   };
 
+  const resolveFlowMode = (item) => {
+    if (item?.a2a) return 'a2a+x402';
+    if (String(item?.action || '').toLowerCase() === 'reactive-stop-orders') return 'a2a+x402';
+    return 'api+x402';
+  };
+
   return (
     <div className="transfer-container records-page">
       <div className="top-entry">
@@ -305,7 +311,10 @@ function OnChainPage({ onBack }) {
 
       <div className="vault-card">
         <h2>x402 Payment Mapping</h2>
-        <div className="records-head onchain-head">
+        <div className="records-head x402-head">
+          <span>Flow Mode</span>
+          <span>Source Agent</span>
+          <span>Target Agent</span>
           <span>Action</span>
           <span>Agent ID</span>
           <span>Request ID</span>
@@ -321,7 +330,10 @@ function OnChainPage({ onBack }) {
         )}
 
         {displayedX402Requests.map((item) => (
-          <div className="records-row onchain-row" key={item.requestId}>
+          <div className="records-row x402-row" key={item.requestId}>
+            <span className="records-cell">{resolveFlowMode(item)}</span>
+            <span className="records-cell">{item?.a2a?.sourceAgentId || '-'}</span>
+            <span className="records-cell">{item?.a2a?.targetAgentId || '-'}</span>
             <span className="records-cell">{item.action || '-'}</span>
             <span className="records-cell">
               {item?.identity?.agentId || item?.agentId || identity?.configured?.agentId || '-'}

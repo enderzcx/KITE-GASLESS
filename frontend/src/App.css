@@ -527,6 +527,11 @@ button.loading {
   grid-template-columns: 140px 170px 1.2fr 1.2fr 0.8fr 90px 1.6fr;
 }
 
+.x402-head,
+.x402-row {
+  grid-template-columns: 100px 90px 90px 130px 80px 1.2fr 1.1fr 80px 80px 130px 1.2fr;
+}
+
 .cases-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
