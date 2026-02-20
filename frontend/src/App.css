@@ -304,6 +304,18 @@ button:disabled {
   margin-bottom: 12px;
 }
 
+.balance-status {
+  margin-bottom: 10px;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--kite-border);
+  background: oklch(0.98 0.01 120 / 0.45);
+  color: oklch(0.42 0.08 128);
+  font-size: 0.9rem;
+  font-weight: 620;
+  text-align: center;
+}
+
 button.loading {
   position: relative;
   overflow: hidden;

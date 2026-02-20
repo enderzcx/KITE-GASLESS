@@ -9,7 +9,6 @@
   reactiveTakeProfit,
   reactiveStopLoss,
   x402Challenge,
-  onConnect,
   onAuthenticate,
   onActionChange,
   onQueryChange,
@@ -22,9 +21,6 @@
   return (
     <div className="transfer-card">
       <h2>Transfer</h2>
-      <button onClick={onConnect} className="connect-btn">
-        {owner ? 'Connected' : 'Connect Wallet'}
-      </button>
       <button onClick={onAuthenticate} className="connect-btn" disabled={loading || !owner}>
         {isAuthenticated ? 'Authenticated' : 'Authentication'}
       </button>

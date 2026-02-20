@@ -1,12 +1,12 @@
-﻿# KITE GASLESS
+# KITECLAW
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-v1.5.3--stable-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-v1.5.4-blue)](./CHANGELOG.md)
 [![Demo Status](https://img.shields.io/badge/demo-ready-brightgreen)](#demo-walkthrough)
 
-KITE GASLESS is an upgraded demo of **[Kite Bot](https://github.com/enderzcx/Kite-Bot-Seamless-Autonomous-Payment-AI-Agent)** built on **KiteAI Testnet**.
+KITECLAW (formerly KITE GASLESS) is an upgraded demo of **[Kite Bot](https://github.com/enderzcx/Kite-Bot-Seamless-Autonomous-Payment-AI-Agent)** built on **KiteAI Testnet**.
 
-Current Version: `v1.5.3-stable`
+Current Version: `v1.5.4`
 
 Goal: build an **agent-native payment app** with:
 - x402-style pay-per-action flow
@@ -281,4 +281,5 @@ For timeout and mapping edge cases, see `KNOWN_ISSUES.md`.
 ## License
 
 This project is licensed under the **MIT License**. See `LICENSE`.
+
 

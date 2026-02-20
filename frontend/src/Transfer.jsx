@@ -1,10 +1,7 @@
-﻿import { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { GokiteAASDK } from './gokite-aa-sdk';
 import './App.css';
-import {
-  fetchX402ByTxHash,
-  loadIdentityProfile
-} from './transfer/api';
+import { fetchX402ByTxHash, loadIdentityProfile } from './transfer/api';
 import { useTransferFlow } from './transfer/useTransferFlow';
 import { useTransferAuth } from './transfer/useTransferAuth';
 import TransferTopNav from './transfer/components/TransferTopNav';
@@ -20,6 +17,7 @@ const SETTLEMENT_TOKEN =
   import.meta.env.VITE_KITEAI_SETTLEMENT_TOKEN ||
   import.meta.env.VITE_SETTLEMENT_TOKEN ||
   '0x0fF5393387ad2f9f691FD6Fd28e07E3969e27e63';
+
 const TOKEN_DECIMALS = 18;
 const AUTH_STORAGE_PREFIX = 'kiteclaw_auth_';
 const SESSION_KEY_PRIV_STORAGE = 'kiteclaw_session_privkey';
@@ -92,12 +90,8 @@ function Transfer({
   });
 
   useEffect(() => {
-    if (walletState?.ownerAddress) {
-      setOwner(walletState.ownerAddress);
-    }
-    if (walletState?.aaAddress) {
-      setAAWallet(walletState.aaAddress);
-    }
+    if (walletState?.ownerAddress) setOwner(walletState.ownerAddress);
+    if (walletState?.aaAddress) setAAWallet(walletState.aaAddress);
   }, [walletState]);
 
   useEffect(() => {
@@ -126,14 +120,10 @@ function Transfer({
 
   const lookupX402ByTxHash = async (hash) => {
     if (!hash) {
-      setX402Lookup({
-        loading: false,
-        found: false,
-        message: 'Missing tx hash.',
-        item: null
-      });
+      setX402Lookup({ loading: false, found: false, message: 'Missing tx hash.', item: null });
       return;
     }
+
     try {
       setX402Lookup({
         loading: true,
@@ -153,8 +143,7 @@ function Transfer({
         setX402Lookup({
           loading: false,
           found: false,
-          message:
-            'No x402 mapping found. This is likely a standard transfer (not a 402 paid-action flow).',
+          message: 'No x402 mapping found. This is likely a standard transfer (not a 402 paid-action flow).',
           item: null
         });
       }
@@ -168,7 +157,7 @@ function Transfer({
     }
   };
 
-  const { handleConnectWallet, handleAuthentication } = useTransferAuth({
+  const { handleAuthentication } = useTransferAuth({
     sdk,
     walletState,
     owner,
@@ -248,17 +237,17 @@ function Transfer({
       )}
 
       <section className="shell-hero">
-        <h1>AI Agent Payment Console</h1>
+        <h1>KITECLAW</h1>
         <p>
-          Request x402 payment challenges, execute gasless settlement, and verify
-          identity + on-chain evidence in one workspace.
+          AI Agent Payment Console for x402 challenges, gasless settlement, identity,
+          and on-chain evidence.
         </p>
       </section>
 
       <section className="info-grid">
         <AccountInfoCard aaWallet={aaWallet} owner={owner} actionType={actionType} />
         <IdentityCard identity={identity} identityError={identityError} />
-        <BalanceCard aaWallet={aaWallet} senderBalance={senderBalance} />
+        <BalanceCard aaWallet={aaWallet} senderBalance={senderBalance} walletConnected={Boolean(owner)} />
       </section>
 
       <section className="workspace-grid">
@@ -274,7 +263,6 @@ function Transfer({
             reactiveTakeProfit={reactiveTakeProfit}
             reactiveStopLoss={reactiveStopLoss}
             x402Challenge={x402Challenge}
-            onConnect={handleConnectWallet}
             onAuthenticate={handleAuthentication}
             onActionChange={(value) => {
               setActionType(value);
@@ -332,7 +320,3 @@ function Transfer({
 }
 
 export default Transfer;
-
-
-
-

@@ -11,6 +11,17 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 - `KNOWN_ISSUES.md` for timeout/mapping/identity troubleshooting.
 - README pre-demo checklist and stable-baseline section.
 
+## [v1.5.4] - 2026-02-20
+
+### Changed
+- Transfer UX simplification:
+  - removed duplicated connect button in transfer action area
+  - moved wallet connection status into `Balance` card for cleaner workflow focus.
+- Product naming and hero copy updated in app shell:
+  - primary title now uses `KITECLAW`.
+- Transfer page layout upgraded to full website-style workspace:
+  - branded header + hero + structured content zones.
+
 ## [v1.5.3-stable] - 2026-02-20
 
 ### Added
