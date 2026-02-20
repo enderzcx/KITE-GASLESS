@@ -10,9 +10,16 @@ const SETTLEMENT_TOKEN =
 const TOKEN_DECIMALS = 18;
 const AUTH_STORAGE_PREFIX = 'kiteclaw_auth_';
 const SESSION_KEY_PRIV_STORAGE = 'kiteclaw_session_privkey';
+const SESSION_TX_STORAGE = 'kiteclaw_session_tx_hash';
+const SESSION_ID_STORAGE = 'kiteclaw_session_id';
 const GOLDSKY_ENDPOINT =
   import.meta.env.VITE_KITECLAW_GOLDSKY_ENDPOINT ||
   'https://api.goldsky.com/api/public/project_cmlrmfrtks90001wg8goma8pv/subgraphs/kk/1.0.1/gn';
+const SESSION_READ_ABI = [
+  'function sessionExists(bytes32 sessionId) view returns (bool)',
+  'function getSessionAgent(bytes32 sessionId) view returns (address)',
+  'function checkSpendingRules(bytes32 sessionId, uint256 normalizedAmount, bytes32 serviceProvider) view returns (bool)'
+];
 
 function Transfer({
   onBack,
@@ -27,6 +34,9 @@ function Transfer({
   const [owner, setOwner] = useState(walletState?.ownerAddress || '');
   const [actionType, setActionType] = useState('kol-score');
   const [queryText, setQueryText] = useState('KOL score report for AI payment campaign');
+  const [reactiveSymbol, setReactiveSymbol] = useState('BTC-USDT');
+  const [reactiveTakeProfit, setReactiveTakeProfit] = useState('70000');
+  const [reactiveStopLoss, setReactiveStopLoss] = useState('62000');
   const [loading, setLoading] = useState(false);
   const [senderBalance, setSenderBalance] = useState('0');
   const [txHash, setTxHash] = useState('');
@@ -191,65 +201,59 @@ function Transfer({
     }
   };
 
-  const resolveSigner = async ({ allowSessionKey = true, preferBackend = false } = {}) => {
-    const fetchBackendSignerInfo = async () => {
-      const resp = await fetch('/api/signer/info');
-      if (!resp.ok) throw new Error(`backend signer info failed: HTTP ${resp.status}`);
-      return resp.json();
-    };
-    const signByBackend = async (userOpHash) => {
-      const resp = await fetch('/api/signer/sign-userop-hash', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userOpHash })
-      });
-      const body = await resp.json();
-      if (!resp.ok || !body?.signature) {
-        throw new Error(body?.reason || `backend signer failed: HTTP ${resp.status}`);
-      }
-      return body.signature;
-    };
-
+  const resolveSigner = async ({ allowSessionKey = true } = {}) => {
     const sessionPrivKey = localStorage.getItem(SESSION_KEY_PRIV_STORAGE) || '';
 
-    // Session key only signs userOpHash. AA owner remains root owner address.
     if (allowSessionKey && sessionPrivKey) {
       const provider = new ethers.JsonRpcProvider(rpcUrl);
       const sessionSigner = new ethers.Wallet(sessionPrivKey, provider);
-      let ownerAddress = walletState?.ownerAddress || owner || '';
+      const ownerAddress = walletState?.ownerAddress || owner || '';
       if (!ownerAddress) {
-        const signerInfo = await fetchBackendSignerInfo();
-        ownerAddress = signerInfo?.address || '';
-      }
-      if (!ownerAddress) {
-        throw new Error('Session key found but owner address is missing. Connect wallet once or configure backend signer.');
+        throw new Error('Session key found but owner address is missing. Connect wallet first.');
       }
       return { signer: sessionSigner, ownerAddress, mode: 'session_key' };
     }
 
-    const signerInfo = await fetchBackendSignerInfo();
-    if (preferBackend && signerInfo?.enabled && signerInfo?.address) {
-      return {
-        signer: { signMessage: signByBackend },
-        ownerAddress: signerInfo.address,
-        mode: 'backend_signer'
-      };
-    }
+    throw new Error(
+      'No session key found. Please go to Agent Payment Settings and click "Generate Session Key & Apply Rules" first.'
+    );
+  };
 
-    if (walletState?.ownerAddress && typeof window.ethereum !== 'undefined') {
-      const provider = new ethers.BrowserProvider(window.ethereum);
-      const signer = await provider.getSigner();
-      return { signer, ownerAddress: walletState.ownerAddress, mode: 'owner' };
+  const getServiceProviderBytes32 = (action) => {
+    const normalized = String(action || '').trim().toLowerCase();
+    if (normalized === 'reactive-stop-orders') {
+      return ethers.encodeBytes32String('reactive-stop-orders');
     }
+    return ethers.encodeBytes32String('kol-score');
+  };
 
-    if (!signerInfo?.enabled || !signerInfo?.address) {
-      throw new Error('Wallet not connected and backend signer is unavailable.');
+  const precheckSession = async ({
+    accountAddress,
+    sessionId,
+    sessionSignerAddress,
+    amountRaw,
+    serviceProvider
+  }) => {
+    const provider = new ethers.JsonRpcProvider(rpcUrl);
+    const account = new ethers.Contract(accountAddress, SESSION_READ_ABI, provider);
+    const [exists, agentAddr, rulePass] = await Promise.all([
+      account.sessionExists(sessionId),
+      account.getSessionAgent(sessionId),
+      account.checkSpendingRules(sessionId, amountRaw, serviceProvider)
+    ]);
+    if (!exists) {
+      throw new Error(`Session not found on-chain: ${sessionId}`);
     }
-    return {
-      signer: { signMessage: signByBackend },
-      ownerAddress: signerInfo.address,
-      mode: 'backend_signer'
-    };
+    if (String(agentAddr || '').toLowerCase() !== String(sessionSignerAddress || '').toLowerCase()) {
+      throw new Error(
+        `Session agent mismatch. on-chain=${agentAddr}, current_session_signer=${sessionSignerAddress}`
+      );
+    }
+    if (!rulePass) {
+      throw new Error(
+        `Session spending rule precheck failed (amount/provider out of scope).`
+      );
+    }
   };
 
   const handleAuthentication = async () => {
@@ -277,7 +281,14 @@ function Transfer({
     }
   };
 
-  const requestPaidAction = async ({ payer, query, action, requestId, paymentProof }) => {
+  const requestPaidAction = async ({
+    payer,
+    query,
+    action,
+    requestId,
+    paymentProof,
+    actionParams
+  }) => {
     const identityPayload = {
       agentId: identity?.configured?.agentId || '',
       identityRegistry: identity?.configured?.registry || ''
@@ -291,6 +302,7 @@ function Transfer({
         action,
         requestId,
         paymentProof,
+        actionParams,
         identity: identityPayload
       })
     });
@@ -302,15 +314,23 @@ function Transfer({
     try {
       setLoading(true);
       setStatus('');
-      const hasSessionSigner = Boolean(localStorage.getItem(SESSION_KEY_PRIV_STORAGE));
-      if (!hasSessionSigner && (walletState?.ownerAddress || owner) && !isAuthenticated) {
+      const ownerAddress = walletState?.ownerAddress || owner || '';
+      if (!ownerAddress) {
+        throw new Error('Please connect wallet first.');
+      }
+      await sdk.verifyFactory();
+      if (!isAuthenticated) {
         throw new Error('Please complete Authentication once before requesting payment info.');
       }
-
-      const { ownerAddress } = await resolveSigner({ allowSessionKey: true });
       const derivedAA = sdk.ensureAccountAddress(ownerAddress);
+      const lifecycle = await sdk.getAccountLifecycle(ownerAddress);
       if (derivedAA !== aaWallet) {
         setAAWallet(derivedAA);
+      }
+      if (!lifecycle.deployed) {
+        setAuthStatus('AA not deployed yet: first payment will auto-deploy AA via factory initCode.');
+      } else {
+        setAuthStatus('AA already deployed: payment will use existing account.');
       }
 
       setConfirmState({
@@ -324,10 +344,30 @@ function Transfer({
         match: null
       });
       const normalizedQuery = String(queryText || '').trim() || 'KOL score report for AI payment campaign';
+      const actionParams =
+        actionType === 'reactive-stop-orders'
+          ? {
+              symbol: String(reactiveSymbol || '').trim().toUpperCase(),
+              takeProfit: Number(reactiveTakeProfit),
+              stopLoss: Number(reactiveStopLoss)
+            }
+          : undefined;
+      if (actionType === 'reactive-stop-orders') {
+        if (!actionParams.symbol) {
+          throw new Error('Reactive action requires symbol.');
+        }
+        if (!Number.isFinite(actionParams.takeProfit) || actionParams.takeProfit <= 0) {
+          throw new Error('Reactive action requires valid takeProfit.');
+        }
+        if (!Number.isFinite(actionParams.stopLoss) || actionParams.stopLoss <= 0) {
+          throw new Error('Reactive action requires valid stopLoss.');
+        }
+      }
       const firstTry = await requestPaidAction({
         payer: derivedAA,
         query: normalizedQuery,
-        action: actionType
+        action: actionType,
+        actionParams
       });
       if (firstTry.status !== 402) {
         throw new Error(`Expected 402 challenge, got ${firstTry.status}`);
@@ -346,7 +386,8 @@ function Transfer({
         tokenAddress: payInfo.tokenAddress || SETTLEMENT_TOKEN,
         decimals: payInfo.decimals ?? TOKEN_DECIMALS,
         query: normalizedQuery,
-        actionType
+        actionType,
+        actionParams
       });
 
       setConfirmState({
@@ -384,13 +425,22 @@ function Transfer({
       alert('Please request payment info first.');
       return;
     }
+    const sessionTxHash = localStorage.getItem(SESSION_TX_STORAGE) || '';
+    const sessionId = localStorage.getItem(SESSION_ID_STORAGE) || '';
+    if (!sessionTxHash) {
+      alert('Session setup not verified. Go to Agent Payment Settings and create/verify session first.');
+      return;
+    }
+    if (!sessionId || !/^0x[0-9a-fA-F]{64}$/.test(sessionId)) {
+      alert('Session ID missing or invalid. Regenerate session in Agent Payment Settings.');
+      return;
+    }
 
     try {
       setLoading(true);
       setStatus('');
       const { signer, ownerAddress, mode } = await resolveSigner({
-        allowSessionKey: false,
-        preferBackend: true
+        allowSessionKey: true
       });
       const derivedAA = sdk.ensureAccountAddress(ownerAddress);
       if (derivedAA !== aaWallet) {
@@ -401,16 +451,9 @@ function Transfer({
       setSenderBalance(ethers.formatUnits(balance, TOKEN_DECIMALS));
 
       const signFunction = async (userOpHash) => {
-        if (mode === 'backend_signer') {
-          return signer.signMessage(userOpHash);
-        }
         return signer.signMessage(ethers.getBytes(userOpHash));
       };
-      setAuthStatus(
-        mode === 'backend_signer'
-          ? 'Authenticated: using backend auto-signer (no wallet popup).'
-          : 'Backend signer unavailable, falling back to owner signature.'
-      );
+      setAuthStatus('Authenticated: using session key signer (no wallet popup).');
 
       setConfirmState({
         stage: 'x402_payment',
@@ -423,13 +466,51 @@ function Transfer({
         match: null
       });
 
-      const result = await sdk.sendERC20(
+      const amountRaw = ethers.parseUnits(String(x402Challenge.amount), x402Challenge.decimals);
+      const sessionSignerAddress = await signer.getAddress();
+      const nowSec = Math.floor(Date.now() / 1000);
+      const serviceProvider = getServiceProviderBytes32(x402Challenge.actionType);
+      await precheckSession({
+        accountAddress: derivedAA,
+        sessionId,
+        sessionSignerAddress,
+        amountRaw,
+        serviceProvider
+      });
+      const authPayload = {
+        from: derivedAA,
+        to: x402Challenge.recipient,
+        token: x402Challenge.tokenAddress,
+        value: amountRaw,
+        validAfter: BigInt(Math.max(0, nowSec - 30)),
+        validBefore: BigInt(nowSec + 10 * 60),
+        nonce: ethers.hexlify(ethers.randomBytes(32))
+      };
+      const authSignature = await sdk.buildTransferAuthorizationSignature(signer, authPayload);
+      const metadata = ethers.hexlify(
+        ethers.toUtf8Bytes(
+          JSON.stringify({
+            requestId: x402Challenge.requestId,
+            action: x402Challenge.actionType,
+            query: x402Challenge.query
+          })
+        )
+      );
+
+      const result = await sdk.sendSessionTransferWithAuthorizationAndProvider(
         {
-          tokenAddress: x402Challenge.tokenAddress,
-          recipient: x402Challenge.recipient,
-          amount: ethers.parseUnits(String(x402Challenge.amount), x402Challenge.decimals)
+          sessionId,
+          auth: authPayload,
+          authSignature,
+          serviceProvider,
+          metadata
         },
-        signFunction
+        signFunction,
+        {
+          callGasLimit: 320000n,
+          verificationGasLimit: 450000n,
+          preVerificationGas: 120000n
+        }
       );
 
       if (result.status === 'success') {
@@ -479,7 +560,8 @@ function Transfer({
           query: x402Challenge.query,
           action: x402Challenge.actionType,
           requestId: x402Challenge.requestId,
-          paymentProof
+          paymentProof,
+          actionParams: x402Challenge.actionParams
         });
         if (secondTry.status !== 200 || !secondTry.body?.ok) {
           throw new Error(secondTry.body?.reason || `x402 verification failed: ${secondTry.status}`);
@@ -487,7 +569,8 @@ function Transfer({
         setPaidResult({
           action: x402Challenge.actionType,
           summary: secondTry.body?.result?.summary || 'Paid action unlocked',
-          topKOLs: secondTry.body?.result?.topKOLs || []
+          topKOLs: secondTry.body?.result?.topKOLs || [],
+          orderPlan: secondTry.body?.result?.orderPlan || null
         });
 
         void lookupX402ByTxHash(result.transactionHash);
@@ -756,6 +839,55 @@ function Transfer({
               />
             </label>
           </div>
+          {actionType === 'reactive-stop-orders' && (
+            <>
+              <div className="form-group">
+                <label>
+                  Symbol:
+                  <input
+                    type="text"
+                    value={reactiveSymbol}
+                    onChange={(e) => {
+                      setReactiveSymbol(e.target.value);
+                      clearChallenge();
+                    }}
+                    placeholder="BTC-USDT"
+                    disabled={loading}
+                  />
+                </label>
+              </div>
+              <div className="form-group">
+                <label>
+                  Take Profit:
+                  <input
+                    type="number"
+                    value={reactiveTakeProfit}
+                    onChange={(e) => {
+                      setReactiveTakeProfit(e.target.value);
+                      clearChallenge();
+                    }}
+                    placeholder="70000"
+                    disabled={loading}
+                  />
+                </label>
+              </div>
+              <div className="form-group">
+                <label>
+                  Stop Loss:
+                  <input
+                    type="number"
+                    value={reactiveStopLoss}
+                    onChange={(e) => {
+                      setReactiveStopLoss(e.target.value);
+                      clearChallenge();
+                    }}
+                    placeholder="62000"
+                    disabled={loading}
+                  />
+                </label>
+              </div>
+            </>
+          )}
           <button
             onClick={handleRequestPaymentInfo}
             disabled={loading}
@@ -883,6 +1015,22 @@ function Transfer({
               <span className="label">Challenge Query:</span>
               <span className="value">{x402Challenge.query}</span>
             </div>
+            {x402Challenge.actionType === 'reactive-stop-orders' && (
+              <>
+                <div className="result-row">
+                  <span className="label">Symbol:</span>
+                  <span className="value">{x402Challenge?.actionParams?.symbol || '-'}</span>
+                </div>
+                <div className="result-row">
+                  <span className="label">Take Profit:</span>
+                  <span className="value">{x402Challenge?.actionParams?.takeProfit ?? '-'}</span>
+                </div>
+                <div className="result-row">
+                  <span className="label">Stop Loss:</span>
+                  <span className="value">{x402Challenge?.actionParams?.stopLoss ?? '-'}</span>
+                </div>
+              </>
+            )}
           </>
         )}
       </div>
@@ -908,14 +1056,32 @@ function Transfer({
                 <span className="label">Result:</span>
                 <span className="value">{paidResult.summary}</span>
               </div>
-              {Array.isArray(paidResult.topKOLs) && paidResult.topKOLs.length > 0 && (
+              {paidResult.orderPlan && (
+                <>
+                  <div className="info-row">
+                    <span className="label">Symbol:</span>
+                    <span className="value">{paidResult.orderPlan.symbol}</span>
+                  </div>
+                  <div className="info-row">
+                    <span className="label">Take Profit:</span>
+                    <span className="value">{paidResult.orderPlan.takeProfit}</span>
+                  </div>
+                  <div className="info-row">
+                    <span className="label">Stop Loss:</span>
+                    <span className="value">{paidResult.orderPlan.stopLoss}</span>
+                  </div>
+                </>
+              )}
+              {!paidResult.orderPlan &&
+                Array.isArray(paidResult.topKOLs) &&
+                paidResult.topKOLs.length > 0 && (
                 <div className="info-row">
                   <span className="label">Top KOLs:</span>
                   <span className="value">
                     {paidResult.topKOLs.map((item) => `${item.handle}(${item.score})`).join(', ')}
                   </span>
                 </div>
-              )}
+                )}
             </>
           )}
           <div className="balance-update">

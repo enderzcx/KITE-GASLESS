@@ -1,50 +1,113 @@
 ﻿# KITE GASLESS
 
-KITE GASLESS is an upgraded demo of **[Kite Bot](https://github.com/enderzcx/Kite-Bot-Seamless-Autonomous-Payment-AI-Agent)**, built for real-world AI Agent payment workflows on **KiteAI Testnet**.
+KITE GASLESS is an upgraded demo of **[Kite Bot](https://github.com/enderzcx/Kite-Bot-Seamless-Autonomous-Payment-AI-Agent)** built on **KiteAI Testnet**.
 
-Current Version: `v1.5.0`
+Current Version: `v1.5.2-stable`
 
-This repo demonstrates how an AI Agent can:
-- authenticate once,
-- generate and use an Account Abstraction (AA) wallet,
-- execute gasless-style ERC-4337 payments,
-- manage vault limits and rules,
-- and keep auditable transfer records.
+Goal: build an **agent-native payment app** with:
+- x402-style pay-per-action flow
+- verifiable agent identity
+- ERC-4337 account abstraction execution
+- minimal human intervention after initial auth/session setup
 
-## Why this project
+## What this repo demonstrates
 
-This is the production-oriented evolution of a hackathon-winning prototype (Kite payment track runner-up), focused on practical deployment readiness for:
-- KOL incentive distribution,
-- autonomous agent checkout/payment,
-- budget-controlled automated spending.
+- Agent authentication (one-time wallet auth)
+- AA lifecycle: address derivation + first-use auto deployment path
+- Session-based delegated execution (rules + limits + scoped recipient)
+- x402 flow: `402 -> on-chain pay -> proof verify -> 200 unlock`
+- Verifiable identity read from ERC-8004-style registry
+- On-chain confirmation and reconciliation UI
+- Abuse/over-limit graceful failure with evidence logs
 
-## Project structure
+## ETHDenver KiteAI Requirement Mapping
+
+| Requirement | Status | Evidence in this repo |
+|---|---|---|
+| Build on Kite AI Testnet/mainnet | Done | Kite testnet RPC/Bundler/USDT config in env + running flow |
+| Use x402-style payment flows | Done | `402 -> pay -> proof -> 200` in Transfer page and backend `/api/x402/*` |
+| Verifiable agent identity | Done | Backend identity endpoint + frontend identity card (`agentId/registry/wallet`) |
+| Demonstrate autonomous execution | Done (demo scope) | One-time auth/session setup, then repeated paid actions without repeated wallet confirmation |
+| Open-source core components | Done | Public repo structure + local reproducible setup |
+| Correct x402 usage (action-payment mapping) | Done | x402 mapping panel, requestId/txHash linkage, records API |
+| Graceful abuse/insufficient-funds handling | Done | Abuse page + policy failure logs + explicit rejection codes |
+| Security controls (scope/limits/revocation) | Done | per-tx/daily limits, recipient scope, revoke/unrevoke kill switch |
+
+## Bounty Requirement Alignment (detailed)
+
+### 1) Build on Kite testnet/mainnet
+Status: `Done`
+- Network: KiteAI Testnet (`chainId=2368`)
+- Uses Kite RPC + Bundler + USDT settlement token
+
+### 2) x402-style payment flow (agent-to-API / agent-to-agent)
+Status: `Done`
+- Backend returns `402 Payment Required`
+- Frontend pays on-chain through AA
+- Proof is submitted and verified before `200` unlock
+- Each paid action maps to one x402 request in logs/UI
+
+### 3) Verifiable agent identity
+Status: `Done`
+- Backend reads identity profile from deployed identity registry
+- Frontend displays agent ID / registry / agent wallet
+
+### 4) Autonomous execution (minimal human clicking)
+Status: `Done (demo scope)`
+- One-time auth + session setup
+- Subsequent payments run with session key path (no repeated wallet confirmation per payment)
+
+### 5) Security and safety (scopes, limits, revocation)
+Status: `Done`
+- per-tx limit
+- daily limit
+- recipient scope allowlist
+- payer revoke/unrevoke kill switch
+- abuse case page with explicit failure reason and evidence
+
+### 6) Open-source core components
+Status: `Done`
+- Public GitHub repo and reproducible local run instructions
+
+## Architecture (high level)
+
+1. User connects wallet and derives AA address.
+2. User creates session + spending rules in Agent Settings.
+3. Agent action request hits backend endpoint (`/api/x402/*`).
+4. Backend returns 402 challenge with payment terms.
+5. Frontend executes on-chain payment using AA + session path.
+6. Frontend submits payment proof.
+7. Backend verifies proof and unlocks resource with 200 response.
+8. UI shows x402 mapping, on-chain confirmation, and records.
+
+## Judge-facing evidence path
+
+When demoing to judges, show these in order:
+
+1. `Transfer` page:
+- request 402 challenge
+- pay and submit proof
+- display paid action result
+2. `x402 Mapping` card on Transfer:
+- requestId, payer, amount, txHash, policy decision
+3. `On-chain Confirmation` page:
+- indexed transfer rows + tx hash
+4. `Abuse / Limit Cases` page:
+- over-limit / scope violation / fake proof / expired / insufficient funds
+- policy failure evidence logs
+5. `Verifiable Agent Identity` card:
+- identity registry + agent id + resolved wallet
+
+## Repository structure
 
 ```text
 KITE GASLESS/
-├─ frontend/        # React + Vite UI (AA flow, transfer, vault, records)
-├─ backend/         # Express API for transfer records
-└─ .gitignore
+|- frontend/        # React + Vite UI
+|- backend/         # Express API (x402 simulator + policy + identity + records)
+|- goldsky/         # Subgraph assets for on-chain confirmation
 ```
 
-## Key features
-
-- Wallet login and AA address derivation (`getAccountAddress`)
-- One-time Authentication UX before wallet-sign path sends
-- Backend signer mode via `/api/signer/*` (no root private key in frontend runtime)
-- Transfer page for manual AA token transfer
-- Request page for agent-like purchase simulation
-- x402-style paid resource flow (`402 -> pay -> proof -> 200`)
-- Policy-enforced x402 transfer intent (scope + per-tx + daily limit)
-- Gateway kill switch (revoke/unrevoke payer) for emergency guardrail demo
-- Abuse/over-limit graceful-failure page with evidence logs
-- Vault page for create/deposit/withdraw/rule updates
-- Agent settings page for token + session/rule setup
-- Record service (`/api/records`) for tx history playback
-- On-chain Confirmation page backed by Goldsky subgraph queries
-- Transfer page right-side real-time confirmation panel (submitted/indexing/confirmed)
-
-## Quick start
+## Quick Start
 
 ### 1) Frontend
 
@@ -52,9 +115,25 @@ KITE GASLESS/
 cd frontend
 npm install
 cp .env.example .env
+npm run dev
 ```
 
-Fill your own `.env` values (especially private key):
+Frontend: `http://localhost:5173`
+
+### 2) Backend
+
+```bash
+cd ../backend
+npm install
+cp .env.example .env
+npm start
+```
+
+Backend: `http://localhost:3001`
+
+## Environment Variables
+
+### Frontend (`frontend/.env`)
 
 ```env
 VITE_KITEAI_RPC_URL=https://rpc-testnet.gokite.ai/
@@ -64,113 +143,67 @@ VITE_KITECLAW_VAULT_IMPLEMENTATION=0xB5AAFCC6DD4DFc2B80fb8BCcf406E1a2Fd559e23
 VITE_KITECLAW_GOLDSKY_ENDPOINT=https://api.goldsky.com/api/public/project_cmlrmfrtks90001wg8goma8pv/subgraphs/kk/1.0.1/gn
 ```
 
-Then run:
-
-```bash
-npm run dev
-```
-
-Frontend default URL: `http://localhost:5173`
-
-### 2) Backend
-
-```bash
-cd ../backend
-npm install
-# optional: cp .env.example .env and fill backend signer key
-npm start
-```
-
-Backend default: `http://localhost:3001`
-
-Backend signer env (recommended for non-direct key access):
+### Backend (`backend/.env`)
 
 ```env
+PORT=3001
 KITEAI_RPC_URL=https://rpc-testnet.gokite.ai/
-KITECLAW_BACKEND_SIGNER_PRIVATE_KEY=0x_your_test_private_key
-# optional policy controls
+KITE_SETTLEMENT_TOKEN=0x0fF5393387ad2f9f691FD6Fd28e07E3969e27e63
+KITE_MERCHANT_ADDRESS=0x6D705b93F0Da7DC26e46cB39Decc3baA4fb4dd29
+X402_PRICE=0.05
+X402_REACTIVE_PRICE=0.03
+KITE_AGENT2_AA_ADDRESS=0xEd335560178B85f0524FfFf3372e9Bf45aB42aC8
 KITE_POLICY_MAX_PER_TX=0.20
 KITE_POLICY_DAILY_LIMIT=0.60
 KITE_POLICY_ALLOWED_RECIPIENTS=0x6D705b93F0Da7DC26e46cB39Decc3baA4fb4dd29
+ERC8004_IDENTITY_REGISTRY=0x_your_identity_registry
+ERC8004_AGENT_ID=0
 ```
 
-### 3) Open the app
+Notes:
+- Backend signer key is optional in current session-key payment path.
+- Never commit real private keys.
 
-Run frontend and backend in two terminals, then open:
+## Funding Prerequisites
 
-- App UI: `http://localhost:5173`
-- Records API check: `http://localhost:3001/api/records`
+Before demo:
 
-## Funding prerequisites (important)
+1. Fund EOA with some `KITE` (needed for first-time actions and setup path).
+2. Connect wallet once to derive predicted AA address.
+3. Fund AA with test `USDT` (and optional `KITE` buffer).
+4. If using Vault, fund Vault with USDT (EOA -> Vault transfer is most reliable).
 
-Before testing, prepare balances on KiteAI Testnet:
+KITE faucet: https://faucet.gokite.ai/
 
-1. Fund your **EOA wallet** with some `KITE`.
-   - Reason: your owner wallet still needs native gas for first-time on-chain actions (for example first AA deployment/initial setup tx).
-2. Connect wallet in the app so the AA address is derived.
-3. Fund your **AA wallet address** with:
-   - `KITE` (for network-level execution scenarios),
-   - `USDT` settlement token (for transfer/purchase/vault demo flows).
-4. Use official KiteAI testnet faucet / token distribution channels to claim test assets.
-   - KITE faucet: https://faucet.gokite.ai/
-5. After Vault is created, fund it with some `USDT` as well.
-   - Important: requesting USDT directly to the Vault address from faucet may fail or not arrive reliably.
-   - Recommended path: claim USDT to your EOA first, then transfer USDT manually to your Vault address.
-   - Alternative: try transferring from your AA wallet to the Vault address using your gasless flow.
+## Demo Steps (judge-friendly)
 
-## Demo flow (recommended)
+1. Open app and connect wallet.
+2. Authenticate once.
+3. Open `Agent Payment Settings` and create session + rules.
+4. In `Transfer`, click `Request Payment Info (402)`.
+5. Click `Pay & Submit Proof`.
+6. Show:
+   - x402 mapping panel
+   - on-chain confirmation panel
+   - transfer records page
+   - abuse/limit graceful failure page
 
-1. Fund EOA with test `KITE`.
-2. Connect wallet on Login page to derive AA address.
-3. Fund AA address with test `KITE` and `USDT`.
-4. Go to **Vault Page** and create vault (if not created).
-5. Optionally set spending rules and fund vault.
-6. On **Request** or **Transfer** page, run one-time Authentication.
-7. On **Request** page, run x402 flow:
-   - API returns `402 Payment Required`
-   - Agent pays via AA transfer
-   - Frontend retries with payment proof and receives `200`
-8. Verify tx hash on KiteScan / Goldsky page.
+## Security Notes
 
-Judge demo script: see `DEMO_X402_SCRIPT.md`.
-9. Open **Records** page to show full operation history.
-10. Open **Abuse / Limit Cases** page to demonstrate:
-   - scope violation rejection,
-   - over-limit rejection,
-   - fake proof rejection,
-   - expired request rejection,
-   - insufficient funds graceful messaging.
-11. In **Agent Payment Settings**, test kill switch:
-   - `Revoke Current Payer (Kill Switch)` to block payer at gateway level
-   - retry x402 intent and observe `payer_revoked` failure
-   - `Unrevoke Current Payer` to restore flow
+- Session key is scoped by rules (limits/scope/time window).
+- Policy layer enforces off-chain gateway checks (scope, per-tx, daily, revoke).
+- Root keys should stay in secure backend/KMS/HSM in production.
+- This repo is a testnet MVP and not production audited.
 
-## Tech stack
+## Production gap note (honest scope)
 
-- Frontend: React, Vite, ethers v6
-- AA logic: local `gokite-aa-sdk.js` (ERC-4337 flow)
-- Backend: Node.js, Express
-- Network: KiteAI Testnet (Chain ID 2368)
+This project meets bounty demo requirements, but still has non-production parts:
+- session delegation hardening and long-run lifecycle handling can be improved
+- key management should move to managed KMS/HSM/MPC in production deployment
+- additional monitoring/alerting and audits are required before mainnet-grade use
 
-## Security notes
+## Related Docs
 
-- Use test keys only.
-- Never commit `.env`.
-- Root signing key is server-side only (`backend` env), not exposed to frontend.
-- For production, use secure backend/HSM/KMS and strict rotation policies.
-
-## ERC-8004 identity bootstrap
-
-- Quick guide: `ERC8004_SETUP.md`
-- Probe registry on Kite RPC:
-  - `cd backend && npm run probe:erc8004`
-- Register agent identity (once registry address is available):
-  - `npm run erc8004:register`
-- Read agent profile:
-  - `npm run erc8004:read`
-
-## Versioning
-
-- We use Semantic Versioning (`MAJOR.MINOR.PATCH`).
-- Stable baseline release: `v1.5.0`
-- See `CHANGELOG.md` for release notes.
+- Demo script: `DEMO_X402_SCRIPT.md`
+- ERC-8004 setup: `ERC8004_SETUP.md`
+- Changelog: `CHANGELOG.md`

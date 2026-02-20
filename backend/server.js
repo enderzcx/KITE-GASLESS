@@ -222,6 +222,26 @@ function getActionConfig(actionRaw = '') {
   return null;
 }
 
+function normalizeReactiveParams(actionParams = {}) {
+  const symbol = String(actionParams.symbol || '').trim().toUpperCase();
+  const takeProfitRaw = Number(actionParams.takeProfit);
+  const stopLossRaw = Number(actionParams.stopLoss);
+  if (!symbol) {
+    throw new Error('Reactive action requires symbol.');
+  }
+  if (!Number.isFinite(takeProfitRaw) || takeProfitRaw <= 0) {
+    throw new Error('Reactive action requires a valid takeProfit.');
+  }
+  if (!Number.isFinite(stopLossRaw) || stopLossRaw <= 0) {
+    throw new Error('Reactive action requires a valid stopLoss.');
+  }
+  return {
+    symbol,
+    takeProfit: takeProfitRaw,
+    stopLoss: stopLossRaw
+  };
+}
+
 function validatePaymentProof(reqItem, paymentProof) {
   if (!paymentProof || typeof paymentProof !== 'object') return 'missing payment proof';
   if (!paymentProof.txHash) return 'missing txHash';
@@ -537,6 +557,7 @@ app.post('/api/x402/kol-score', (req, res) => {
   const requestId = String(body.requestId || '').trim();
   const paymentProof = body.paymentProof;
   const identityInput = body.identity || {};
+  const actionParamsInput = body.actionParams || {};
   if (!query) return res.status(400).json({ error: 'query is required' });
   const actionCfg = getActionConfig(actionRequested);
   if (!actionCfg) {
@@ -548,11 +569,22 @@ app.post('/api/x402/kol-score', (req, res) => {
   if (!ethers.isAddress(actionCfg.recipient)) {
     return res.status(400).json({
       error: 'invalid_action_recipient',
-      reason: `·Ç·¨µØÖ·: action recipient is invalid (${actionCfg.recipient})`
+      reason: `éžæ³•åœ°å€: action recipient is invalid (${actionCfg.recipient})`
     });
   }
 
   const requests = readX402Requests();
+  let normalizedActionParams = null;
+  if (actionCfg.action === 'reactive-stop-orders') {
+    try {
+      normalizedActionParams = normalizeReactiveParams(actionParamsInput);
+    } catch (error) {
+      return res.status(400).json({
+        error: 'invalid_reactive_params',
+        reason: error.message
+      });
+    }
+  }
   if (!requestId || !paymentProof) {
     const policyResult = evaluateTransferPolicy({
       payer,
@@ -593,6 +625,7 @@ app.post('/api/x402/kol-score', (req, res) => {
           },
           identity: identityProfile?.configured
         });
+        reqItem.actionParams = normalizedActionParams;
         requests.unshift(reqItem);
         writeX402Requests(requests);
         return res.status(402).json(buildPaymentRequiredResponse(reqItem));
@@ -620,21 +653,31 @@ app.post('/api/x402/kol-score', (req, res) => {
   }
 
   if (reqItem.status === 'paid') {
+    const paidResult =
+      reqItem.action === 'reactive-stop-orders'
+        ? {
+            summary: 'Reactive contracts stop-orders signal already unlocked',
+            orderPlan: {
+              symbol: reqItem?.actionParams?.symbol || '-',
+              takeProfit: reqItem?.actionParams?.takeProfit ?? '-',
+              stopLoss: reqItem?.actionParams?.stopLoss ?? '-',
+              provider: 'Reactive Contracts'
+            }
+          }
+        : {
+            summary: 'KOL score report already unlocked',
+            topKOLs: [
+              { handle: '@alpha_kol', score: 91 },
+              { handle: '@beta_growth', score: 88 },
+              { handle: '@gamma_builder', score: 84 }
+            ]
+          };
     return res.json({
       ok: true,
       mode: 'x402',
       requestId: reqItem.requestId,
       reused: true,
-      result: {
-        summary: reqItem.action === 'reactive-stop-orders'
-          ? 'Reactive contracts stop-orders signal already unlocked'
-          : 'KOL score report already unlocked',
-        topKOLs: [
-          { handle: '@alpha_kol', score: 91 },
-          { handle: '@beta_growth', score: 88 },
-          { handle: '@gamma_builder', score: 84 }
-        ]
-      }
+      result: paidResult
     });
   }
 
@@ -667,17 +710,25 @@ app.post('/api/x402/kol-score', (req, res) => {
       tokenAddress: reqItem.tokenAddress,
       recipient: reqItem.recipient
     },
-    result: {
-      summary:
-        reqItem.action === 'reactive-stop-orders'
-          ? 'Reactive contracts stop-orders signal unlocked by x402 payment'
-          : 'KOL score report unlocked by x402 payment',
-      topKOLs: [
-        { handle: '@alpha_kol', score: 91 },
-        { handle: '@beta_growth', score: 88 },
-        { handle: '@gamma_builder', score: 84 }
-      ]
-    }
+    result:
+      reqItem.action === 'reactive-stop-orders'
+        ? {
+            summary: 'Reactive contracts stop-orders signal unlocked by x402 payment',
+            orderPlan: {
+              symbol: reqItem?.actionParams?.symbol || '-',
+              takeProfit: reqItem?.actionParams?.takeProfit ?? '-',
+              stopLoss: reqItem?.actionParams?.stopLoss ?? '-',
+              provider: 'Reactive Contracts'
+            }
+          }
+        : {
+            summary: 'KOL score report unlocked by x402 payment',
+            topKOLs: [
+              { handle: '@alpha_kol', score: 91 },
+              { handle: '@beta_growth', score: 88 },
+              { handle: '@gamma_builder', score: 84 }
+            ]
+          }
   });
 });
 

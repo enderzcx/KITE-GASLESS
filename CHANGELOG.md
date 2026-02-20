@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project follows Semantic Versioning.
 
+## [v1.5.2-stable] - 2026-02-20
+
+### Added
+- `reactive-stop-orders` action now supports explicit order parameters:
+  - `symbol`
+  - `takeProfit`
+  - `stopLoss`
+- Transfer UI now shows reactive order parameters in:
+  - x402 challenge section
+  - paid result section
+- Backend validation for reactive action params before issuing/confirming paid flow.
+
+### Changed
+- README restructured for judge-facing clarity:
+  - requirement-to-evidence mapping table
+  - explicit demo evidence path
+  - production-gap disclosure section
+- Success card behavior refined:
+  - `reactive-stop-orders` displays order plan details
+  - `Top KOLs` only shown for `kol-score`
+
 ## [v1.5.0] - 2026-02-19
 
 ### Added
