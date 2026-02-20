@@ -1,0 +1,39 @@
+<svg width="1920" height="520" viewBox="0 0 1920 520" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="KiteClaw cover">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f6f2e8"/>
+      <stop offset="100%" stop-color="#efe8d8"/>
+    </linearGradient>
+    <radialGradient id="orb" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(1400 160) rotate(90) scale(280 480)">
+      <stop stop-color="#7e9a45" stop-opacity="0.26"/>
+      <stop offset="1" stop-color="#7e9a45" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1920" height="520" fill="url(#bg)"/>
+  <rect width="1920" height="520" fill="url(#orb)"/>
+
+  <g opacity="0.35" fill="#d0a63f">
+    <circle cx="120" cy="84" r="2"/><circle cx="136" cy="84" r="2"/><circle cx="152" cy="84" r="2"/>
+    <circle cx="120" cy="100" r="2"/><circle cx="136" cy="100" r="2"/><circle cx="152" cy="100" r="2"/>
+    <circle cx="1760" cy="86" r="2"/><circle cx="1776" cy="86" r="2"/><circle cx="1792" cy="86" r="2"/>
+    <circle cx="1760" cy="102" r="2"/><circle cx="1776" cy="102" r="2"/><circle cx="1792" cy="102" r="2"/>
+  </g>
+
+  <text x="960" y="218" text-anchor="middle" fill="#252525" font-size="74" font-family="system-ui, -apple-system, Segoe UI, Inter, sans-serif" font-weight="700">
+    KITECLAW
+  </text>
+  <text x="960" y="286" text-anchor="middle" fill="#4b4b4b" font-size="33" font-family="system-ui, -apple-system, Segoe UI, Inter, sans-serif" font-weight="500">
+    Agent-native Payments Dashboard
+  </text>
+  <text x="960" y="338" text-anchor="middle" fill="#5f6a41" font-size="22" font-family="system-ui, -apple-system, Segoe UI, Inter, sans-serif" font-weight="600">
+    x402 + ERC-8004 + AA Session Delegation
+  </text>
+
+  <g>
+    <rect x="790" y="376" width="340" height="56" rx="28" fill="#5a7b2f"/>
+    <text x="960" y="411" text-anchor="middle" fill="#ffffff" font-size="22" font-family="system-ui, -apple-system, Segoe UI, Inter, sans-serif" font-weight="650">
+      LIVE DEMO WORKSPACE
+    </text>
+  </g>
+</svg>

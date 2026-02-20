@@ -72,6 +72,7 @@ function Transfer({
   const [paidResult, setPaidResult] = useState(null);
   const [identity, setIdentity] = useState(null);
   const [identityError, setIdentityError] = useState('');
+  const [coverHidden, setCoverHidden] = useState(false);
 
   const rpcUrl =
     import.meta.env.VITE_KITEAI_RPC_URL ||
@@ -234,6 +235,17 @@ function Transfer({
           onOpenAbuseCases={onOpenAbuseCases}
         />
       </header>
+
+      {!coverHidden && (
+        <section className="shell-cover">
+          <img
+            className="shell-cover-image"
+            src={import.meta.env.VITE_KITECLAW_TOP_IMAGE || '/top-image.svg'}
+            alt="KiteClaw dashboard cover"
+            onError={() => setCoverHidden(true)}
+          />
+        </section>
+      )}
 
       <section className="shell-hero">
         <h1>AI Agent Payment Console</h1>
