@@ -1,16 +1,17 @@
 ﻿# KITE GASLESS Frontend
 
-This frontend demonstrates an AI-agent-friendly payment flow on KiteAI Testnet using Account Abstraction (ERC-4337).
+This frontend demonstrates an agent-native payment flow on KiteAI Testnet using Account Abstraction (ERC-4337), x402-style paid actions, and verifiable identity display.
 
 ## What it includes
 
 - Wallet login and AA wallet derivation
 - One-time Authentication UX
-- Request page (agent-style purchase simulation)
-- Transfer page (manual token transfer)
+- Transfer page (x402 challenge + on-chain pay + proof verify)
 - Vault management (create, deposit, withdraw, spending rules)
 - Agent payment settings
 - Transfer records viewer
+- On-chain confirmation page
+- Abuse/limit graceful-failure page
 
 ## Setup
 
@@ -31,7 +32,6 @@ cp .env.example .env
 ```env
 VITE_KITEAI_RPC_URL=https://rpc-testnet.gokite.ai/
 VITE_KITEAI_BUNDLER_URL=https://bundler-service.staging.gokite.ai/rpc/
-VITE_KITECLAW_PRIVATE_KEY=0x_your_test_private_key
 VITE_KITEAI_SETTLEMENT_TOKEN=0x0fF5393387ad2f9f691FD6Fd28e07E3969e27e63
 VITE_KITECLAW_VAULT_IMPLEMENTATION=0xB5AAFCC6DD4DFc2B80fb8BCcf406E1a2Fd559e23
 VITE_KITECLAW_AA_WALLET_ADDRESS=
@@ -83,4 +83,8 @@ Use two terminals:
 
 - Use testnet-only wallets and funds.
 - Do not commit `.env`.
-- For production, move signing to backend/HSM instead of frontend private keys.
+- For production, keep root keys in backend/KMS/HSM and use delegated/session execution.
+
+## License
+
+MIT License (see repository root `LICENSE`).

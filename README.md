@@ -207,3 +207,7 @@ This project meets bounty demo requirements, but still has non-production parts:
 - Demo script: `DEMO_X402_SCRIPT.md`
 - ERC-8004 setup: `ERC8004_SETUP.md`
 - Changelog: `CHANGELOG.md`
+
+## License
+
+This project is licensed under the **MIT License**. See `LICENSE`.
