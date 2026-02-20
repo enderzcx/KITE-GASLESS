@@ -17,3 +17,7 @@ backend/data/*.json
 
 # local notes
 重要信息.md
+
+# aa-v2 build outputs
+aa-v2/artifacts/
+aa-v2/cache/

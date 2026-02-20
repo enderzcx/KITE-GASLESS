@@ -1,0 +1,19 @@
+{
+  "name": "kite-gasless-aa-v2",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "compile": "hardhat compile",
+    "deploy:v2": "hardhat run scripts/deploy-v2.js --network kite"
+  },
+  "devDependencies": {
+    "@account-abstraction/contracts": "^0.7.0",
+    "@nomicfoundation/hardhat-ethers": "^3.0.5",
+    "@openzeppelin/contracts": "^5.4.0",
+    "dotenv": "^17.2.3",
+    "ethers": "^6.16.0",
+    "hardhat": "^2.22.2"
+  }
+}
+
