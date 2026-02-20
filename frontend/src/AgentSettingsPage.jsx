@@ -7,6 +7,8 @@ const DEFAULT_TOKEN = '0x0fF5393387ad2f9f691FD6Fd28e07E3969e27e63';
 const DEFAULT_GATEWAY_RECIPIENT = '0x6D705b93F0Da7DC26e46cB39Decc3baA4fb4dd29';
 const SESSION_KEY_ADDR_STORAGE = 'kiteclaw_session_address';
 const SESSION_KEY_PRIV_STORAGE = 'kiteclaw_session_privkey';
+const SESSION_ID_STORAGE = 'kiteclaw_session_id';
+const SESSION_TX_STORAGE = 'kiteclaw_session_tx_hash';
 
 const accountInterface = new ethers.Interface([
   {
@@ -80,6 +82,13 @@ function AgentSettingsPage({ onBack, walletState }) {
   const [revokedPayers, setRevokedPayers] = useState([]);
   const [allowedToken, setAllowedToken] = useState(DEFAULT_TOKEN);
   const [status, setStatus] = useState('');
+  const [sessionId, setSessionId] = useState('');
+  const [sessionTxHash, setSessionTxHash] = useState('');
+  const [sessionVerify, setSessionVerify] = useState({
+    checked: false,
+    ok: false,
+    message: 'Not verified yet.'
+  });
 
   const rpcUrl =
     import.meta.env.VITE_KITEAI_RPC_URL ||
@@ -93,10 +102,14 @@ function AgentSettingsPage({ onBack, walletState }) {
   useEffect(() => {
     const storedSessionAddr = localStorage.getItem(SESSION_KEY_ADDR_STORAGE) || '';
     const storedSessionPriv = localStorage.getItem(SESSION_KEY_PRIV_STORAGE) || '';
+    const storedSessionId = localStorage.getItem(SESSION_ID_STORAGE) || '';
+    const storedSessionTx = localStorage.getItem(SESSION_TX_STORAGE) || '';
     if (storedSessionAddr && storedSessionPriv) {
       setSessionKey(storedSessionAddr);
       setSessionPrivKey(storedSessionPriv);
     }
+    if (storedSessionId) setSessionId(storedSessionId);
+    if (storedSessionTx) setSessionTxHash(storedSessionTx);
   }, []);
 
   useEffect(() => {
@@ -198,13 +211,14 @@ function AgentSettingsPage({ onBack, walletState }) {
       const generatedSessionWallet = ethers.Wallet.createRandom();
       setSessionKey(generatedSessionWallet.address);
       setSessionPrivKey(generatedSessionWallet.privateKey);
+      setAgentAddress(generatedSessionWallet.address);
       const sessionId = ethers.keccak256(
         ethers.toUtf8Bytes(`${generatedSessionWallet.address}-${Date.now()}`)
       );
       const rules = await buildRules(signer.provider);
       const data = accountInterface.encodeFunctionData('createSession', [
         sessionId,
-        agentAddress || accountAddress,
+        generatedSessionWallet.address,
         rules
       ]);
       const tx = await signer.sendTransaction({ to: accountAddress, data });
@@ -212,9 +226,74 @@ function AgentSettingsPage({ onBack, walletState }) {
       await syncGatewayPolicy();
       localStorage.setItem(SESSION_KEY_ADDR_STORAGE, generatedSessionWallet.address);
       localStorage.setItem(SESSION_KEY_PRIV_STORAGE, generatedSessionWallet.privateKey);
+      localStorage.setItem(SESSION_ID_STORAGE, sessionId);
+      localStorage.setItem(SESSION_TX_STORAGE, tx.hash);
+      setSessionId(sessionId);
+      setSessionTxHash(tx.hash);
       setStatus(`Session generated, rules applied, gateway policy synced: ${tx.hash}\nSessionId: ${sessionId}`);
+      await verifySessionOnChain({
+        accountAddr: accountAddress,
+        txHash: tx.hash
+      });
     } catch (err) {
       setStatus(`Creation failed: ${err.message}`);
+    }
+  };
+
+  const verifySessionOnChain = async ({
+    accountAddr = accountAddress,
+    txHash = sessionTxHash
+  } = {}) => {
+    if (!txHash) {
+      setSessionVerify({
+        checked: true,
+        ok: false,
+        message: 'Missing session creation tx hash.'
+      });
+      return;
+    }
+    try {
+      const provider = new ethers.JsonRpcProvider(rpcUrl);
+      const receipt = await provider.getTransactionReceipt(txHash);
+      if (!receipt) {
+        setSessionVerify({
+          checked: true,
+          ok: false,
+          message: 'Session tx not indexed yet. Try again in a few seconds.'
+        });
+        return;
+      }
+
+      const statusOk = Number(receipt.status) === 1;
+      const toOk = String(receipt.to || '').toLowerCase() === String(accountAddr || '').toLowerCase();
+      if (!statusOk) {
+        setSessionVerify({
+          checked: true,
+          ok: false,
+          message: 'Session tx reverted on-chain (status=0).'
+        });
+        return;
+      }
+      if (!toOk) {
+        setSessionVerify({
+          checked: true,
+          ok: false,
+          message: `Session tx target mismatch. expected ${accountAddr}, got ${receipt.to}`
+        });
+        return;
+      }
+
+      setSessionVerify({
+        checked: true,
+        ok: true,
+        message: `Session creation tx confirmed on-chain (block ${receipt.blockNumber}).`
+      });
+    } catch (err) {
+      setSessionVerify({
+        checked: true,
+        ok: false,
+        message: `Session verification failed: ${err.message}`
+      });
     }
   };
 
@@ -338,6 +417,25 @@ function AgentSettingsPage({ onBack, walletState }) {
             <div className="result-row">
               <span className="label">Session Private Key:</span>
               <span className="value hash">{sessionPrivKey}</span>
+            </div>
+            <div className="result-row">
+              <span className="label">Session ID:</span>
+              <span className="value hash">{sessionId || '-'}</span>
+            </div>
+            <div className="result-row">
+              <span className="label">Session Tx:</span>
+              <span className="value hash">{sessionTxHash || '-'}</span>
+            </div>
+            <div className="result-row">
+              <span className="label">On-chain Verify:</span>
+              <span className="value">{sessionVerify.ok ? 'passed' : sessionVerify.checked ? 'failed' : 'not checked'}</span>
+            </div>
+            <div className="result-row">
+              <span className="label">Verify Message:</span>
+              <span className="value">{sessionVerify.message}</span>
+            </div>
+            <div className="vault-actions">
+              <button onClick={() => verifySessionOnChain()}>Verify Session On-chain</button>
             </div>
             <div className="request-error">
               Store the private key safely. Use only in local demo.

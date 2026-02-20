@@ -22,6 +22,8 @@ const KITE_AGENT2_AA_ADDRESS =
   process.env.KITE_AGENT2_AA_ADDRESS || '0xEd335560178B85f0524FfFf3372e9Bf45aB42aC8';
 const X402_REACTIVE_PRICE = process.env.X402_REACTIVE_PRICE || '0.03';
 const X402_TTL_MS = 10 * 60 * 1000;
+const KITE_AGENT1_ID = process.env.KITE_AGENT1_ID || '1';
+const KITE_AGENT2_ID = process.env.KITE_AGENT2_ID || '2';
 const POLICY_MAX_PER_TX_DEFAULT = Number(process.env.KITE_POLICY_MAX_PER_TX || '0.20');
 const POLICY_DAILY_LIMIT_DEFAULT = Number(process.env.KITE_POLICY_DAILY_LIMIT || '0.60');
 const POLICY_ALLOWED_RECIPIENTS_DEFAULT = String(
@@ -239,6 +241,35 @@ function normalizeReactiveParams(actionParams = {}) {
     symbol,
     takeProfit: takeProfitRaw,
     stopLoss: stopLossRaw
+  };
+}
+
+function buildA2ACapabilities() {
+  return {
+    protocol: 'a2a-mvp-v0',
+    targetAgent: {
+      agentId: KITE_AGENT2_ID,
+      wallet: KITE_AGENT2_AA_ADDRESS,
+      service: 'reactive-stop-orders'
+    },
+    payment: {
+      standard: 'x402',
+      flow: '402 -> on-chain payment -> proof verify -> 200',
+      settlementToken: SETTLEMENT_TOKEN,
+      network: 'kite_testnet'
+    },
+    actions: [
+      {
+        id: 'reactive-stop-orders',
+        input: {
+          symbol: 'string',
+          takeProfit: 'number > 0',
+          stopLoss: 'number > 0'
+        },
+        price: X402_REACTIVE_PRICE,
+        recipient: KITE_AGENT2_AA_ADDRESS
+      }
+    ]
   };
 }
 
@@ -533,6 +564,172 @@ app.get('/api/identity', async (req, res) => {
       reason: error.message
     });
   }
+});
+
+app.get('/api/a2a/capabilities', (req, res) => {
+  res.json({ ok: true, capabilities: buildA2ACapabilities() });
+});
+
+app.post('/api/a2a/tasks/stop-orders', (req, res) => {
+  const body = req.body || {};
+  const payer = String(body.payer || '').trim();
+  const sourceAgentId = String(body.sourceAgentId || KITE_AGENT1_ID).trim();
+  const targetAgentId = String(body.targetAgentId || KITE_AGENT2_ID).trim();
+  const requestId = String(body.requestId || '').trim();
+  const paymentProof = body.paymentProof;
+  const task = body.task || {};
+
+  let actionParams = null;
+  try {
+    actionParams = normalizeReactiveParams(task);
+  } catch (error) {
+    return res.status(400).json({
+      error: 'invalid_task',
+      reason: error.message
+    });
+  }
+
+  const actionCfg = getActionConfig('reactive-stop-orders');
+  const requests = readX402Requests();
+  const a2aQuery = `A2A stop-order ${actionParams.symbol} tp=${actionParams.takeProfit} sl=${actionParams.stopLoss}`;
+
+  if (!requestId || !paymentProof) {
+    const policyResult = evaluateTransferPolicy({
+      payer,
+      recipient: actionCfg.recipient,
+      amount: actionCfg.amount,
+      requests
+    });
+    if (!policyResult.ok) {
+      logPolicyFailure({
+        action: 'a2a-reactive-stop-orders',
+        payer,
+        recipient: actionCfg.recipient,
+        amount: actionCfg.amount,
+        code: policyResult.code,
+        message: policyResult.message,
+        evidence: policyResult.evidence
+      });
+      return res.status(403).json({
+        error: policyResult.code,
+        reason: policyResult.message,
+        evidence: policyResult.evidence
+      });
+    }
+
+    const reqItem = createX402Request(a2aQuery, payer, actionCfg.action, {
+      amount: actionCfg.amount,
+      recipient: actionCfg.recipient,
+      policy: {
+        decision: 'allowed',
+        snapshot: buildPolicySnapshot(),
+        evidence: policyResult.evidence
+      }
+    });
+    reqItem.actionParams = actionParams;
+    reqItem.a2a = {
+      sourceAgentId,
+      targetAgentId,
+      taskType: 'reactive-stop-orders'
+    };
+    requests.unshift(reqItem);
+    writeX402Requests(requests);
+
+    return res.status(402).json({
+      ...buildPaymentRequiredResponse(reqItem),
+      a2a: {
+        protocol: 'a2a-mvp-v0',
+        sourceAgentId,
+        targetAgentId,
+        taskType: 'reactive-stop-orders',
+        task: actionParams
+      }
+    });
+  }
+
+  const reqItem = requests.find((item) => item.requestId === requestId);
+  if (!reqItem) {
+    return res.status(402).json({
+      error: 'payment_required',
+      reason: 'request not found'
+    });
+  }
+
+  if (Date.now() > reqItem.expiresAt) {
+    reqItem.status = 'expired';
+    writeX402Requests(requests);
+    return res.status(402).json(buildPaymentRequiredResponse(reqItem, 'request expired'));
+  }
+
+  if (reqItem.status === 'paid') {
+    return res.json({
+      ok: true,
+      mode: 'x402',
+      requestId: reqItem.requestId,
+      reused: true,
+      result: {
+        summary: 'A2A reactive stop-order task already unlocked',
+        orderPlan: {
+          symbol: reqItem?.actionParams?.symbol || '-',
+          takeProfit: reqItem?.actionParams?.takeProfit ?? '-',
+          stopLoss: reqItem?.actionParams?.stopLoss ?? '-',
+          provider: 'Reactive Contracts'
+        }
+      },
+      a2a: reqItem.a2a || null
+    });
+  }
+
+  const validationError = validatePaymentProof(reqItem, paymentProof);
+  if (validationError) {
+    return res.status(402).json(buildPaymentRequiredResponse(reqItem, validationError));
+  }
+
+  const verified = verifyProofByLocalRecord(reqItem, paymentProof);
+  if (!verified) {
+    return res.status(402).json(
+      buildPaymentRequiredResponse(reqItem, 'proof not found in transfer records')
+    );
+  }
+
+  reqItem.status = 'paid';
+  reqItem.paidAt = Date.now();
+  reqItem.paymentTxHash = paymentProof.txHash;
+  reqItem.paymentProof = {
+    requestId: paymentProof.requestId,
+    txHash: paymentProof.txHash,
+    payer: paymentProof.payer || '',
+    tokenAddress: paymentProof.tokenAddress,
+    recipient: paymentProof.recipient,
+    amount: paymentProof.amount
+  };
+  writeX402Requests(requests);
+
+  return res.json({
+    ok: true,
+    mode: 'x402',
+    requestId: reqItem.requestId,
+    payment: {
+      txHash: paymentProof.txHash,
+      amount: reqItem.amount,
+      tokenAddress: reqItem.tokenAddress,
+      recipient: reqItem.recipient
+    },
+    result: {
+      summary: 'A2A reactive stop-order task unlocked by x402 payment',
+      orderPlan: {
+        symbol: reqItem?.actionParams?.symbol || '-',
+        takeProfit: reqItem?.actionParams?.takeProfit ?? '-',
+        stopLoss: reqItem?.actionParams?.stopLoss ?? '-',
+        provider: 'Reactive Contracts'
+      }
+    },
+    a2a: reqItem.a2a || {
+      sourceAgentId,
+      targetAgentId,
+      taskType: 'reactive-stop-orders'
+    }
+  });
 });
 
 app.post('/api/signer/sign-userop-hash', async (req, res) => {
