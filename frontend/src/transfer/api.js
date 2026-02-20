@@ -62,7 +62,16 @@ export async function requestPaidAction({
     body: JSON.stringify(payload)
   });
 
-  const body = await res.json();
+  const raw = await res.text();
+  let body = null;
+  try {
+    body = raw ? JSON.parse(raw) : {};
+  } catch {
+    throw new Error(
+      `API ${endpoint} returned non-JSON (HTTP ${res.status}). ` +
+        `Please restart backend and ensure latest routes are loaded.`
+    );
+  }
   return { status: res.status, body };
 }
 
