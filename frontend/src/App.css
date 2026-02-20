@@ -530,6 +530,19 @@ button.loading {
 .x402-head,
 .x402-row {
   grid-template-columns: 100px 90px 90px 130px 80px 1.2fr 1.1fr 80px 80px 130px 1.2fr;
+  min-width: 1450px;
+}
+
+.x402-table-wrap {
+  overflow-x: auto;
+}
+
+.x402-row .records-cell.hash,
+.x402-row .tx-link {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  word-break: normal;
 }
 
 .cases-grid {

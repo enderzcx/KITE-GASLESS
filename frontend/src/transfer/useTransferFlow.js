@@ -119,8 +119,14 @@ export function useTransferFlow({
         actionParams,
         identity
       });
+      if (firstTry.status === 403) {
+        const code = firstTry.body?.error || 'policy_blocked';
+        const reason = firstTry.body?.reason || 'Gateway policy rejected this request.';
+        throw new Error(`Policy rejected (${code}): ${reason}`);
+      }
       if (firstTry.status !== 402) {
-        throw new Error(`Expected 402 challenge, got ${firstTry.status}`);
+        const reason = firstTry.body?.reason || firstTry.body?.error || 'unexpected response';
+        throw new Error(`Expected 402 challenge, got ${firstTry.status} (${reason})`);
       }
       const challenge = firstTry.body?.x402;
       const payInfo = challenge?.accepts?.[0];

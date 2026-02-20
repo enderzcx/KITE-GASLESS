@@ -311,51 +311,53 @@ function OnChainPage({ onBack }) {
 
       <div className="vault-card">
         <h2>x402 Payment Mapping</h2>
-        <div className="records-head x402-head">
-          <span>Flow Mode</span>
-          <span>Source Agent</span>
-          <span>Target Agent</span>
-          <span>Action</span>
-          <span>Agent ID</span>
-          <span>Request ID</span>
-          <span>Payer</span>
-          <span>Amount</span>
-          <span>Status</span>
-          <span>Paid At</span>
-          <span>Payment Tx Hash</span>
-        </div>
-
-        {displayedX402Requests.length === 0 && (
-          <div className="result-row">No x402 mappings match your filter.</div>
-        )}
-
-        {displayedX402Requests.map((item) => (
-          <div className="records-row x402-row" key={item.requestId}>
-            <span className="records-cell">{resolveFlowMode(item)}</span>
-            <span className="records-cell">{item?.a2a?.sourceAgentId || '-'}</span>
-            <span className="records-cell">{item?.a2a?.targetAgentId || '-'}</span>
-            <span className="records-cell">{item.action || '-'}</span>
-            <span className="records-cell">
-              {item?.identity?.agentId || item?.agentId || identity?.configured?.agentId || '-'}
-            </span>
-            <span className="records-cell hash">{item.requestId}</span>
-            <span className="records-cell hash">{item.payer || '-'}</span>
-            <span className="records-cell">{item.amount || '-'}</span>
-            <span className="records-cell">{item.status || '-'}</span>
-            <span className="records-cell">
-              {item.paidAt ? new Date(Number(item.paidAt)).toISOString() : '-'}
-            </span>
-            <span className="records-cell hash">
-              {item.paymentTxHash ? (
-                <a className="tx-link" href={explorerTx(item.paymentTxHash)} target="_blank" rel="noreferrer">
-                  {item.paymentTxHash}
-                </a>
-              ) : (
-                '-'
-              )}
-            </span>
+        <div className="x402-table-wrap">
+          <div className="records-head x402-head">
+            <span>Flow Mode</span>
+            <span>Source Agent</span>
+            <span>Target Agent</span>
+            <span>Action</span>
+            <span>Agent ID</span>
+            <span>Request ID</span>
+            <span>Payer</span>
+            <span>Amount</span>
+            <span>Status</span>
+            <span>Paid At</span>
+            <span>Payment Tx Hash</span>
           </div>
-        ))}
+
+          {displayedX402Requests.length === 0 && (
+            <div className="result-row">No x402 mappings match your filter.</div>
+          )}
+
+          {displayedX402Requests.map((item) => (
+            <div className="records-row x402-row" key={item.requestId}>
+              <span className="records-cell">{resolveFlowMode(item)}</span>
+              <span className="records-cell">{item?.a2a?.sourceAgentId || '-'}</span>
+              <span className="records-cell">{item?.a2a?.targetAgentId || '-'}</span>
+              <span className="records-cell">{item.action || '-'}</span>
+              <span className="records-cell">
+                {item?.identity?.agentId || item?.agentId || identity?.configured?.agentId || '-'}
+              </span>
+              <span className="records-cell hash" title={item.requestId}>{item.requestId}</span>
+              <span className="records-cell hash" title={item.payer || ''}>{item.payer || '-'}</span>
+              <span className="records-cell">{item.amount || '-'}</span>
+              <span className="records-cell">{item.status || '-'}</span>
+              <span className="records-cell">
+                {item.paidAt ? new Date(Number(item.paidAt)).toISOString() : '-'}
+              </span>
+              <span className="records-cell hash" title={item.paymentTxHash || ''}>
+                {item.paymentTxHash ? (
+                  <a className="tx-link" href={explorerTx(item.paymentTxHash)} target="_blank" rel="noreferrer">
+                    {item.paymentTxHash}
+                  </a>
+                ) : (
+                  '-'
+                )}
+              </span>
+            </div>
+          ))}
+        </div>
       </div>
 
       <div className="vault-card">
