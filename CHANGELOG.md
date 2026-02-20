@@ -11,6 +11,26 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 - `KNOWN_ISSUES.md` for timeout/mapping/identity troubleshooting.
 - README pre-demo checklist and stable-baseline section.
 
+## [v1.5.3-stable] - 2026-02-20
+
+### Added
+- A2A evidence fields in x402 mapping views:
+  - `Flow Mode`
+  - `Source Agent`
+  - `Target Agent`
+- README A2A demo evidence checklist for judge walkthrough.
+
+### Changed
+- Transfer error messaging improved for request stage:
+  - policy rejections now show readable reason/code instead of generic `Expected 402 ...`.
+- On-chain x402 mapping table layout stabilized:
+  - horizontal scroll wrapper for wide columns
+  - hash/link cells now use ellipsis and tooltip instead of vertical overflow.
+- Frontend visual theme updated to a Kite homepage-like light style:
+  - warm light background
+  - olive primary buttons
+  - softer card shadows and borders.
+
 ## [v1.5.2-stable] - 2026-02-20
 
 ### Added

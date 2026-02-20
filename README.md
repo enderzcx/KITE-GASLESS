@@ -1,12 +1,12 @@
 ﻿# KITE GASLESS
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-v1.5.2--stable-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-v1.5.3--stable-blue)](./CHANGELOG.md)
 [![Demo Status](https://img.shields.io/badge/demo-ready-brightgreen)](#demo-walkthrough)
 
 KITE GASLESS is an upgraded demo of **[Kite Bot](https://github.com/enderzcx/Kite-Bot-Seamless-Autonomous-Payment-AI-Agent)** built on **KiteAI Testnet**.
 
-Current Version: `v1.5.2-stable`
+Current Version: `v1.5.3-stable`
 
 Goal: build an **agent-native payment app** with:
 - x402-style pay-per-action flow

@@ -1,4 +1,4 @@
-# Stable Baseline (v1.5.2-stable)
+# Stable Baseline (v1.5.3-stable)
 
 This file defines the recommended demo baseline to maximize run stability.
 
