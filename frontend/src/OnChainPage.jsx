@@ -319,11 +319,11 @@ function OnChainPage({ onBack }) {
             <span>Action</span>
             <span>Agent ID</span>
             <span>Request ID</span>
+            <span>Payment Tx Hash</span>
             <span>Payer</span>
             <span>Amount</span>
             <span>Status</span>
             <span>Paid At</span>
-            <span>Payment Tx Hash</span>
           </div>
 
           {displayedX402Requests.length === 0 && (
@@ -340,12 +340,6 @@ function OnChainPage({ onBack }) {
                 {item?.identity?.agentId || item?.agentId || identity?.configured?.agentId || '-'}
               </span>
               <span className="records-cell hash" title={item.requestId}>{item.requestId}</span>
-              <span className="records-cell hash" title={item.payer || ''}>{item.payer || '-'}</span>
-              <span className="records-cell">{item.amount || '-'}</span>
-              <span className="records-cell">{item.status || '-'}</span>
-              <span className="records-cell">
-                {item.paidAt ? new Date(Number(item.paidAt)).toISOString() : '-'}
-              </span>
               <span className="records-cell hash" title={item.paymentTxHash || ''}>
                 {item.paymentTxHash ? (
                   <a className="tx-link" href={explorerTx(item.paymentTxHash)} target="_blank" rel="noreferrer">
@@ -354,6 +348,12 @@ function OnChainPage({ onBack }) {
                 ) : (
                   '-'
                 )}
+              </span>
+              <span className="records-cell hash" title={item.payer || ''}>{item.payer || '-'}</span>
+              <span className="records-cell">{item.amount || '-'}</span>
+              <span className="records-cell">{item.status || '-'}</span>
+              <span className="records-cell">
+                {item.paidAt ? new Date(Number(item.paidAt)).toISOString() : '-'}
               </span>
             </div>
           ))}

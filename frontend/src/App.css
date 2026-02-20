@@ -122,7 +122,7 @@ body::after {
 
 .transfer-container {
   width: 100%;
-  max-width: 1240px;
+  max-width: 1560px;
   padding: clamp(20px, 2vw, 32px);
   border-radius: clamp(16px, 2vw, 24px);
   border: 1px solid var(--kite-border);
@@ -130,6 +130,79 @@ body::after {
   box-shadow: var(--shadow-lg);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
+}
+
+.transfer-shell {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.shell-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 18px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid oklch(0.8 0.02 112 / 0.34);
+}
+
+.shell-brand {
+  display: grid;
+  gap: 6px;
+}
+
+.shell-brand p {
+  color: var(--kite-text-muted);
+  font-size: 0.94rem;
+}
+
+.brand-badge {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  border-radius: var(--radius-pill);
+  padding: 6px 12px;
+  background: oklch(0.53 0.095 128 / 0.1);
+  color: oklch(0.42 0.09 128);
+  border: 1px solid oklch(0.64 0.06 122 / 0.4);
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.shell-hero {
+  text-align: center;
+  display: grid;
+  gap: 10px;
+}
+
+.shell-hero p {
+  max-width: 780px;
+  margin: 0 auto;
+  color: var(--kite-text-muted);
+}
+
+.info-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+
+.workspace-grid {
+  display: grid;
+  grid-template-columns: minmax(620px, 1.35fr) minmax(360px, 0.65fr);
+  gap: var(--space-2);
+}
+
+.workspace-main,
+.workspace-aside {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.workspace-aside .transfer-card {
+  position: sticky;
+  top: 16px;
 }
 
 .transfer-container > * {
@@ -160,9 +233,9 @@ body::after {
 .top-entry {
   display: flex;
   flex-wrap: wrap;
-  justify-content: flex-end;
+  justify-content: flex-start;
   gap: 10px;
-  margin-bottom: var(--space-2);
+  margin-bottom: 0;
 }
 
 .link-btn,
@@ -413,7 +486,7 @@ button.loading::after {
   display: grid;
   align-items: center;
   gap: 12px;
-  min-width: 1150px;
+  min-width: 1280px;
 }
 
 .records-head {
@@ -477,17 +550,17 @@ button.loading::after {
 
 .records-head,
 .records-row {
-  grid-template-columns: 140px 90px 90px 1fr 1.3fr 90px 1.4fr;
+  grid-template-columns: 170px 140px 110px minmax(240px, 1fr) minmax(280px, 1.2fr) 110px minmax(280px, 1.2fr);
 }
 
 .onchain-head,
 .onchain-row {
-  grid-template-columns: 140px 190px 1.2fr 1.2fr 0.85fr 90px 1.5fr;
+  grid-template-columns: 220px 210px minmax(230px, 1fr) minmax(230px, 1fr) minmax(170px, 0.7fr) 110px minmax(280px, 1.2fr);
 }
 
 .policy-head,
 .policy-row {
-  grid-template-columns: 170px 140px 1.2fr 1.2fr 120px 1.4fr;
+  grid-template-columns: 190px 150px minmax(230px, 1fr) minmax(230px, 1fr) 120px minmax(300px, 1.2fr);
 }
 
 .x402-table-wrap {
@@ -499,7 +572,7 @@ button.loading::after {
 
 .x402-head,
 .x402-row {
-  grid-template-columns: 100px 96px 96px 130px 80px 1.1fr 1.1fr 80px 80px 130px 1.2fr;
+  grid-template-columns: 100px 96px 96px 130px 80px 1.05fr 1.25fr 1fr 80px 80px 130px;
   min-width: 1440px;
 }
 
@@ -526,6 +599,27 @@ button.loading::after {
 .confirm-card .result-row .value,
 .x402-card .result-row .value {
   word-break: break-word;
+}
+
+.balance-row {
+  align-items: center;
+}
+
+.balance-row .label {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.balance-value {
+  flex-shrink: 0;
+  min-width: 110px;
+  text-align: right;
+  font-size: 1.95rem;
+  font-weight: 760;
+  letter-spacing: -0.01em;
 }
 
 .login-toast {
@@ -606,6 +700,23 @@ a:focus-visible {
 
   .transfer-layout {
     grid-template-columns: 1fr;
+  }
+
+  .shell-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .info-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .workspace-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .workspace-aside .transfer-card {
+    position: static;
   }
 }
 
