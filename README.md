@@ -11,8 +11,8 @@ Current Version: `v1.6.1`
 
 ### Public Web Demo
 
-- Live URL: `https://<your-public-site>`
-- Before submission, replace the placeholder with your real public URL.
+- Live URL (testing): `https://kiteclaw.duckdns.org`
+- Status: public deployment is under active testing; some flows may still be unstable on cloud runtime.
 - Purpose: judge-facing online demo for end-to-end flow validation.
 - Expected pages:
   - Dashboard (`/`)
@@ -22,6 +22,7 @@ Current Version: `v1.6.1`
 ### Local Reproducible Version
 
 - This repository can be run fully on local machine for reproducible review.
+- Status: local end-to-end flow is validated and runnable.
 - Use `frontend/.env.example` + `backend/.env.example` for local startup.
 - Core local entrypoints:
   - frontend: `npm run dev` (Vite)
