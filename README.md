@@ -16,6 +16,26 @@ Current Version: `v1.6.1`
 - Auditable settlement mapping (`requestId <-> txHash`)
 - Graceful failures (insufficient funds, scope violation, expired/fake proof)
 
+## Kite Testnet Contribution (ERC-8004 Registries)
+
+KITECLAW deployed and integrated 3 ERC-8004 registry contracts on Kite Testnet through a proxy-upgrade deployment flow:
+
+- IdentityRegistry: `0x196cD2F30dF3dFA3ecD7D536db43e98Fd97fcC5f`
+- ReputationRegistry: `0xD288Ce02a27f77Dc61Ce40FDa81F3dD6D51FF353`
+- ValidationRegistry: `0xFEfcE81bCFA79130a60CD60D69336dadF3bb1569`
+
+These contracts are part of our open implementation contribution for verifiable agent identity and registry-based agent trust signals on Kite Testnet.
+
+## AA-v2 Security Note
+
+`aa-v2` is not only a development process artifact; it is the implementation path that produces the final result:
+
+- One-time owner authorization to create a scoped session key
+- Repeated transfers/payments without repeated wallet confirmation
+- Enforced boundaries: recipient scope, per-tx limit, daily limit, session window
+
+So for this project, `aa-v2` represents both the secure implementation mechanism and the achieved UX outcome (single authorization, then autonomous constrained execution).
+
 ## Real Demo Flow (Current Implementation)
 
 1. Open app and connect wallet.
@@ -48,7 +68,7 @@ Current Version: `v1.6.1`
 KITE GASLESS/
 |- frontend/     # React + Vite UI
 |- backend/      # Express API + x402 + workflow + identity
-|- aa-v2/        # AA contract source and upgrade scripts (advanced)
+|- aa-v2/        # AA security implementation for one-time auth + constrained no-popup execution
 |- skills/       # OpenClaw skill source + packaged skill
 |- goldsky/      # Goldsky subgraph config/ABI used for audit flow
 |- README.md
