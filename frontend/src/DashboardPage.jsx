@@ -44,6 +44,14 @@ function toNumberOrNaN(v) {
   return Number.isFinite(n) ? n : NaN;
 }
 
+function createClientTraceId(prefix = 'trace') {
+  const rand =
+    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID().slice(0, 8)
+      : Math.random().toString(16).slice(2, 10);
+  return `${prefix}_${Date.now()}_${rand}`;
+}
+
 const initialFlow = {
   state: 'idle',
   message: 'Waiting for agent command.',
@@ -91,7 +99,7 @@ export default function DashboardPage({
   const [sessionTxHash, setSessionTxHash] = useState('');
 
   const [runtime, setRuntime] = useState(null);
-  const [identityProfile, setIdentityProfile] = useState(null);
+  const [, setIdentityProfile] = useState(null);
   const [identityError, setIdentityError] = useState('');
 
   const [chatInput, setChatInput] = useState('');
@@ -212,10 +220,16 @@ export default function DashboardPage({
   }, [chatHistory]);
 
   useEffect(() => {
-    const es = new EventSource(apiUrl('/api/events/stream'));
+    if (!traceId) return;
+    const es = new EventSource(apiUrl(`/api/events/stream?traceId=${encodeURIComponent(traceId)}`));
+    const matchesTrace = (payload) => {
+      const payloadTraceId = String(payload?.traceId || '').trim();
+      return !payloadTraceId || payloadTraceId === traceId;
+    };
 
     es.addEventListener('challenge_issued', (evt) => {
       const payload = evt?.data ? JSON.parse(evt.data) : {};
+      if (!matchesTrace(payload)) return;
       setFlow((prev) => ({
         ...prev,
         state: 'running',
@@ -239,6 +253,7 @@ export default function DashboardPage({
 
     es.addEventListener('payment_sent', (evt) => {
       const payload = evt?.data ? JSON.parse(evt.data) : {};
+      if (!matchesTrace(payload)) return;
       setFlow((prev) => ({
         ...prev,
         state: 'running',
@@ -260,6 +275,7 @@ export default function DashboardPage({
 
     es.addEventListener('proof_submitted', (evt) => {
       const payload = evt?.data ? JSON.parse(evt.data) : {};
+      if (!matchesTrace(payload)) return;
       setFlow((prev) => ({
         ...prev,
         state: 'running',
@@ -272,6 +288,7 @@ export default function DashboardPage({
 
     es.addEventListener('unlocked', (evt) => {
       const payload = evt?.data ? JSON.parse(evt.data) : {};
+      if (!matchesTrace(payload)) return;
       setFlow((prev) => ({
         ...prev,
         state: 'success',
@@ -311,6 +328,7 @@ export default function DashboardPage({
 
     es.addEventListener('failed', (evt) => {
       const payload = evt?.data ? JSON.parse(evt.data) : {};
+      if (!matchesTrace(payload)) return;
       const reason = String(payload?.reason || payload?.error || 'Unknown error');
       const insufficient = /(insufficient|balance)/i.test(reason);
       setFlow((prev) => ({
@@ -334,7 +352,7 @@ export default function DashboardPage({
     });
 
     return () => es.close();
-  }, []);
+  }, [apiBase, traceId]);
 
   const getSigner = async () => {
     if (!walletState?.ownerAddress || typeof window.ethereum === 'undefined') {
@@ -442,6 +460,7 @@ export default function DashboardPage({
   const sendChat = async () => {
     if (!chatInput.trim() || chatBusy) return;
     const userText = chatInput.trim();
+    const requestTraceId = createClientTraceId('trace');
     const requiresA2AVerification = isA2AServiceMessage(userText);
     const historyPayload = [...chatHistory, { role: 'user', text: userText }]
       .slice(-12)
@@ -452,6 +471,7 @@ export default function DashboardPage({
       .filter((item) => item.content);
     setChatInput('');
     setChatBusy(true);
+    setTraceId(requestTraceId);
     setFlow((prev) => ({ ...prev, error: '' }));
     setChatHistory((prev) => [...prev, { role: 'user', text: userText, ts: Date.now() }]);
 
@@ -500,7 +520,7 @@ export default function DashboardPage({
         body: JSON.stringify({
           message: userText,
           sessionId: sessionId || runtime?.sessionId || '',
-          traceId: traceId || undefined,
+          traceId: requestTraceId,
           history: historyPayload
         })
       });

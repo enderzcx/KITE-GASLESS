@@ -48,7 +48,6 @@ function Transfer({
   const [userOpHash, setUserOpHash] = useState('');
   const [status, setStatus] = useState('');
   const [authStatus, setAuthStatus] = useState('');
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [confirmState, setConfirmState] = useState({
     stage: 'idle',
     message: 'Waiting for transfer...',
@@ -79,29 +78,21 @@ function Transfer({
     import.meta.env.VITE_KITEAI_BUNDLER_URL ||
     import.meta.env.VITE_BUNDLER_URL ||
     'https://bundler-service.staging.gokite.ai/rpc/';
+  const effectiveOwner = walletState?.ownerAddress || owner;
+  const effectiveAAWallet = walletState?.aaAddress || aaWallet;
+  const isAuthenticated = (() => {
+    if (!effectiveOwner || typeof window === 'undefined') return false;
+    const authKey = `${AUTH_STORAGE_PREFIX}${effectiveOwner.toLowerCase()}`;
+    return localStorage.getItem(authKey) === 'ok';
+  })();
 
   const sdk = new GokiteAASDK({
     network: 'kite_testnet',
     rpcUrl,
     bundlerUrl,
     entryPointAddress: '0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108',
-    proxyAddress: aaWallet || undefined
+    proxyAddress: effectiveAAWallet || undefined
   });
-
-  useEffect(() => {
-    if (walletState?.ownerAddress) setOwner(walletState.ownerAddress);
-    if (walletState?.aaAddress) setAAWallet(walletState.aaAddress);
-  }, [walletState]);
-
-  useEffect(() => {
-    const currentOwner = walletState?.ownerAddress || owner;
-    if (!currentOwner) {
-      setIsAuthenticated(false);
-      return;
-    }
-    const authKey = `${AUTH_STORAGE_PREFIX}${currentOwner.toLowerCase()}`;
-    setIsAuthenticated(localStorage.getItem(authKey) === 'ok');
-  }, [walletState?.ownerAddress, owner]);
 
   useEffect(() => {
     const loadIdentity = async () => {
@@ -159,12 +150,12 @@ function Transfer({
   const { handleAuthentication } = useTransferAuth({
     sdk,
     walletState,
-    owner,
+    owner: effectiveOwner,
     setOwner,
     setAAWallet,
     setSenderBalance,
     setAuthStatus,
-    setIsAuthenticated,
+    setIsAuthenticated: () => {},
     constants: {
       AUTH_STORAGE_PREFIX,
       SETTLEMENT_TOKEN,
@@ -175,8 +166,8 @@ function Transfer({
   const { clearChallenge, handleRequestPaymentInfo, handlePayAndSubmitProof } = useTransferFlow({
     sdk,
     walletState,
-    owner,
-    aaWallet,
+    owner: effectiveOwner,
+    aaWallet: effectiveAAWallet,
     setAAWallet,
     isAuthenticated,
     identity,
@@ -243,9 +234,13 @@ function Transfer({
       </section>
 
       <section className="info-grid">
-        <AccountInfoCard aaWallet={aaWallet} owner={owner} actionType={actionType} />
+        <AccountInfoCard aaWallet={effectiveAAWallet} owner={effectiveOwner} actionType={actionType} />
         <IdentityCard identity={identity} identityError={identityError} />
-        <BalanceCard aaWallet={aaWallet} senderBalance={senderBalance} walletConnected={Boolean(owner)} />
+        <BalanceCard
+          aaWallet={effectiveAAWallet}
+          senderBalance={senderBalance}
+          walletConnected={Boolean(effectiveOwner)}
+        />
       </section>
 
       <section className="workspace-grid">
@@ -298,7 +293,7 @@ function Transfer({
         txHash={txHash}
         userOpHash={userOpHash}
         paidResult={paidResult}
-        aaWallet={aaWallet}
+        aaWallet={effectiveAAWallet}
         senderBalance={senderBalance}
       />
 

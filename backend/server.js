@@ -85,7 +85,7 @@ const openclawAdapter = createOpenClawAdapter({
 });
 
 function authConfigured() {
-  return false;
+  return Boolean(API_KEY_ADMIN || API_KEY_AGENT || API_KEY_VIEWER);
 }
 
 function extractApiKey(req) {
@@ -193,9 +193,20 @@ const sseClients = new Set();
 
 function broadcastEvent(eventName, payload = {}) {
   const msg = `event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`;
-  for (const res of sseClients) {
+  const eventTraceId = String(payload?.traceId || '').trim();
+  for (const client of sseClients) {
+    const clientTraceId = String(client?.traceId || '').trim();
+    if (!clientTraceId && eventTraceId) {
+      continue;
+    }
+    if (clientTraceId && eventTraceId && clientTraceId !== eventTraceId) {
+      continue;
+    }
+    if (clientTraceId && !eventTraceId) {
+      continue;
+    }
     try {
-      res.write(msg);
+      client.res.write(msg);
     } catch {
       // ignore broken stream
     }
@@ -491,6 +502,13 @@ function computeDashboardKpi(items = []) {
 
 function createTraceId(prefix = 'trace') {
   return `${prefix}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+}
+
+function resolveWorkflowTraceId(requestedTraceId = '') {
+  const input = String(requestedTraceId || '').trim();
+  if (!input) return createTraceId('workflow');
+  const exists = readWorkflows().some((item) => String(item?.traceId || '') === input);
+  return exists ? createTraceId('workflow') : input;
 }
 
 function appendWorkflowStep(workflow, name, status, details = {}) {
@@ -1433,13 +1451,24 @@ app.get('/api/chat/agent/health', requireRole('viewer'), async (req, res) => {
 });
 
 app.get('/api/events/stream', requireRole('viewer'), (req, res) => {
+  const traceIdFilter = String(req.query?.traceId || '').trim();
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders?.();
 
-  sseClients.add(res);
-  res.write(`event: connected\ndata: ${JSON.stringify({ ok: true, at: new Date().toISOString() })}\n\n`);
+  const client = {
+    res,
+    traceId: traceIdFilter
+  };
+  sseClients.add(client);
+  res.write(
+    `event: connected\ndata: ${JSON.stringify({
+      ok: true,
+      at: new Date().toISOString(),
+      traceId: traceIdFilter || ''
+    })}\n\n`
+  );
 
   const keepalive = setInterval(() => {
     try {
@@ -1451,7 +1480,7 @@ app.get('/api/events/stream', requireRole('viewer'), (req, res) => {
 
   req.on('close', () => {
     clearInterval(keepalive);
-    sseClients.delete(res);
+    sseClients.delete(client);
   });
 });
 
@@ -1464,7 +1493,7 @@ app.post('/api/workflow/stop-order/run', requireRole('agent'), async (req, res) 
   const quantity = hasQuantity ? Number(quantityText) : null;
   const sourceAgentId = String(req.body?.sourceAgentId || KITE_AGENT1_ID).trim();
   const targetAgentId = String(req.body?.targetAgentId || KITE_AGENT2_ID).trim();
-  const traceId = String(req.body?.traceId || createTraceId('workflow')).trim();
+  const traceId = resolveWorkflowTraceId(req.body?.traceId);
   const runtime = readSessionRuntime();
   const payer = normalizeAddress(req.body?.payer || runtime.aaWallet || '');
   const taskPayload = {
@@ -1772,7 +1801,7 @@ async function handleA2AStopOrders(body = {}) {
     const policyResult = evaluateTransferPolicy({
       payer,
       recipient: actionCfg.recipient,
-      amount: actionCfg.amount,
+      amount: actionAmount,
       requests
     });
     if (!policyResult.ok) {
@@ -1780,7 +1809,7 @@ async function handleA2AStopOrders(body = {}) {
         action: 'a2a-reactive-stop-orders',
         payer,
         recipient: actionCfg.recipient,
-        amount: actionCfg.amount,
+        amount: actionAmount,
         code: policyResult.code,
         message: policyResult.message,
         evidence: policyResult.evidence
@@ -2116,7 +2145,7 @@ app.post('/api/x402/kol-score', requireRole('agent'), async (req, res) => {
     const policyResult = evaluateTransferPolicy({
       payer,
       recipient: actionCfg.recipient,
-      amount: actionCfg.amount,
+      amount: amountToCharge,
       requests
     });
     if (!policyResult.ok) {
@@ -2124,7 +2153,7 @@ app.post('/api/x402/kol-score', requireRole('agent'), async (req, res) => {
         action: actionCfg.action,
         payer,
         recipient: actionCfg.recipient,
-        amount: actionCfg.amount,
+        amount: amountToCharge,
         code: policyResult.code,
         message: policyResult.message,
         evidence: policyResult.evidence
