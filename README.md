@@ -7,6 +7,26 @@ KITECLAW is an agent-native payment app on Kite AI Testnet. It demonstrates how 
 
 Current Version: `v1.6.1`
 
+## Availability
+
+### Public Web Demo
+
+- Live URL: `https://<your-public-site>`
+- Before submission, replace the placeholder with your real public URL.
+- Purpose: judge-facing online demo for end-to-end flow validation.
+- Expected pages:
+  - Dashboard (`/`)
+  - Transfer Records
+  - Audit / On-chain confirmation
+
+### Local Reproducible Version
+
+- This repository can be run fully on local machine for reproducible review.
+- Use `frontend/.env.example` + `backend/.env.example` for local startup.
+- Core local entrypoints:
+  - frontend: `npm run dev` (Vite)
+  - backend: `npm start` (Express)
+
 ## What This Project Demonstrates
 
 - ERC-4337 AA account flow on Kite testnet
@@ -51,7 +71,8 @@ Upgrade authority remains with each proxy owner; this project does not grant per
    - payment sent
    - proof submitted
    - unlock returned
-5. Send second request to show no repeated wallet popup.
+5. Send second request to show no repeated payment-authorization popup.
+   - Note: if signature-based identity verification is enabled, wallet signature popup may still appear for identity proof.
 6. Send high-amount request to show failure handling:
    - Example: `A2A stop-order BTC-USDT TP 70000 SL 62000 QTY 1000`
    - Expected: insufficient balance path (clear error + red failed state)
@@ -74,6 +95,7 @@ KITE GASLESS/
 |- aa-v2/        # AA security implementation for one-time auth + constrained no-popup execution
 |- skills/       # OpenClaw skill source + packaged skill
 |- goldsky/      # Goldsky subgraph config/ABI used for audit flow
+|- deploy/       # Nginx + PM2 + deploy/backup scripts for cloud rollout
 |- README.md
 |- CHANGELOG.md
 |- LICENSE
@@ -109,7 +131,93 @@ OPENCLAW_CHAT_PROTOCOL=openai
 OPENCLAW_CHAT_PATH=/v1/chat/completions
 OPENCLAW_HEALTH_PATH=/v1/models
 OPENCLAW_TIMEOUT_MS=12000
-OPENCLAW_MODEL=kimi-coding/k2p5
+OPENCLAW_MODEL=<your_model_id>
+# e.g. kimi-coding/k2p5 | qwen2.5-coder | deepseek-chat
+```
+
+Notes:
+- `OPENCLAW_CHAT_PROTOCOL` and `OPENCLAW_CHAT_PATH` must match your runtime API shape.
+- `OPENCLAW_MODEL` should be your local/remote model id (do not hardcode one contributor's model in shared deployments).
+- If `OPENCLAW_HEALTH_PATH=/v1/models` returns HTML instead of JSON, you likely hit a control UI route instead of an OpenAI-compatible API route.
+
+## Tencent Lighthouse Web Deployment (Low Cost)
+
+Target stack: `Nginx + Node backend + React dist` on one host, same domain for `/` and `/api`.
+
+### 1) Prepare server
+
+```bash
+sudo apt update
+sudo apt install -y nginx certbot python3-certbot-nginx
+sudo npm i -g pm2
+```
+
+Install Node.js 20 if needed:
+
+```bash
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt install -y nodejs
+```
+
+Create runtime folders:
+
+```bash
+sudo mkdir -p /srv/kiteclaw/{app,data,logs,www,backups}
+sudo chown -R $USER:$USER /srv/kiteclaw
+```
+
+### 2) Configure env files
+
+```bash
+cp backend/.env.production.example backend/.env
+cp frontend/.env.production.example frontend/.env.production
+```
+
+Fill `backend/.env` with real values:
+- `KITECLAW_BACKEND_SIGNER_PRIVATE_KEY`
+- `ERC8004_IDENTITY_REGISTRY`
+- `ERC8004_AGENT_ID`
+- OpenClaw remote API settings (`OPENCLAW_BASE_URL`, `OPENCLAW_MODEL`, etc.)
+
+### 3) Deploy app
+
+```bash
+export REPO_URL=https://github.com/enderzcx/KITE-GASLESS.git
+export BRANCH=main
+bash deploy/scripts/deploy.sh
+```
+
+Apply nginx site:
+
+```bash
+sudo cp deploy/nginx/kiteclaw.conf /etc/nginx/sites-available/kiteclaw.conf
+sudo sed -i 's/__SERVER_NAME__/your-subdomain.duckdns.org/g' /etc/nginx/sites-available/kiteclaw.conf
+sudo ln -sf /etc/nginx/sites-available/kiteclaw.conf /etc/nginx/sites-enabled/kiteclaw.conf
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+### 4) Enable HTTPS (DuckDNS + Let's Encrypt)
+
+```bash
+sudo certbot --nginx -d your-subdomain.duckdns.org
+```
+
+### 5) Smoke checks
+
+```bash
+curl -sS https://your-subdomain.duckdns.org/api/chat/agent/health
+curl -N https://your-subdomain.duckdns.org/api/events/stream?traceId=test
+```
+
+Expected:
+- health endpoint returns `{"ok":true,...}`
+- SSE endpoint returns `connected` and `ping` events
+
+### 6) Data backup
+
+```bash
+bash deploy/scripts/backup-data.sh
 ```
 
 ## OpenClaw Skill Package
