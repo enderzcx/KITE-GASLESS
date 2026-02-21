@@ -1,12 +1,23 @@
 ﻿# KITECLAW
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-v1.6.0-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-v1.6.1-blue)](./CHANGELOG.md)
 [![Demo Status](https://img.shields.io/badge/demo-ready-brightgreen)](#demo-walkthrough-for-humans)
 
 KITECLAW (formerly KITE GASLESS) is an agent-native payment demo on **KiteAI Testnet**.
 
-Current Version: `v1.6.0`
+Current Version: `v1.6.1`
+
+## v1.6.1 Release Notes
+
+- Branding update: `KITE BOT` -> `KITECLAW` in login entry flow.
+- OpenClaw + x402 UX improvements:
+  - clearer workflow status and payment loop feedback
+  - insufficient-balance failure surfaced with explicit reason
+  - identity/payment flow messaging aligned for demo narration
+- Audit/records UI refinements:
+  - better x402 settlement readability and traceability
+  - Goldsky audit page naming and display polish
 
 ## Why this project is different (Core Innovations)
 
