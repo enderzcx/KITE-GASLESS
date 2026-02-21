@@ -84,6 +84,14 @@ export default function DashboardPage({
   const [chatHistory, setChatHistory] = useState([]);
   const [chatBusy, setChatBusy] = useState(false);
   const [traceId, setTraceId] = useState('');
+  const [workflowBusy, setWorkflowBusy] = useState(false);
+  const [workflowData, setWorkflowData] = useState(null);
+  const [workflowError, setWorkflowError] = useState('');
+  const [workflowSymbol, setWorkflowSymbol] = useState('BTC-USDT');
+  const [workflowTakeProfit, setWorkflowTakeProfit] = useState('80000');
+  const [workflowStopLoss, setWorkflowStopLoss] = useState('50000');
+  const [workflowSourceAgentId, setWorkflowSourceAgentId] = useState('1');
+  const [workflowTargetAgentId, setWorkflowTargetAgentId] = useState('2');
 
   const rpcUrl =
     import.meta.env.VITE_KITEAI_RPC_URL ||
@@ -152,9 +160,12 @@ export default function DashboardPage({
   useEffect(() => {
     const timer = setInterval(() => {
       void Promise.allSettled([refreshRuntime(), refreshMapping(), refreshOnchain()]);
+      if (traceId) {
+        void fetchWorkflow(traceId);
+      }
     }, 3000);
     return () => clearInterval(timer);
-  }, []);
+  }, [traceId]);
 
   const getSigner = async () => {
     if (!walletState?.ownerAddress || typeof window.ethereum === 'undefined') {
@@ -343,6 +354,55 @@ export default function DashboardPage({
     }
   };
 
+  const fetchWorkflow = async (id) => {
+    if (!id) return;
+    const res = await fetch(`/api/workflow/${encodeURIComponent(id)}`);
+    const body = await res.json().catch(() => ({}));
+    if (res.ok && body?.ok) {
+      setWorkflowData(body.workflow || null);
+      if (String(body?.workflow?.state || '').toLowerCase() === 'failed') {
+        setWorkflowError(String(body?.workflow?.error || 'Workflow failed'));
+      }
+      return;
+    }
+    if (res.status !== 404) {
+      throw new Error(body?.reason || body?.error || `workflow status failed: HTTP ${res.status}`);
+    }
+  };
+
+  const runWorkflow = async () => {
+    try {
+      setWorkflowBusy(true);
+      setWorkflowError('');
+      setStatus('Running stop-order workflow...');
+      const payload = {
+        symbol: workflowSymbol.trim().toUpperCase(),
+        takeProfit: Number(workflowTakeProfit),
+        stopLoss: Number(workflowStopLoss),
+        sourceAgentId: workflowSourceAgentId.trim() || '1',
+        targetAgentId: workflowTargetAgentId.trim() || '2',
+        traceId: traceId || undefined
+      };
+      const res = await fetch('/api/workflow/stop-order/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || !body?.ok) {
+        throw new Error(body?.reason || body?.error || `workflow run failed: HTTP ${res.status}`);
+      }
+      if (body.traceId) setTraceId(body.traceId);
+      setWorkflowData(body.workflow || null);
+      setStatus(`Workflow finished: ${body.state || 'done'}`);
+    } catch (err) {
+      setWorkflowError(err.message);
+      setStatus(`Workflow failed: ${err.message}`);
+    } finally {
+      setWorkflowBusy(false);
+    }
+  };
+
   const setupReady = useMemo(
     () =>
       Boolean(sessionKey && sessionId) &&
@@ -451,6 +511,83 @@ export default function DashboardPage({
       </section>
 
       <section className="vault-card">
+        <h2>Place Stop Order (One-click Workflow)</h2>
+        <div className="vault-actions">
+          <div className="vault-input">
+            <label>Symbol</label>
+            <input value={workflowSymbol} onChange={(e) => setWorkflowSymbol(e.target.value)} />
+          </div>
+          <div className="vault-input">
+            <label>Take Profit</label>
+            <input value={workflowTakeProfit} onChange={(e) => setWorkflowTakeProfit(e.target.value)} />
+          </div>
+          <div className="vault-input">
+            <label>Stop Loss</label>
+            <input value={workflowStopLoss} onChange={(e) => setWorkflowStopLoss(e.target.value)} />
+          </div>
+          <div className="vault-input">
+            <label>Source Agent ID</label>
+            <input value={workflowSourceAgentId} onChange={(e) => setWorkflowSourceAgentId(e.target.value)} />
+          </div>
+          <div className="vault-input">
+            <label>Target Agent ID</label>
+            <input value={workflowTargetAgentId} onChange={(e) => setWorkflowTargetAgentId(e.target.value)} />
+          </div>
+        </div>
+        <div className="vault-actions">
+          <button onClick={() => void runWorkflow()} disabled={workflowBusy}>
+            {workflowBusy ? 'Running...' : 'Run Stop-order Workflow'}
+          </button>
+          <button
+            onClick={() => {
+              if (traceId) void fetchWorkflow(traceId);
+            }}
+            disabled={!traceId}
+          >
+            Refresh Workflow
+          </button>
+        </div>
+        <div className="result-row">
+          <span className="label">Trace ID</span>
+          <span className="value hash">{traceId || '-'}</span>
+        </div>
+        <div className="result-row">
+          <span className="label">State</span>
+          <span className="value">{workflowData?.state || '-'}</span>
+        </div>
+        <div className="result-row">
+          <span className="label">Request ID</span>
+          <span className="value hash">{workflowData?.requestId || '-'}</span>
+        </div>
+        <div className="result-row">
+          <span className="label">Payment Tx</span>
+          <span className="value hash">{workflowData?.txHash || '-'}</span>
+        </div>
+        <div className="result-row">
+          <span className="label">UserOp Hash</span>
+          <span className="value hash">{workflowData?.userOpHash || '-'}</span>
+        </div>
+        {workflowError && <div className="request-error">Workflow Error: {workflowError}</div>}
+        {workflowData?.steps?.length > 0 && (
+          <div className="workflow-timeline">
+            {workflowData.steps.map((step, idx) => (
+              <div className={`workflow-step ${step.status === 'error' ? 'error' : 'ok'}`} key={`${step.at}-${idx}`}>
+                <div className="workflow-step-head">
+                  <strong>{step.name}</strong>
+                  <span>{step.status}</span>
+                </div>
+                <small>{step.at}</small>
+                {step?.details?.reason && <div className="workflow-reason">reason: {step.details.reason}</div>}
+                {!step?.details?.reason && step?.details && (
+                  <div className="workflow-reason">{JSON.stringify(step.details)}</div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <section className="vault-card">
         <h2>Session Setup (One-time before OpenClaw auto-run)</h2>
         <div className="vault-actions">
           <div className="vault-input">
@@ -519,4 +656,3 @@ export default function DashboardPage({
     </div>
   );
 }
-
