@@ -76,6 +76,17 @@ This makes the flow transparent, reproducible, and judge-verifiable.
 - On-chain confirmation and reconciliation UI
 - Abuse/over-limit graceful failure with evidence logs
 
+## Why x402 and Goldsky are both shown (not duplicate)
+
+- `x402 settlement confirmation` answers: **"Did this paid action actually settle and unlock?"**
+  - source: challenge/proof/payment mapping (`requestId <-> txHash`)
+  - used for action-level payment correctness
+- `Goldsky audit evidence` answers: **"Can an independent indexer observe and verify this on-chain transfer?"**
+  - source: indexed on-chain transfer data (subgraph)
+  - used for third-party auditability and reconciliation
+
+In short: x402 is the payment-unlock execution truth, Goldsky is independent indexed audit truth.
+
 ## x402 Layer Mapping (this project)
 
 | x402 Layer | This project |
@@ -178,8 +189,8 @@ Backend: `http://localhost:3001`
    - click `Request Payment Info (402)`
    - click `Pay & Submit Proof`
 7. Show:
-   - x402 mapping panel
-   - on-chain confirmation panel
+   - x402 settlement mapping panel
+   - Goldsky audit evidence page
    - transfer records page
    - abuse/limit graceful failure page
 

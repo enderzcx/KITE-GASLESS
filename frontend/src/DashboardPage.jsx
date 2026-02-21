@@ -501,7 +501,7 @@ export default function DashboardPage({
           {onOpenTransfer && <button className="link-btn" onClick={onOpenTransfer}>Open Transfer</button>}
           {onOpenVault && <button className="link-btn" onClick={onOpenVault}>Open Vault</button>}
           {onOpenRecords && <button className="link-btn" onClick={onOpenRecords}>Transfer Records</button>}
-          {onOpenOnChain && <button className="link-btn" onClick={onOpenOnChain}>On-chain Confirmation</button>}
+          {onOpenOnChain && <button className="link-btn" onClick={onOpenOnChain}>Audit Evidence (Goldsky)</button>}
           {onOpenAbuseCases && <button className="link-btn" onClick={onOpenAbuseCases}>Abuse / Limit Cases</button>}
         </div>
       </header>
@@ -569,7 +569,7 @@ export default function DashboardPage({
             <div className="result-row"><span className="label">Tx</span><span className="value hash">{shortHash(latestMapping?.paymentTxHash || '')}</span></div>
           </article>
           <article className="vault-card">
-            <h2>On-chain</h2>
+            <h2>Goldsky Audit</h2>
             <div className="result-row"><span className="label">Latest Tx</span><span className="value hash">{shortHash(latestOnchain?.txHash || '')}</span></div>
             <div className="result-row"><span className="label">Amount</span><span className="value">{latestOnchain?.amount || '-'}</span></div>
             <div className="result-row"><span className="label">To</span><span className="value hash">{shortHash(latestOnchain?.to || '')}</span></div>

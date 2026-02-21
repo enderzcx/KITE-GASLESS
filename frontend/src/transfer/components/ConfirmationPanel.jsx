@@ -1,7 +1,7 @@
 ﻿export default function ConfirmationPanel({ confirmState }) {
   return (
     <div className="transfer-card confirm-card">
-      <h2>On-chain Confirmation</h2>
+      <h2>x402 Settlement Confirmation</h2>
       <div className="result-row"><span className="label">Stage:</span><span className="value">{confirmState.stage}</span></div>
       <div className="result-row"><span className="label">Message:</span><span className="value">{confirmState.message}</span></div>
       <div className="result-row"><span className="label">Tx Hash:</span><span className="value hash">{confirmState.txHash || '-'}</span></div>
