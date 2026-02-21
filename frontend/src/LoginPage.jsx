@@ -24,10 +24,10 @@ function LoginPage({ onLogin }) {
   return (
     <div className="login-page">
       {showToast && (
-        <div className="login-toast">Your dedicated KITE BOT is ready!</div>
+        <div className="login-toast">Your dedicated KITECLAW is ready!</div>
       )}
       <button className="login-btn" onClick={handleLogin} disabled={loading}>
-        {loading ? 'Connecting wallet...' : 'Claim Your KITE BOT'}
+        {loading ? 'Connecting wallet...' : 'Claim Your KITECLAW'}
       </button>
       {error && <div className="request-error">{error}</div>}
     </div>
