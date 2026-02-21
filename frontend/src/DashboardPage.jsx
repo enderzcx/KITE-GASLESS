@@ -336,6 +336,7 @@ export default function DashboardPage({
     es.addEventListener('challenge_issued', (evt) => {
       const payload = evt?.data ? JSON.parse(evt.data) : {};
       if (!matchesTrace(payload)) return;
+      const nextTrace = String(payload?.traceId || traceId || '').trim();
       setFlow((prev) => ({
         ...prev,
         state: 'running',
@@ -346,6 +347,7 @@ export default function DashboardPage({
         steps: { ...prev.steps, challenge: true }
       }));
       if (payload?.traceId) setTraceId(payload.traceId);
+      if (nextTrace) startWorkflowPoll(nextTrace);
       const fee = String(payload?.amount || '0.03');
       setChatHistory((prev) => [
         ...prev,
@@ -461,6 +463,13 @@ export default function DashboardPage({
 
     return () => es.close();
   }, [apiBase, traceId]);
+
+  useEffect(() => {
+    if (flow.state !== 'running') return;
+    if (!traceId) return;
+    if (workflowPollTraceRef.current === traceId) return;
+    startWorkflowPoll(traceId);
+  }, [flow.state, traceId]);
 
   const getSigner = async () => {
     if (!walletState?.ownerAddress || typeof window.ethereum === 'undefined') {
