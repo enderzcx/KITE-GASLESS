@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ethers } from 'ethers';
 import { GokiteAASDK } from './gokite-aa-sdk';
 
@@ -33,15 +33,19 @@ const accountInterface = new ethers.Interface([
     type: 'function'
   },
   {
-    inputs: [
-      { internalType: 'address', name: 'token', type: 'address' }
-    ],
+    inputs: [{ internalType: 'address', name: 'token', type: 'address' }],
     name: 'addSupportedToken',
     outputs: [],
     stateMutability: 'nonpayable',
     type: 'function'
   }
 ]);
+
+function shortHash(v = '') {
+  const s = String(v || '');
+  if (s.length < 16) return s || '-';
+  return `${s.slice(0, 10)}...${s.slice(-8)}`;
+}
 
 export default function DashboardPage({
   walletState,
@@ -71,6 +75,16 @@ export default function DashboardPage({
   const [runtime, setRuntime] = useState(null);
   const [runtimeSyncInfo, setRuntimeSyncInfo] = useState('');
 
+  const [identityProfile, setIdentityProfile] = useState(null);
+  const [mappingRows, setMappingRows] = useState([]);
+  const [onchainRows, setOnchainRows] = useState([]);
+  const [kpi, setKpi] = useState({ pending: 0, paid: 0, failed: 0, todaySpend: 0 });
+
+  const [chatInput, setChatInput] = useState('');
+  const [chatHistory, setChatHistory] = useState([]);
+  const [chatBusy, setChatBusy] = useState(false);
+  const [traceId, setTraceId] = useState('');
+
   const rpcUrl =
     import.meta.env.VITE_KITEAI_RPC_URL ||
     import.meta.env.VITE_KITE_RPC_URL ||
@@ -92,16 +106,54 @@ export default function DashboardPage({
       });
       setAccountAddress(sdk.getAccountAddress(ownerAddress));
     } catch {
-      // ignore and keep fallback
+      // keep fallback
     }
   }, [walletState?.ownerAddress, rpcUrl, bundlerUrl]);
+
+  const refreshRuntime = async () => {
+    const res = await fetch('/api/session/runtime');
+    const body = await res.json().catch(() => ({}));
+    if (res.ok && body?.ok) setRuntime(body.runtime || null);
+  };
+
+  const refreshIdentity = async () => {
+    const res = await fetch('/api/identity/current');
+    const body = await res.json().catch(() => ({}));
+    if (res.ok && body?.ok) setIdentityProfile(body.profile || null);
+  };
+
+  const refreshMapping = async () => {
+    const res = await fetch('/api/x402/mapping/latest?limit=20');
+    const body = await res.json().catch(() => ({}));
+    if (res.ok && body?.ok) {
+      setMappingRows(body.items || []);
+      setKpi(body.kpi || { pending: 0, paid: 0, failed: 0, todaySpend: 0 });
+    }
+  };
+
+  const refreshOnchain = async () => {
+    const res = await fetch('/api/onchain/latest?limit=20');
+    const body = await res.json().catch(() => ({}));
+    if (res.ok && body?.ok) setOnchainRows(body.items || []);
+  };
+
+  const refreshDashboard = async () => {
+    await Promise.allSettled([refreshRuntime(), refreshIdentity(), refreshMapping(), refreshOnchain()]);
+  };
 
   useEffect(() => {
     setSessionKey(localStorage.getItem(SESSION_KEY_ADDR_STORAGE) || '');
     setSessionPrivKey(localStorage.getItem(SESSION_KEY_PRIV_STORAGE) || '');
     setSessionId(localStorage.getItem(SESSION_ID_STORAGE) || '');
     setSessionTxHash(localStorage.getItem(SESSION_TX_STORAGE) || '');
-    void refreshRuntime();
+    void refreshDashboard();
+  }, []);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      void Promise.allSettled([refreshRuntime(), refreshMapping(), refreshOnchain()]);
+    }, 3000);
+    return () => clearInterval(timer);
   }, []);
 
   const getSigner = async () => {
@@ -119,16 +171,6 @@ export default function DashboardPage({
       [0, ethers.parseUnits(singleLimit || '0', TOKEN_DECIMALS), 0, []],
       [86400, ethers.parseUnits(dailyLimit || '0', TOKEN_DECIMALS), Math.max(0, nowTs - 1), []]
     ];
-  };
-
-  const refreshRuntime = async () => {
-    try {
-      const res = await fetch('/api/session/runtime');
-      const body = await res.json().catch(() => ({}));
-      if (res.ok && body?.ok) setRuntime(body.runtime || null);
-    } catch {
-      // ignore
-    }
   };
 
   const syncGatewayPolicy = async () => {
@@ -269,17 +311,55 @@ export default function DashboardPage({
     }
   };
 
-  const setupReady =
-    Boolean(sessionKey && sessionId) &&
-    Boolean(runtime?.hasSessionPrivateKey) &&
-    String(runtime?.aaWallet || '').toLowerCase() === String(accountAddress || '').toLowerCase();
+  const sendChat = async () => {
+    if (!chatInput.trim() || chatBusy) return;
+    const userText = chatInput.trim();
+    setChatInput('');
+    setChatBusy(true);
+    setChatHistory((prev) => [...prev, { role: 'user', text: userText, ts: Date.now() }]);
+    try {
+      const resp = await fetch('/api/chat/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: userText,
+          sessionId: sessionId || runtime?.sessionId || '',
+          traceId: traceId || undefined
+        })
+      });
+      const body = await resp.json().catch(() => ({}));
+      if (!resp.ok || !body?.ok) {
+        throw new Error(body?.reason || body?.error || `chat failed: HTTP ${resp.status}`);
+      }
+      if (body.traceId) setTraceId(body.traceId);
+      setChatHistory((prev) => [
+        ...prev,
+        { role: 'agent', text: body.reply || '(no reply)', ts: Date.now(), traceId: body.traceId || '' }
+      ]);
+    } catch (err) {
+      setChatHistory((prev) => [...prev, { role: 'agent', text: `Error: ${err.message}`, ts: Date.now() }]);
+    } finally {
+      setChatBusy(false);
+    }
+  };
+
+  const setupReady = useMemo(
+    () =>
+      Boolean(sessionKey && sessionId) &&
+      Boolean(runtime?.hasSessionPrivateKey) &&
+      String(runtime?.aaWallet || '').toLowerCase() === String(accountAddress || '').toLowerCase(),
+    [sessionKey, sessionId, runtime, accountAddress]
+  );
+
+  const latestMapping = mappingRows[0] || null;
+  const latestOnchain = onchainRows[0] || null;
 
   return (
     <div className="transfer-container transfer-shell">
       <header className="shell-header">
         <div className="shell-brand">
           <span className="brand-badge">KITECLAW</span>
-          <p>Dashboard Setup & Automation Readiness</p>
+          <p>Agent-native Payments Dashboard</p>
         </div>
         <div className="top-entry">
           {onBack && <button className="link-btn" onClick={onBack}>Switch Wallet</button>}
@@ -291,28 +371,83 @@ export default function DashboardPage({
         </div>
       </header>
 
-      <section className="vault-card">
-        <h2>Setup Readiness</h2>
-        <div className="result-row">
-          <span className="label">Status</span>
-          <span className="value">{setupReady ? 'READY' : 'NOT READY'}</span>
-        </div>
-        <div className="result-row">
-          <span className="label">AA Wallet</span>
-          <span className="value hash">{accountAddress || '-'}</span>
-        </div>
-        <div className="result-row">
-          <span className="label">Session Key</span>
-          <span className="value hash">{sessionKey || '-'}</span>
-        </div>
-        <div className="result-row">
-          <span className="label">Session ID</span>
-          <span className="value hash">{sessionId || '-'}</span>
-        </div>
-        <div className="result-row">
-          <span className="label">Runtime Synced</span>
-          <span className="value">{runtime?.hasSessionPrivateKey ? 'yes' : 'no'}</span>
-        </div>
+      <section className="dashboard-kpi-grid">
+        <article className="vault-card dashboard-kpi-card">
+          <h3>Pending</h3>
+          <p>{kpi.pending}</p>
+        </article>
+        <article className="vault-card dashboard-kpi-card">
+          <h3>Paid</h3>
+          <p>{kpi.paid}</p>
+        </article>
+        <article className="vault-card dashboard-kpi-card">
+          <h3>Failed</h3>
+          <p>{kpi.failed}</p>
+        </article>
+        <article className="vault-card dashboard-kpi-card">
+          <h3>Today Spend</h3>
+          <p>{kpi.todaySpend} USDT</p>
+        </article>
+      </section>
+
+      <section className="dashboard-main-grid">
+        <article className="vault-card dashboard-chat-card">
+          <h2>Chat Agent</h2>
+          <div className="dashboard-chat-history">
+            {chatHistory.length === 0 && <div className="dashboard-empty">No messages yet.</div>}
+            {chatHistory.map((item, idx) => (
+              <div key={`${item.ts}-${idx}`} className={`dashboard-chat-msg ${item.role}`}>
+                <strong>{item.role === 'user' ? 'You' : 'KiteClaw'}</strong>
+                <p>{item.text}</p>
+                {item.traceId && <small>traceId: {item.traceId}</small>}
+              </div>
+            ))}
+          </div>
+          <div className="request-input">
+            <input
+              value={chatInput}
+              onChange={(e) => setChatInput(e.target.value)}
+              placeholder='Try: "place stop order BTC-USDT TP 80000 SL 50000"'
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void sendChat();
+              }}
+            />
+            <button onClick={() => void sendChat()} disabled={chatBusy || !chatInput.trim()}>
+              {chatBusy ? 'Sending...' : 'Send'}
+            </button>
+          </div>
+        </article>
+
+        <aside className="dashboard-status-stack">
+          <article className="vault-card">
+            <h2>Session</h2>
+            <div className="result-row"><span className="label">Setup</span><span className="value">{setupReady ? 'ready' : 'not ready'}</span></div>
+            <div className="result-row"><span className="label">AA Wallet</span><span className="value hash">{shortHash(accountAddress)}</span></div>
+            <div className="result-row"><span className="label">Session</span><span className="value hash">{shortHash(runtime?.sessionAddress || sessionKey)}</span></div>
+            <div className="result-row"><span className="label">Session ID</span><span className="value hash">{shortHash(runtime?.sessionId || sessionId)}</span></div>
+          </article>
+          <article className="vault-card">
+            <h2>x402</h2>
+            <div className="result-row"><span className="label">Latest</span><span className="value">{latestMapping?.status || '-'}</span></div>
+            <div className="result-row"><span className="label">Action</span><span className="value">{latestMapping?.action || '-'}</span></div>
+            <div className="result-row"><span className="label">Request</span><span className="value hash">{shortHash(latestMapping?.requestId || '')}</span></div>
+            <div className="result-row"><span className="label">Tx</span><span className="value hash">{shortHash(latestMapping?.paymentTxHash || '')}</span></div>
+          </article>
+          <article className="vault-card">
+            <h2>On-chain</h2>
+            <div className="result-row"><span className="label">Latest Tx</span><span className="value hash">{shortHash(latestOnchain?.txHash || '')}</span></div>
+            <div className="result-row"><span className="label">Amount</span><span className="value">{latestOnchain?.amount || '-'}</span></div>
+            <div className="result-row"><span className="label">To</span><span className="value hash">{shortHash(latestOnchain?.to || '')}</span></div>
+            <div className="result-row"><span className="label">Time</span><span className="value">{latestOnchain?.time || '-'}</span></div>
+          </article>
+          <article className="vault-card">
+            <h2>Identity</h2>
+            <div className="result-row"><span className="label">Configured</span><span className="value">{identityProfile?.configured ? 'yes' : 'no'}</span></div>
+            <div className="result-row"><span className="label">Registry</span><span className="value hash">{shortHash(identityProfile?.registry || '')}</span></div>
+            <div className="result-row"><span className="label">Agent ID</span><span className="value">{identityProfile?.agentId ?? '-'}</span></div>
+            <div className="result-row"><span className="label">Wallet</span><span className="value hash">{shortHash(identityProfile?.agentWallet || '')}</span></div>
+          </article>
+        </aside>
       </section>
 
       <section className="vault-card">
@@ -342,33 +477,44 @@ export default function DashboardPage({
           <button onClick={handleSyncRuntime}>Sync Session Runtime</button>
           <button onClick={handleSyncPolicy}>Sync Gateway Policy</button>
           <button onClick={handleSetAllowedToken}>Set Allowed Token</button>
-        </div>
-      </section>
-
-      <section className="vault-card">
-        <h2>Runtime Snapshot</h2>
-        <div className="result-row">
-          <span className="label">Runtime AA</span>
-          <span className="value hash">{runtime?.aaWallet || '-'}</span>
-        </div>
-        <div className="result-row">
-          <span className="label">Runtime Session</span>
-          <span className="value hash">{runtime?.sessionAddress || '-'}</span>
-        </div>
-        <div className="result-row">
-          <span className="label">Runtime Session ID</span>
-          <span className="value hash">{runtime?.sessionId || '-'}</span>
-        </div>
-        <div className="result-row">
-          <span className="label">Max per tx</span>
-          <span className="value">{runtime?.maxPerTx || '-'}</span>
-        </div>
-        <div className="result-row">
-          <span className="label">Daily limit</span>
-          <span className="value">{runtime?.dailyLimit || '-'}</span>
+          <button onClick={() => void refreshDashboard()}>Refresh Dashboard</button>
         </div>
         {runtimeSyncInfo && <div className="request-error">{runtimeSyncInfo}</div>}
         {status && <div className="request-error">{status}</div>}
+      </section>
+
+      <section className="vault-card x402-table-wrap">
+        <h2>Latest x402 Mapping (20)</h2>
+        <div className="records-head x402-head">
+          <span>Flow</span>
+          <span>Source</span>
+          <span>Target</span>
+          <span>Action</span>
+          <span>Agent</span>
+          <span>Request ID</span>
+          <span>Payer</span>
+          <span>Amount</span>
+          <span>Status</span>
+          <span>Paid At</span>
+          <span>Tx</span>
+        </div>
+        {mappingRows.map((item) => (
+          <div className="records-row x402-row" key={item.requestId}>
+            <span className="records-cell">{item.flowMode || '-'}</span>
+            <span className="records-cell">{item.sourceAgentId || '-'}</span>
+            <span className="records-cell">{item.targetAgentId || '-'}</span>
+            <span className="records-cell">{item.action || '-'}</span>
+            <span className="records-cell">{item.agentId || '-'}</span>
+            <span className="records-cell hash">{item.requestId || '-'}</span>
+            <span className="records-cell hash">{item.payer || '-'}</span>
+            <span className="records-cell">{item.amount || '-'}</span>
+            <span className={`records-cell status ${item.status === 'paid' ? 'success' : item.status === 'pending' ? '' : 'failed'}`}>
+              {item.status || '-'}
+            </span>
+            <span className="records-cell">{item.paidAt || '-'}</span>
+            <span className="records-cell hash">{item.paymentTxHash || '-'}</span>
+          </div>
+        ))}
       </section>
     </div>
   );

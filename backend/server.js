@@ -250,6 +250,72 @@ function normalizeAddress(address = '') {
   return String(address).trim().toLowerCase();
 }
 
+function mapX402Item(item = {}) {
+  const paidAt = Number(item.paidAt || 0);
+  const createdAt = Number(item.createdAt || 0);
+  return {
+    requestId: item.requestId || '',
+    action: item.action || '',
+    flowMode: item.a2a ? 'a2a+x402' : 'agent-to-api+x402',
+    sourceAgentId: item?.a2a?.sourceAgentId || '',
+    targetAgentId: item?.a2a?.targetAgentId || '',
+    agentId: item?.identity?.agentId || '',
+    payer: item.payer || '',
+    amount: item.amount || '',
+    status: item.status || '',
+    paidAt: paidAt > 0 ? new Date(paidAt).toISOString() : '',
+    createdAt: createdAt > 0 ? new Date(createdAt).toISOString() : '',
+    paymentTxHash: item.paymentTxHash || item?.paymentProof?.txHash || '',
+    query: item.query || '',
+    tokenAddress: item.tokenAddress || '',
+    recipient: item.recipient || '',
+    policyDecision: item?.policy?.decision || '',
+    identity: item.identity || null
+  };
+}
+
+function computeDashboardKpi(items = []) {
+  let pending = 0;
+  let paid = 0;
+  let failed = 0;
+  let todaySpend = 0;
+  const now = Date.now();
+  const dayStart = new Date();
+  dayStart.setHours(0, 0, 0, 0);
+  const dayStartMs = dayStart.getTime();
+
+  for (const item of items) {
+    const status = String(item.status || '').toLowerCase();
+    const createdAt = Number(item.createdAt || 0);
+    const expiresAt = Number(item.expiresAt || 0);
+    if (status === 'paid') {
+      paid += 1;
+      const paidAtMs = Number(item.paidAt || createdAt || 0);
+      if (paidAtMs >= dayStartMs) {
+        const amount = Number(item.amount || 0);
+        if (Number.isFinite(amount)) {
+          todaySpend += amount;
+        }
+      }
+    } else if (status === 'pending') {
+      if (expiresAt > 0 && now > expiresAt) {
+        failed += 1;
+      } else {
+        pending += 1;
+      }
+    } else if (status === 'failed' || status === 'rejected' || status === 'error' || status === 'expired') {
+      failed += 1;
+    }
+  }
+
+  return {
+    pending,
+    paid,
+    failed,
+    todaySpend: Number(todaySpend.toFixed(6))
+  };
+}
+
 function createX402Request(query, payer, action = 'kol-score', options = {}) {
   const now = Date.now();
   const requestId = `x402_${now}_${crypto.randomBytes(4).toString('hex')}`;
@@ -769,6 +835,119 @@ app.get('/api/identity', async (req, res) => {
       reason: error.message
     });
   }
+});
+
+app.get('/api/identity/current', async (req, res) => {
+  try {
+    const profile = await readIdentityProfile({});
+    return res.json({ ok: true, profile });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: 'identity_read_failed',
+      reason: error.message
+    });
+  }
+});
+
+app.get('/api/x402/mapping/latest', (req, res) => {
+  const limit = Math.max(1, Math.min(Number(req.query.limit || 20), 200));
+  const rows = readX402Requests().map(mapX402Item).slice(0, limit);
+  const kpi = computeDashboardKpi(readX402Requests());
+  return res.json({ ok: true, total: rows.length, kpi, items: rows });
+});
+
+app.get('/api/onchain/latest', (req, res) => {
+  const limit = Math.max(1, Math.min(Number(req.query.limit || 20), 200));
+  const paidRows = readX402Requests()
+    .filter((item) => String(item.status || '').toLowerCase() === 'paid' && (item.paymentTxHash || item?.paymentProof?.txHash))
+    .map((item) => ({
+      source: 'x402',
+      requestId: item.requestId || '',
+      txHash: item.paymentTxHash || item?.paymentProof?.txHash || '',
+      payer: item.payer || '',
+      from: item.payer || '',
+      to: item.recipient || '',
+      amount: item.amount || '',
+      tokenAddress: item.tokenAddress || '',
+      block: item?.proofVerification?.details?.blockNumber || '',
+      time: Number(item.paidAt || item.createdAt || 0) > 0
+        ? new Date(Number(item.paidAt || item.createdAt)).toISOString()
+        : ''
+    }));
+
+  const recordRows = readRecords()
+    .filter((row) => row && row.txHash)
+    .map((row) => ({
+      source: row.type || 'record',
+      requestId: row.requestId || '',
+      txHash: row.txHash || '',
+      payer: row.aaWallet || '',
+      from: row.aaWallet || '',
+      to: row.recipient || '',
+      amount: row.amount || '',
+      tokenAddress: row.token || '',
+      block: row.block || '',
+      time: row.time || ''
+    }));
+
+  const merged = [...paidRows, ...recordRows];
+  const dedup = [];
+  const seen = new Set();
+  for (const row of merged) {
+    const key = String(row.txHash || '').toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    dedup.push(row);
+  }
+  dedup.sort((a, b) => {
+    const ta = Date.parse(a.time || 0) || 0;
+    const tb = Date.parse(b.time || 0) || 0;
+    return tb - ta;
+  });
+
+  return res.json({ ok: true, total: dedup.length, items: dedup.slice(0, limit) });
+});
+
+app.post('/api/chat/agent', (req, res) => {
+  const message = String(req.body?.message || '').trim();
+  const sessionId = String(req.body?.sessionId || '').trim();
+  const traceId = String(req.body?.traceId || `trace_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`).trim();
+
+  if (!message) {
+    return res.status(400).json({ ok: false, error: 'message_required' });
+  }
+
+  const lower = message.toLowerCase();
+  let reply = 'Received. Use "Place stop order BTC-USDT TP 80000 SL 50000" to start the payment workflow.';
+  const suggestions = [];
+
+  if (lower.includes('stop') || lower.includes('tp') || lower.includes('sl')) {
+    reply =
+      'Intent recognized: stop-order request. Next step: call workflow endpoint POST /api/workflow/stop-order/run with symbol/takeProfit/stopLoss.';
+    suggestions.push({
+      action: 'place_stop_order',
+      endpoint: '/api/workflow/stop-order/run',
+      params: {
+        symbol: 'BTC-USDT',
+        takeProfit: 80000,
+        stopLoss: 50000,
+        sourceAgentId: KITE_AGENT1_ID,
+        targetAgentId: KITE_AGENT2_ID
+      }
+    });
+  } else if (lower.includes('status') || lower.includes('runtime')) {
+    const runtime = readSessionRuntime();
+    reply = `Runtime status: ${runtime?.sessionAddress ? 'ready' : 'not_ready'}.`;
+  }
+
+  return res.json({
+    ok: true,
+    reply,
+    traceId,
+    sessionId: sessionId || null,
+    suggestions
+  });
 });
 
 app.get('/api/a2a/capabilities', (req, res) => {
