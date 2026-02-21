@@ -116,6 +116,8 @@ export default function DashboardPage({
   const [setupBusy, setSetupBusy] = useState(false);
   const [chatHistory, setChatHistory] = useState([]);
   const chatBottomRef = useRef(null);
+  const workflowPollTimerRef = useRef(null);
+  const workflowPollTraceRef = useRef('');
   const [openclawHealth, setOpenclawHealth] = useState({
     connected: true,
     mode: 'local-fallback',
@@ -218,6 +220,89 @@ export default function DashboardPage({
     });
   };
 
+  const clearWorkflowPoll = () => {
+    if (workflowPollTimerRef.current) {
+      clearTimeout(workflowPollTimerRef.current);
+      workflowPollTimerRef.current = null;
+    }
+    workflowPollTraceRef.current = '';
+  };
+
+  const startWorkflowPoll = (wfTraceId) => {
+    const trace = String(wfTraceId || '').trim();
+    if (!trace) return;
+    clearWorkflowPoll();
+    workflowPollTraceRef.current = trace;
+    const deadline = Date.now() + 90_000;
+
+    const tick = async () => {
+      if (workflowPollTraceRef.current !== trace) return;
+      try {
+        const resp = await fetch(apiUrl(`/api/workflow/${encodeURIComponent(trace)}`));
+        const body = await resp.json().catch(() => ({}));
+        if (resp.ok && body?.ok) {
+          const wf = body?.workflow || {};
+          const wfState = String(wf?.state || '').toLowerCase();
+          if (wfState === 'unlocked') {
+            clearWorkflowPoll();
+            setFlow((prev) => ({
+              ...prev,
+              state: 'success',
+              message: 'Transaction completed and verification passed.',
+              error: '',
+              traceId: trace,
+              requestId: wf?.requestId || prev.requestId,
+              txHash: wf?.txHash || prev.txHash,
+              steps: {
+                ...prev.steps,
+                challenge: true,
+                payment: true,
+                proof: true,
+                onchain: true,
+                done: true
+              }
+            }));
+            return;
+          }
+          if (wfState === 'failed') {
+            clearWorkflowPoll();
+            setFlow((prev) => ({
+              ...prev,
+              state: 'error',
+              message: 'Workflow failed.',
+              error: String(wf?.error || 'Unknown workflow error'),
+              traceId: trace,
+              requestId: wf?.requestId || prev.requestId,
+              txHash: wf?.txHash || prev.txHash
+            }));
+            return;
+          }
+        }
+      } catch {
+        // keep polling
+      }
+
+      if (workflowPollTraceRef.current !== trace) return;
+      if (Date.now() >= deadline) {
+        clearWorkflowPoll();
+        setFlow((prev) => (
+          prev.state === 'running'
+            ? {
+                ...prev,
+                state: 'error',
+                message: 'Workflow timeout.',
+                error: 'No terminal workflow event received. Please refresh and check records.'
+              }
+            : prev
+        ));
+        return;
+      }
+      workflowPollTimerRef.current = setTimeout(tick, 2000);
+    };
+
+    workflowPollTimerRef.current = setTimeout(tick, 2500);
+  };
+
   useEffect(() => {
     setSessionKey(localStorage.getItem(SESSION_KEY_ADDR_STORAGE) || '');
     setSessionPrivKey(localStorage.getItem(SESSION_KEY_PRIV_STORAGE) || '');
@@ -232,6 +317,8 @@ export default function DashboardPage({
     }, 3000);
     return () => clearInterval(timer);
   }, []);
+
+  useEffect(() => () => clearWorkflowPoll(), []);
 
   useEffect(() => {
     if (!chatBottomRef.current) return;
@@ -308,6 +395,7 @@ export default function DashboardPage({
     es.addEventListener('unlocked', (evt) => {
       const payload = evt?.data ? JSON.parse(evt.data) : {};
       if (!matchesTrace(payload)) return;
+      clearWorkflowPoll();
       setFlow((prev) => ({
         ...prev,
         state: 'success',
@@ -348,6 +436,7 @@ export default function DashboardPage({
     es.addEventListener('failed', (evt) => {
       const payload = evt?.data ? JSON.parse(evt.data) : {};
       if (!matchesTrace(payload)) return;
+      clearWorkflowPoll();
       const reason = String(payload?.reason || payload?.error || 'Unknown error');
       const insufficient = /(insufficient|balance)/i.test(reason);
       setFlow((prev) => ({
@@ -648,8 +737,18 @@ export default function DashboardPage({
       .filter((item) => item.content);
     setChatInput('');
     setChatBusy(true);
+    clearWorkflowPoll();
     setTraceId(requestTraceId);
-    setFlow((prev) => ({ ...prev, error: '' }));
+    setFlow((prev) => ({
+      ...initialFlow,
+      traceId: requestTraceId,
+      message: 'Submitting request...',
+      steps: {
+        ...initialFlow.steps,
+        session: prev.steps.session,
+        identity: prev.steps.identity
+      }
+    }));
     setChatHistory((prev) => [...prev, { role: 'user', text: userText, ts: Date.now() }]);
 
     try {
@@ -711,6 +810,7 @@ export default function DashboardPage({
         throw new Error(body?.reason || body?.error || `chat failed: HTTP ${resp.status}`);
       }
       if (body.traceId) setTraceId(body.traceId);
+      const finalTrace = String(body.traceId || requestTraceId || '').trim();
       const stateStepText = `${body.state || ''} ${body.step || ''}`.toLowerCase();
       const isSuccess = /(unlocked|completed|success|done)/i.test(stateStepText);
       const isRunning = /(x402|challenge|payment|proof|onchain|settle|intent|workflow_running)/i.test(
@@ -752,7 +852,11 @@ export default function DashboardPage({
           identity: identityInfo
         }
       ]);
+      if (finalTrace && isRunning) {
+        startWorkflowPoll(finalTrace);
+      }
     } catch (err) {
+      clearWorkflowPoll();
       setFlow((prev) => ({
         ...prev,
         state: prev.steps.challenge || prev.steps.payment || prev.steps.proof || prev.steps.onchain
