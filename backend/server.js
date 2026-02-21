@@ -5,6 +5,7 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { ethers } from 'ethers';
+import { GokiteAASDK } from '../frontend/src/gokite-aa-sdk.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -12,6 +13,7 @@ const dataPath = path.resolve('data', 'records.json');
 const x402Path = path.resolve('data', 'x402_requests.json');
 const policyFailurePath = path.resolve('data', 'policy_failures.json');
 const policyConfigPath = path.resolve('data', 'policy_config.json');
+const sessionRuntimePath = path.resolve('data', 'session_runtime.json');
 
 const SETTLEMENT_TOKEN =
   process.env.KITE_SETTLEMENT_TOKEN || '0x0fF5393387ad2f9f691FD6Fd28e07E3969e27e63';
@@ -34,7 +36,14 @@ const POLICY_ALLOWED_RECIPIENTS_DEFAULT = String(
   .filter(Boolean);
 
 const BACKEND_SIGNER_PRIVATE_KEY = process.env.KITECLAW_BACKEND_SIGNER_PRIVATE_KEY || '';
+const ENV_SESSION_PRIVATE_KEY = process.env.KITECLAW_SESSION_KEY || '';
+const ENV_SESSION_ADDRESS = process.env.KITECLAW_SESSION_ADDRESS || '';
+const ENV_SESSION_ID = process.env.KITECLAW_SESSION_ID || '';
 const BACKEND_RPC_URL = process.env.KITEAI_RPC_URL || 'https://rpc-testnet.gokite.ai/';
+const BACKEND_BUNDLER_URL =
+  process.env.KITEAI_BUNDLER_URL || 'https://bundler-service.staging.gokite.ai/rpc/';
+const BACKEND_ENTRYPOINT_ADDRESS =
+  process.env.KITE_ENTRYPOINT_ADDRESS || '0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108';
 const ERC8004_IDENTITY_REGISTRY = process.env.ERC8004_IDENTITY_REGISTRY || '';
 const ERC8004_AGENT_ID_RAW = process.env.ERC8004_AGENT_ID || '';
 const ERC8004_AGENT_ID = Number.isFinite(Number(ERC8004_AGENT_ID_RAW))
@@ -70,6 +79,26 @@ function writeJsonArray(targetPath, records) {
   fs.writeFileSync(targetPath, JSON.stringify(records, null, 2), 'utf8');
 }
 
+function ensureJsonObjectFile(targetPath) {
+  if (!fs.existsSync(targetPath)) {
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    fs.writeFileSync(targetPath, '{}', 'utf8');
+  }
+}
+
+function readJsonObject(targetPath) {
+  ensureJsonObjectFile(targetPath);
+  const raw = fs.readFileSync(targetPath, 'utf8');
+  const cleaned = raw.replace(/^\uFEFF/, '');
+  const parsed = JSON.parse(cleaned || '{}');
+  return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+}
+
+function writeJsonObject(targetPath, payload) {
+  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+  fs.writeFileSync(targetPath, JSON.stringify(payload || {}, null, 2), 'utf8');
+}
+
 function readRecords() {
   return readJsonArray(dataPath);
 }
@@ -92,6 +121,68 @@ function readPolicyFailures() {
 
 function writePolicyFailures(records) {
   writeJsonArray(policyFailurePath, records);
+}
+
+function sanitizeSessionRuntime(input = {}) {
+  const aaWallet = normalizeAddress(input.aaWallet || '');
+  const owner = normalizeAddress(input.owner || '');
+  const sessionAddress = normalizeAddress(input.sessionAddress || '');
+  const sessionPrivateKey = String(input.sessionPrivateKey || '').trim();
+  const sessionId = String(input.sessionId || '').trim();
+  const sessionTxHash = String(input.sessionTxHash || '').trim();
+  const expiresAt = Number(input.expiresAt || 0);
+  const maxPerTx = Number(input.maxPerTx || 0);
+  const dailyLimit = Number(input.dailyLimit || 0);
+  const gatewayRecipient = normalizeAddress(input.gatewayRecipient || '');
+  const source = String(input.source || 'frontend').trim();
+  const updatedAt = Number(input.updatedAt || Date.now());
+
+  return {
+    aaWallet: ethers.isAddress(aaWallet) ? aaWallet : '',
+    owner: ethers.isAddress(owner) ? owner : '',
+    sessionAddress: ethers.isAddress(sessionAddress) ? sessionAddress : '',
+    sessionPrivateKey: /^0x[0-9a-fA-F]{64}$/.test(sessionPrivateKey) ? sessionPrivateKey : '',
+    sessionId: /^0x[0-9a-fA-F]{64}$/.test(sessionId) ? sessionId : '',
+    sessionTxHash: /^0x[0-9a-fA-F]{64}$/.test(sessionTxHash) ? sessionTxHash : '',
+    expiresAt: Number.isFinite(expiresAt) && expiresAt > 0 ? expiresAt : 0,
+    maxPerTx: Number.isFinite(maxPerTx) && maxPerTx > 0 ? maxPerTx : 0,
+    dailyLimit: Number.isFinite(dailyLimit) && dailyLimit > 0 ? dailyLimit : 0,
+    gatewayRecipient: ethers.isAddress(gatewayRecipient) ? gatewayRecipient : '',
+    source,
+    updatedAt: Number.isFinite(updatedAt) && updatedAt > 0 ? updatedAt : Date.now()
+  };
+}
+
+function readSessionRuntime() {
+  const file = sanitizeSessionRuntime(readJsonObject(sessionRuntimePath));
+  const merged = {
+    ...file,
+    sessionPrivateKey: file.sessionPrivateKey || (ENV_SESSION_PRIVATE_KEY || ''),
+    sessionAddress: file.sessionAddress || normalizeAddress(ENV_SESSION_ADDRESS || ''),
+    sessionId: file.sessionId || (ENV_SESSION_ID || '')
+  };
+  return sanitizeSessionRuntime(merged);
+}
+
+function writeSessionRuntime(input = {}) {
+  const next = sanitizeSessionRuntime(input);
+  writeJsonObject(sessionRuntimePath, next);
+  return next;
+}
+
+function maskSecret(secret = '') {
+  const value = String(secret || '');
+  if (!value) return '';
+  if (value.length <= 12) return '***';
+  return `${value.slice(0, 8)}...${value.slice(-4)}`;
+}
+
+function getServiceProviderBytes32(action) {
+  const normalized = String(action || '').trim().toLowerCase();
+  if (normalized === 'reactive-stop-orders') {
+    return ethers.encodeBytes32String('reactive-stop-orders');
+  }
+  return ethers.encodeBytes32String('kol-score');
 }
 
 function normalizeRecipients(input) {
@@ -427,18 +518,79 @@ function evaluateTransferPolicy({ payer, recipient, amount, requests }) {
   };
 }
 
-function verifyProofByLocalRecord(reqItem, paymentProof) {
-  const records = readRecords();
-  const found = records.find((item) => {
+async function verifyProofOnChain(reqItem, paymentProof) {
+  const txHash = String(paymentProof?.txHash || '').trim();
+  if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) {
+    return { ok: false, reason: 'invalid txHash format' };
+  }
+
+  const tokenAddress = normalizeAddress(reqItem?.tokenAddress || '');
+  const recipient = normalizeAddress(reqItem?.recipient || '');
+  const payer = normalizeAddress(reqItem?.payer || '');
+  if (!tokenAddress || !recipient) {
+    return { ok: false, reason: 'missing expected token/recipient in request' };
+  }
+
+  let expectedAmountRaw = null;
+  try {
+    expectedAmountRaw = ethers.parseUnits(String(reqItem?.amount || '0'), 18);
+  } catch {
+    return { ok: false, reason: 'invalid expected amount' };
+  }
+
+  const provider = new ethers.JsonRpcProvider(BACKEND_RPC_URL);
+  const receipt = await provider.getTransactionReceipt(txHash);
+  if (!receipt) {
+    return { ok: false, reason: 'transaction receipt not found (pending or unknown)' };
+  }
+  if (Number(receipt.status) !== 1) {
+    return { ok: false, reason: 'transaction reverted on-chain' };
+  }
+
+  const transferTopic = ethers.id('Transfer(address,address,uint256)');
+  const transferIface = new ethers.Interface([
+    'event Transfer(address indexed from, address indexed to, uint256 value)'
+  ]);
+
+  const candidateLogs = (receipt.logs || []).filter((log) => {
     return (
-      normalizeAddress(item.txHash) === normalizeAddress(paymentProof.txHash) &&
-      normalizeAddress(item.token) === normalizeAddress(reqItem.tokenAddress) &&
-      normalizeAddress(item.recipient) === normalizeAddress(reqItem.recipient) &&
-      String(item.amount) === String(reqItem.amount) &&
-      String(item.status).toLowerCase() === 'success'
+      normalizeAddress(log.address) === tokenAddress &&
+      Array.isArray(log.topics) &&
+      String(log.topics[0] || '').toLowerCase() === String(transferTopic).toLowerCase()
     );
   });
-  return Boolean(found);
+
+  for (const log of candidateLogs) {
+    try {
+      const parsed = transferIface.parseLog(log);
+      const from = normalizeAddress(String(parsed.args.from));
+      const to = normalizeAddress(String(parsed.args.to));
+      const value = ethers.getBigInt(parsed.args.value);
+      const amountMatch = value === expectedAmountRaw;
+      const toMatch = to === recipient;
+      const fromMatch = !payer || from === payer;
+      if (amountMatch && toMatch && fromMatch) {
+        return {
+          ok: true,
+          details: {
+            txHash,
+            blockNumber: Number(receipt.blockNumber || 0),
+            tokenAddress,
+            from,
+            to,
+            valueRaw: value.toString()
+          }
+        };
+      }
+    } catch {
+      // ignore unparsable transfer logs
+    }
+  }
+
+  return {
+    ok: false,
+    reason: 'no matching ERC20 Transfer log found for token/recipient/amount/payer'
+  };
 }
 
 function getBackendSignerState() {
@@ -550,6 +702,59 @@ app.get('/api/signer/info', (req, res) => {
   res.json(getBackendSignerState());
 });
 
+app.get('/api/session/runtime', (req, res) => {
+  const runtime = readSessionRuntime();
+  return res.json({
+    ok: true,
+    runtime: {
+      ...runtime,
+      sessionPrivateKey: undefined,
+      sessionPrivateKeyMasked: maskSecret(runtime.sessionPrivateKey),
+      hasSessionPrivateKey: Boolean(runtime.sessionPrivateKey)
+    }
+  });
+});
+
+app.get('/api/session/runtime/secret', (req, res) => {
+  const runtime = readSessionRuntime();
+  return res.json({
+    ok: true,
+    runtime
+  });
+});
+
+app.post('/api/session/runtime/sync', (req, res) => {
+  const body = req.body || {};
+  const next = writeSessionRuntime({
+    aaWallet: body.aaWallet,
+    owner: body.owner,
+    sessionAddress: body.sessionAddress,
+    sessionPrivateKey: body.sessionPrivateKey,
+    sessionId: body.sessionId,
+    sessionTxHash: body.sessionTxHash,
+    expiresAt: body.expiresAt,
+    maxPerTx: body.maxPerTx,
+    dailyLimit: body.dailyLimit,
+    gatewayRecipient: body.gatewayRecipient,
+    source: body.source || 'frontend',
+    updatedAt: Date.now()
+  });
+  return res.json({
+    ok: true,
+    runtime: {
+      ...next,
+      sessionPrivateKey: undefined,
+      sessionPrivateKeyMasked: maskSecret(next.sessionPrivateKey),
+      hasSessionPrivateKey: Boolean(next.sessionPrivateKey)
+    }
+  });
+});
+
+app.delete('/api/session/runtime', (req, res) => {
+  writeJsonObject(sessionRuntimePath, {});
+  return res.json({ ok: true, cleared: true });
+});
+
 app.get('/api/identity', async (req, res) => {
   try {
     const profile = await readIdentityProfile({
@@ -570,8 +775,7 @@ app.get('/api/a2a/capabilities', (req, res) => {
   res.json({ ok: true, capabilities: buildA2ACapabilities() });
 });
 
-app.post('/api/a2a/tasks/stop-orders', (req, res) => {
-  const body = req.body || {};
+async function handleA2AStopOrders(body = {}) {
   const payer = String(body.payer || '').trim();
   const sourceAgentId = String(body.sourceAgentId || KITE_AGENT1_ID).trim();
   const targetAgentId = String(body.targetAgentId || KITE_AGENT2_ID).trim();
@@ -583,10 +787,13 @@ app.post('/api/a2a/tasks/stop-orders', (req, res) => {
   try {
     actionParams = normalizeReactiveParams(task);
   } catch (error) {
-    return res.status(400).json({
-      error: 'invalid_task',
-      reason: error.message
-    });
+    return {
+      status: 400,
+      body: {
+        error: 'invalid_task',
+        reason: error.message
+      }
+    };
   }
 
   const actionCfg = getActionConfig('reactive-stop-orders');
@@ -610,11 +817,14 @@ app.post('/api/a2a/tasks/stop-orders', (req, res) => {
         message: policyResult.message,
         evidence: policyResult.evidence
       });
-      return res.status(403).json({
-        error: policyResult.code,
-        reason: policyResult.message,
-        evidence: policyResult.evidence
-      });
+      return {
+        status: 403,
+        body: {
+          error: policyResult.code,
+          reason: policyResult.message,
+          evidence: policyResult.evidence
+        }
+      };
     }
 
     const reqItem = createX402Request(a2aQuery, payer, actionCfg.action, {
@@ -635,61 +845,77 @@ app.post('/api/a2a/tasks/stop-orders', (req, res) => {
     requests.unshift(reqItem);
     writeX402Requests(requests);
 
-    return res.status(402).json({
-      ...buildPaymentRequiredResponse(reqItem),
-      a2a: {
-        protocol: 'a2a-mvp-v0',
-        sourceAgentId,
-        targetAgentId,
-        taskType: 'reactive-stop-orders',
-        task: actionParams
+    return {
+      status: 402,
+      body: {
+        ...buildPaymentRequiredResponse(reqItem),
+        a2a: {
+          protocol: 'a2a-mvp-v0',
+          sourceAgentId,
+          targetAgentId,
+          taskType: 'reactive-stop-orders',
+          task: actionParams
+        }
       }
-    });
+    };
   }
 
   const reqItem = requests.find((item) => item.requestId === requestId);
   if (!reqItem) {
-    return res.status(402).json({
-      error: 'payment_required',
-      reason: 'request not found'
-    });
+    return {
+      status: 402,
+      body: {
+        error: 'payment_required',
+        reason: 'request not found'
+      }
+    };
   }
 
   if (Date.now() > reqItem.expiresAt) {
     reqItem.status = 'expired';
     writeX402Requests(requests);
-    return res.status(402).json(buildPaymentRequiredResponse(reqItem, 'request expired'));
+    return {
+      status: 402,
+      body: buildPaymentRequiredResponse(reqItem, 'request expired')
+    };
   }
 
   if (reqItem.status === 'paid') {
-    return res.json({
-      ok: true,
-      mode: 'x402',
-      requestId: reqItem.requestId,
-      reused: true,
-      result: {
-        summary: 'A2A reactive stop-order task already unlocked',
-        orderPlan: {
-          symbol: reqItem?.actionParams?.symbol || '-',
-          takeProfit: reqItem?.actionParams?.takeProfit ?? '-',
-          stopLoss: reqItem?.actionParams?.stopLoss ?? '-',
-          provider: 'Reactive Contracts'
-        }
-      },
-      a2a: reqItem.a2a || null
-    });
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        mode: 'x402',
+        requestId: reqItem.requestId,
+        reused: true,
+        result: {
+          summary: 'A2A reactive stop-order task already unlocked',
+          orderPlan: {
+            symbol: reqItem?.actionParams?.symbol || '-',
+            takeProfit: reqItem?.actionParams?.takeProfit ?? '-',
+            stopLoss: reqItem?.actionParams?.stopLoss ?? '-',
+            provider: 'Reactive Contracts'
+          }
+        },
+        a2a: reqItem.a2a || null
+      }
+    };
   }
 
   const validationError = validatePaymentProof(reqItem, paymentProof);
   if (validationError) {
-    return res.status(402).json(buildPaymentRequiredResponse(reqItem, validationError));
+    return {
+      status: 402,
+      body: buildPaymentRequiredResponse(reqItem, validationError)
+    };
   }
 
-  const verified = verifyProofByLocalRecord(reqItem, paymentProof);
-  if (!verified) {
-    return res.status(402).json(
-      buildPaymentRequiredResponse(reqItem, 'proof not found in transfer records')
-    );
+  const verification = await verifyProofOnChain(reqItem, paymentProof);
+  if (!verification.ok) {
+    return {
+      status: 402,
+      body: buildPaymentRequiredResponse(reqItem, `on-chain proof verification failed: ${verification.reason}`)
+    };
   }
 
   reqItem.status = 'paid';
@@ -703,32 +929,144 @@ app.post('/api/a2a/tasks/stop-orders', (req, res) => {
     recipient: paymentProof.recipient,
     amount: paymentProof.amount
   };
+  reqItem.proofVerification = {
+    mode: 'onchain_transfer_log',
+    verifiedAt: Date.now(),
+    details: verification.details || null
+  };
   writeX402Requests(requests);
 
+  return {
+    status: 200,
+    body: {
+      ok: true,
+      mode: 'x402',
+      requestId: reqItem.requestId,
+      payment: {
+        txHash: paymentProof.txHash,
+        amount: reqItem.amount,
+        tokenAddress: reqItem.tokenAddress,
+        recipient: reqItem.recipient
+      },
+      result: {
+        summary: 'A2A reactive stop-order task unlocked by x402 payment',
+        orderPlan: {
+          symbol: reqItem?.actionParams?.symbol || '-',
+          takeProfit: reqItem?.actionParams?.takeProfit ?? '-',
+          stopLoss: reqItem?.actionParams?.stopLoss ?? '-',
+          provider: 'Reactive Contracts'
+        }
+      },
+      a2a: reqItem.a2a || {
+        sourceAgentId,
+        targetAgentId,
+        taskType: 'reactive-stop-orders'
+      }
+    }
+  };
+}
+
+app.post('/api/a2a/tasks/stop-orders', async (req, res) => {
+  const result = await handleA2AStopOrders(req.body);
+  return res.status(result.status).json(result.body);
+});
+
+app.get('/api/skill/openclaw/manifest', (req, res) => {
   return res.json({
     ok: true,
-    mode: 'x402',
-    requestId: reqItem.requestId,
-    payment: {
-      txHash: paymentProof.txHash,
-      amount: reqItem.amount,
-      tokenAddress: reqItem.tokenAddress,
-      recipient: reqItem.recipient
-    },
-    result: {
-      summary: 'A2A reactive stop-order task unlocked by x402 payment',
-      orderPlan: {
-        symbol: reqItem?.actionParams?.symbol || '-',
-        takeProfit: reqItem?.actionParams?.takeProfit ?? '-',
-        stopLoss: reqItem?.actionParams?.stopLoss ?? '-',
-        provider: 'Reactive Contracts'
+    skill: {
+      name: 'kiteclaw.stop_orders',
+      version: '1.0.0',
+      title: 'KITECLAW Reactive Stop Orders',
+      transport: 'http-json',
+      endpoints: {
+        invoke: '/api/skill/openclaw/invoke',
+        status: '/api/skill/openclaw/status/:requestId',
+        evidence: '/api/skill/openclaw/evidence/:requestId'
+      },
+      inputSchema: {
+        type: 'object',
+        required: ['payer', 'task'],
+        properties: {
+          payer: { type: 'string' },
+          sourceAgentId: { type: 'string', default: KITE_AGENT1_ID },
+          targetAgentId: { type: 'string', default: KITE_AGENT2_ID },
+          task: {
+            type: 'object',
+            required: ['symbol', 'takeProfit', 'stopLoss'],
+            properties: {
+              symbol: { type: 'string' },
+              takeProfit: { type: 'number' },
+              stopLoss: { type: 'number' }
+            }
+          },
+          requestId: { type: 'string' },
+          paymentProof: { type: 'object' }
+        }
       }
-    },
-    a2a: reqItem.a2a || {
-      sourceAgentId,
-      targetAgentId,
-      taskType: 'reactive-stop-orders'
     }
+  });
+});
+
+app.post('/api/skill/openclaw/invoke', async (req, res) => {
+  const result = await handleA2AStopOrders(req.body);
+  return res.status(result.status).json({
+    ok: result.status >= 200 && result.status < 300,
+    status: result.status,
+    ...result.body
+  });
+});
+
+app.get('/api/skill/openclaw/status/:requestId', (req, res) => {
+  const requestId = String(req.params.requestId || '').trim();
+  if (!requestId) {
+    return res.status(400).json({ ok: false, error: 'requestId is required' });
+  }
+  const item = readX402Requests().find((r) => String(r.requestId) === requestId);
+  if (!item) {
+    return res.status(404).json({ ok: false, error: 'not_found' });
+  }
+  const now = Date.now();
+  const effectiveStatus =
+    item.status === 'paid' ? 'paid' : now > Number(item.expiresAt || 0) ? 'expired' : item.status;
+  return res.json({
+    ok: true,
+    requestId: item.requestId,
+    status: effectiveStatus,
+    action: item.action,
+    createdAt: item.createdAt,
+    expiresAt: item.expiresAt,
+    paidAt: item.paidAt || null,
+    paymentTxHash: item.paymentTxHash || item?.paymentProof?.txHash || ''
+  });
+});
+
+app.get('/api/skill/openclaw/evidence/:requestId', (req, res) => {
+  const requestId = String(req.params.requestId || '').trim();
+  if (!requestId) {
+    return res.status(400).json({ ok: false, error: 'requestId is required' });
+  }
+  const item = readX402Requests().find((r) => String(r.requestId) === requestId);
+  if (!item) {
+    return res.status(404).json({ ok: false, error: 'not_found' });
+  }
+  const txHash = String(item.paymentTxHash || item?.paymentProof?.txHash || '').toLowerCase();
+  const transferRecord = readRecords().find(
+    (r) => txHash && String(r.txHash || '').toLowerCase() === txHash
+  );
+  return res.json({
+    ok: true,
+    request: item,
+    payment: {
+      txHash: item.paymentTxHash || item?.paymentProof?.txHash || '',
+      tokenAddress: item.tokenAddress,
+      recipient: item.recipient,
+      amount: item.amount
+    },
+    transferRecord: transferRecord || null,
+    policy: item.policy || null,
+    identity: item.identity || null,
+    a2a: item.a2a || null
   });
 });
 
@@ -746,7 +1084,7 @@ app.post('/api/signer/sign-userop-hash', async (req, res) => {
   }
 });
 
-app.post('/api/x402/kol-score', (req, res) => {
+app.post('/api/x402/kol-score', async (req, res) => {
   const body = req.body || {};
   const query = String(body.query || '').trim();
   const payer = String(body.payer || '').trim();
@@ -807,32 +1145,32 @@ app.post('/api/x402/kol-score', (req, res) => {
       });
     }
 
-    return readIdentityProfile({
-      registry: identityInput.identityRegistry || identityInput.registry,
-      agentId: identityInput.agentId
-    })
-      .then((identityProfile) => {
-        const reqItem = createX402Request(query, payer, actionCfg.action, {
-          amount: actionCfg.amount,
-          recipient: actionCfg.recipient,
-          policy: {
-            decision: 'allowed',
-            snapshot: buildPolicySnapshot(),
-            evidence: policyResult.evidence
-          },
-          identity: identityProfile?.configured
-        });
-        reqItem.actionParams = normalizedActionParams;
-        requests.unshift(reqItem);
-        writeX402Requests(requests);
-        return res.status(402).json(buildPaymentRequiredResponse(reqItem));
-      })
-      .catch((error) =>
-        res.status(400).json({
-          error: 'invalid_identity',
-          reason: error.message
-        })
-      );
+    let identityProfile = null;
+    try {
+      identityProfile = await readIdentityProfile({
+        registry: identityInput.identityRegistry || identityInput.registry,
+        agentId: identityInput.agentId
+      });
+    } catch (error) {
+      return res.status(400).json({
+        error: 'invalid_identity',
+        reason: error.message
+      });
+    }
+    const reqItem = createX402Request(query, payer, actionCfg.action, {
+      amount: actionCfg.amount,
+      recipient: actionCfg.recipient,
+      policy: {
+        decision: 'allowed',
+        snapshot: buildPolicySnapshot(),
+        evidence: policyResult.evidence
+      },
+      identity: identityProfile?.configured
+    });
+    reqItem.actionParams = normalizedActionParams;
+    requests.unshift(reqItem);
+    writeX402Requests(requests);
+    return res.status(402).json(buildPaymentRequiredResponse(reqItem));
   }
 
   const reqItem = requests.find((item) => item.requestId === requestId);
@@ -881,8 +1219,12 @@ app.post('/api/x402/kol-score', (req, res) => {
   const validationError = validatePaymentProof(reqItem, paymentProof);
   if (validationError) return res.status(402).json(buildPaymentRequiredResponse(reqItem, validationError));
 
-  const verified = verifyProofByLocalRecord(reqItem, paymentProof);
-  if (!verified) return res.status(402).json(buildPaymentRequiredResponse(reqItem, 'proof not found in transfer records'));
+  const verification = await verifyProofOnChain(reqItem, paymentProof);
+  if (!verification.ok) {
+    return res
+      .status(402)
+      .json(buildPaymentRequiredResponse(reqItem, `on-chain proof verification failed: ${verification.reason}`));
+  }
 
   reqItem.status = 'paid';
   reqItem.paidAt = Date.now();
@@ -894,6 +1236,11 @@ app.post('/api/x402/kol-score', (req, res) => {
     tokenAddress: paymentProof.tokenAddress,
     recipient: paymentProof.recipient,
     amount: paymentProof.amount
+  };
+  reqItem.proofVerification = {
+    mode: 'onchain_transfer_log',
+    verifiedAt: Date.now(),
+    details: verification.details || null
   };
   writeX402Requests(requests);
 
@@ -929,7 +1276,7 @@ app.post('/api/x402/kol-score', (req, res) => {
   });
 });
 
-app.post('/api/x402/transfer-intent', (req, res) => {
+app.post('/api/x402/transfer-intent', async (req, res) => {
   const body = req.body || {};
   const payer = String(body.payer || '').trim();
   const requestId = String(body.requestId || '').trim();
@@ -987,32 +1334,32 @@ app.post('/api/x402/transfer-intent', (req, res) => {
       });
     }
 
-    return readIdentityProfile({
-      registry: identityInput.identityRegistry || identityInput.registry,
-      agentId: identityInput.agentId
-    })
-      .then((identityProfile) => {
-        const reqItem = createX402Request(`transfer ${amount} to ${recipient}`, payer, 'transfer-intent', {
-          amount,
-          recipient,
-          tokenAddress,
-          policy: {
-            decision: 'allowed',
-            snapshot: buildPolicySnapshot(),
-            evidence: policyResult.evidence
-          },
-          identity: identityProfile?.configured
-        });
-        requests.unshift(reqItem);
-        writeX402Requests(requests);
-        return res.status(402).json(buildPaymentRequiredResponse(reqItem));
-      })
-      .catch((error) =>
-        res.status(400).json({
-          error: 'invalid_identity',
-          reason: error.message
-        })
-      );
+    let identityProfile = null;
+    try {
+      identityProfile = await readIdentityProfile({
+        registry: identityInput.identityRegistry || identityInput.registry,
+        agentId: identityInput.agentId
+      });
+    } catch (error) {
+      return res.status(400).json({
+        error: 'invalid_identity',
+        reason: error.message
+      });
+    }
+    const reqItem = createX402Request(`transfer ${amount} to ${recipient}`, payer, 'transfer-intent', {
+      amount,
+      recipient,
+      tokenAddress,
+      policy: {
+        decision: 'allowed',
+        snapshot: buildPolicySnapshot(),
+        evidence: policyResult.evidence
+      },
+      identity: identityProfile?.configured
+    });
+    requests.unshift(reqItem);
+    writeX402Requests(requests);
+    return res.status(402).json(buildPaymentRequiredResponse(reqItem));
   }
 
   const reqItem = requests.find((item) => item.requestId === requestId);
@@ -1035,8 +1382,12 @@ app.post('/api/x402/transfer-intent', (req, res) => {
   const validationError = validatePaymentProof(reqItem, paymentProof);
   if (validationError) return res.status(402).json(buildPaymentRequiredResponse(reqItem, validationError));
 
-  const verified = verifyProofByLocalRecord(reqItem, paymentProof);
-  if (!verified) return res.status(402).json(buildPaymentRequiredResponse(reqItem, 'proof not found in transfer records'));
+  const verification = await verifyProofOnChain(reqItem, paymentProof);
+  if (!verification.ok) {
+    return res
+      .status(402)
+      .json(buildPaymentRequiredResponse(reqItem, `on-chain proof verification failed: ${verification.reason}`));
+  }
 
   reqItem.status = 'paid';
   reqItem.paidAt = Date.now();
@@ -1048,6 +1399,11 @@ app.post('/api/x402/transfer-intent', (req, res) => {
     tokenAddress: paymentProof.tokenAddress,
     recipient: paymentProof.recipient,
     amount: paymentProof.amount
+  };
+  reqItem.proofVerification = {
+    mode: 'onchain_transfer_log',
+    verifiedAt: Date.now(),
+    details: verification.details || null
   };
   writeX402Requests(requests);
 
@@ -1150,6 +1506,217 @@ app.get('/api/x402/requests', (req, res) => {
   });
 
   res.json({ ok: true, total: filtered.length, items: filtered.slice(0, limit) });
+});
+
+// AA Session Payment Endpoint
+app.post('/api/session/pay', async (req, res) => {
+  try {
+    const runtime = readSessionRuntime();
+
+    if (!runtime.sessionPrivateKey || !runtime.aaWallet) {
+      return res.status(400).json({
+        ok: false,
+        error: 'session_not_configured',
+        reason: 'Session key not synced. Please configure via /api/session/runtime/sync first.'
+      });
+    }
+
+    const {
+      tokenAddress,
+      recipient,
+      amount,
+      requestId = '',
+      action = 'kol-score',
+      query = '',
+      sessionId: bodySessionId = ''
+    } = req.body || {};
+
+    if (!tokenAddress || !ethers.isAddress(tokenAddress)) {
+      return res.status(400).json({ ok: false, error: 'invalid_tokenAddress' });
+    }
+    if (!recipient || !ethers.isAddress(recipient)) {
+      return res.status(400).json({ ok: false, error: 'invalid_recipient' });
+    }
+    if (!amount || isNaN(Number(amount)) || Number(amount) <= 0) {
+      return res.status(400).json({ ok: false, error: 'invalid_amount' });
+    }
+
+    const decimals = 18;
+    const amountRaw = ethers.parseUnits(String(amount), decimals);
+    const sessionId = String(bodySessionId || runtime.sessionId || '').trim();
+    if (!/^0x[0-9a-fA-F]{64}$/.test(sessionId)) {
+      return res.status(400).json({
+        ok: false,
+        error: 'invalid_session_id',
+        reason: 'sessionId is required. Sync runtime with sessionId from Agent Settings.'
+      });
+    }
+
+    const provider = new ethers.JsonRpcProvider(BACKEND_RPC_URL);
+    const sessionWallet = new ethers.Wallet(runtime.sessionPrivateKey, provider);
+    const sessionSignerAddress = await sessionWallet.getAddress();
+    const serviceProvider = getServiceProviderBytes32(action);
+
+    const sessionReadAbi = [
+      'function sessionExists(bytes32 sessionId) view returns (bool)',
+      'function getSessionAgent(bytes32 sessionId) view returns (address)',
+      'function checkSpendingRules(bytes32 sessionId, uint256 normalizedAmount, bytes32 serviceProvider) view returns (bool)'
+    ];
+    const account = new ethers.Contract(runtime.aaWallet, sessionReadAbi, provider);
+    const [exists, agentAddr, rulePass] = await Promise.all([
+      account.sessionExists(sessionId),
+      account.getSessionAgent(sessionId),
+      account.checkSpendingRules(sessionId, amountRaw, serviceProvider)
+    ]);
+    if (!exists) {
+      return res.status(400).json({
+        ok: false,
+        error: 'session_not_found',
+        reason: `Session not found on-chain: ${sessionId}`
+      });
+    }
+    if (String(agentAddr || '').toLowerCase() !== String(sessionSignerAddress).toLowerCase()) {
+      return res.status(400).json({
+        ok: false,
+        error: 'session_agent_mismatch',
+        reason: `On-chain session agent mismatch. expected=${agentAddr}, current=${sessionSignerAddress}`
+      });
+    }
+    if (!rulePass) {
+      return res.status(400).json({
+        ok: false,
+        error: 'session_rule_failed',
+        reason: 'Session spending rule precheck failed (amount/provider out of scope).'
+      });
+    }
+
+    const erc20Abi = ['function balanceOf(address account) view returns (uint256)'];
+    const tokenContract = new ethers.Contract(tokenAddress, erc20Abi, provider);
+    const aaBalance = await tokenContract.balanceOf(runtime.aaWallet);
+    if (aaBalance < amountRaw) {
+      return res.status(400).json({
+        ok: false,
+        error: 'insufficient_funds',
+        reason: `AA wallet ${runtime.aaWallet} has insufficient balance`,
+        details: {
+          aaWallet: runtime.aaWallet,
+          balance: ethers.formatUnits(aaBalance, decimals),
+          required: amount
+        }
+      });
+    }
+
+    const sdk = new GokiteAASDK({
+      network: 'kite_testnet',
+      rpcUrl: BACKEND_RPC_URL,
+      bundlerUrl: BACKEND_BUNDLER_URL,
+      entryPointAddress: BACKEND_ENTRYPOINT_ADDRESS,
+      proxyAddress: runtime.aaWallet
+    });
+    if (runtime.owner && ethers.isAddress(runtime.owner)) {
+      sdk.config.ownerAddress = runtime.owner;
+    }
+
+    const nowSec = Math.floor(Date.now() / 1000);
+    const authPayload = {
+      from: runtime.aaWallet,
+      to: recipient,
+      token: tokenAddress,
+      value: amountRaw,
+      validAfter: BigInt(Math.max(0, nowSec - 30)),
+      validBefore: BigInt(nowSec + 10 * 60),
+      nonce: ethers.hexlify(ethers.randomBytes(32))
+    };
+    const authSignature = await sdk.buildTransferAuthorizationSignature(sessionWallet, authPayload);
+    const metadata = ethers.hexlify(
+      ethers.toUtf8Bytes(
+        JSON.stringify({
+          requestId: String(requestId || ''),
+          action: String(action || ''),
+          query: String(query || '')
+        })
+      )
+    );
+    const signFunction = async (userOpHash) =>
+      sessionWallet.signMessage(ethers.getBytes(userOpHash));
+
+    const result = await sdk.sendSessionTransferWithAuthorizationAndProvider(
+      {
+        sessionId,
+        auth: authPayload,
+        authSignature,
+        serviceProvider,
+        metadata
+      },
+      signFunction,
+      {
+        callGasLimit: 320000n,
+        verificationGasLimit: 450000n,
+        preVerificationGas: 120000n
+      }
+    );
+
+    if (result.status !== 'success' || !result.transactionHash) {
+      return res.status(500).json({
+        ok: false,
+        error: 'aa_session_payment_failed',
+        reason: result.reason || 'unknown',
+        details: {
+          userOpHash: result.userOpHash || '',
+          sessionId,
+          payer: runtime.aaWallet
+        }
+      });
+    }
+
+    const records = readRecords();
+    const record = {
+      time: new Date().toISOString(),
+      type: 'aa-session-payment',
+      amount: String(amount),
+      token: tokenAddress,
+      recipient: recipient,
+      txHash: result.transactionHash,
+      userOpHash: result.userOpHash || '',
+      status: 'success',
+      requestId: requestId || '',
+      signerMode: 'aa-session',
+      agentId: ERC8004_AGENT_ID !== null ? String(ERC8004_AGENT_ID) : '',
+      identityRegistry: ERC8004_IDENTITY_REGISTRY || '',
+      aaWallet: runtime.aaWallet,
+      sessionAddress: runtime.sessionAddress,
+      sessionId,
+      action
+    };
+    records.unshift(record);
+    writeRecords(records);
+
+    return res.json({
+      ok: true,
+      status: 'paid',
+      payment: {
+        requestId: requestId || '',
+        tokenAddress,
+        recipient,
+        amount: String(amount),
+        amountWei: amountRaw.toString(),
+        aaWallet: runtime.aaWallet,
+        sessionAddress: runtime.sessionAddress,
+        sessionId,
+        txHash: result.transactionHash,
+        userOpHash: result.userOpHash || ''
+      },
+      message: 'AA session payment submitted and confirmed.'
+    });
+
+  } catch (error) {
+    console.error('Session pay error:', error);
+    return res.status(500).json({
+      ok: false,
+      error: 'payment_failed',
+      reason: error.message
+    });
+  }
 });
 
 app.listen(PORT, () => {

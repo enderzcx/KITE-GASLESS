@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { ethers } from 'ethers';
 import Transfer from './Transfer';
+import DashboardPage from './DashboardPage';
 import LoginPage from './LoginPage';
 import VaultPage from './VaultPage';
 import AgentSettingsPage from './AgentSettingsPage';
@@ -43,7 +44,7 @@ function App() {
     const aaAddress = sdk.getAccountAddress(ownerAddress);
 
     setWalletState({ ownerAddress, aaAddress });
-    setView('transfer');
+    setView('dashboard');
   };
 
   return (
@@ -54,7 +55,18 @@ function App() {
           walletState={walletState}
           onBack={() => setView('login')}
           onOpenVault={() => setView('vault')}
-          onOpenAgentSettings={() => setView('agent-settings')}
+          onOpenAgentSettings={() => setView('dashboard')}
+          onOpenRecords={() => setView('records')}
+          onOpenOnChain={() => setView('on-chain')}
+          onOpenAbuseCases={() => setView('abuse-cases')}
+        />
+      )}
+      {view === 'dashboard' && (
+        <DashboardPage
+          walletState={walletState}
+          onBack={() => setView('login')}
+          onOpenTransfer={() => setView('transfer')}
+          onOpenVault={() => setView('vault')}
           onOpenRecords={() => setView('records')}
           onOpenOnChain={() => setView('on-chain')}
           onOpenAbuseCases={() => setView('abuse-cases')}

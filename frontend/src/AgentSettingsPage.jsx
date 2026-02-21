@@ -89,6 +89,7 @@ function AgentSettingsPage({ onBack, walletState }) {
     ok: false,
     message: 'Not verified yet.'
   });
+  const [runtimeSyncInfo, setRuntimeSyncInfo] = useState('');
 
   const rpcUrl =
     import.meta.env.VITE_KITEAI_RPC_URL ||
@@ -230,7 +231,15 @@ function AgentSettingsPage({ onBack, walletState }) {
       localStorage.setItem(SESSION_TX_STORAGE, tx.hash);
       setSessionId(sessionId);
       setSessionTxHash(tx.hash);
-      setStatus(`Session generated, rules applied, gateway policy synced: ${tx.hash}\nSessionId: ${sessionId}`);
+      await syncSessionRuntime({
+        sessionAddress: generatedSessionWallet.address,
+        sessionPrivateKey: generatedSessionWallet.privateKey,
+        currentSessionId: sessionId,
+        currentSessionTxHash: tx.hash
+      });
+      setStatus(
+        `Session generated, rules applied, gateway policy synced, runtime synced: ${tx.hash}\nSessionId: ${sessionId}`
+      );
       await verifySessionOnChain({
         accountAddr: accountAddress,
         txHash: tx.hash
@@ -324,6 +333,46 @@ function AgentSettingsPage({ onBack, walletState }) {
     }
   };
 
+  const syncSessionRuntime = async ({
+    sessionAddress = sessionKey,
+    sessionPrivateKey = sessionPrivKey,
+    currentSessionId = sessionId,
+    currentSessionTxHash = sessionTxHash
+  } = {}) => {
+    if (!sessionAddress || !sessionPrivateKey || !currentSessionId) {
+      throw new Error('Missing session key/session private key/session id. Generate session first.');
+    }
+
+    const resp = await fetch('/api/session/runtime/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        aaWallet: accountAddress,
+        owner: walletState?.ownerAddress || '',
+        sessionAddress,
+        sessionPrivateKey,
+        sessionId: currentSessionId,
+        sessionTxHash: currentSessionTxHash,
+        expiresAt: 0,
+        maxPerTx: Number(singleLimit),
+        dailyLimit: Number(dailyLimit),
+        gatewayRecipient,
+        source: 'frontend-agent-settings'
+      })
+    });
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok || !body?.ok) {
+      throw new Error(body?.reason || body?.error || `Session runtime sync failed: HTTP ${resp.status}`);
+    }
+
+    const runtime = body?.runtime || {};
+    setRuntimeSyncInfo(
+      `Runtime synced: ${runtime.sessionAddress || '-'} (${new Date(
+        Number(runtime.updatedAt || Date.now())
+      ).toISOString()})`
+    );
+  };
+
   const handleSyncGatewayPolicy = async () => {
     try {
       setStatus('Syncing gateway policy...');
@@ -331,6 +380,16 @@ function AgentSettingsPage({ onBack, walletState }) {
       setStatus('Gateway policy synced successfully.');
     } catch (err) {
       setStatus(`Gateway policy sync failed: ${err.message}`);
+    }
+  };
+
+  const handleSyncSessionRuntime = async () => {
+    try {
+      setStatus('Syncing session runtime for KITECLAW...');
+      await syncSessionRuntime();
+      setStatus('Session runtime synced successfully.');
+    } catch (err) {
+      setStatus(`Session runtime sync failed: ${err.message}`);
     }
   };
 
@@ -505,6 +564,7 @@ function AgentSettingsPage({ onBack, walletState }) {
         <div className="vault-actions">
           <button onClick={handleCreateSession}>Generate Session Key & Apply Rules</button>
           <button onClick={handleSyncGatewayPolicy}>Sync Gateway Policy Only</button>
+          <button onClick={handleSyncSessionRuntime}>Sync Session To KITECLAW Runtime</button>
         </div>
         <div className="vault-actions">
           <button onClick={handleRevokeCurrentPayer}>Revoke Current Payer (Kill Switch)</button>
@@ -525,6 +585,7 @@ function AgentSettingsPage({ onBack, walletState }) {
             </div>
           ))}
         </div>
+        {runtimeSyncInfo && <div className="request-error">{runtimeSyncInfo}</div>}
         {status && <div className="request-error">{status}</div>}
       </div>
     </div>
