@@ -62,6 +62,19 @@ if (BACKEND_SIGNER_PRIVATE_KEY) {
 app.use(cors());
 app.use(express.json());
 
+const sseClients = new Set();
+
+function broadcastEvent(eventName, payload = {}) {
+  const msg = `event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`;
+  for (const res of sseClients) {
+    try {
+      res.write(msg);
+    } catch {
+      // ignore broken stream
+    }
+  }
+}
+
 function ensureJsonFile(targetPath) {
   if (!fs.existsSync(targetPath)) {
     fs.mkdirSync(path.dirname(targetPath), { recursive: true });
@@ -982,6 +995,29 @@ app.post('/api/chat/agent', (req, res) => {
   });
 });
 
+app.get('/api/events/stream', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+
+  sseClients.add(res);
+  res.write(`event: connected\ndata: ${JSON.stringify({ ok: true, at: new Date().toISOString() })}\n\n`);
+
+  const keepalive = setInterval(() => {
+    try {
+      res.write(`event: ping\ndata: ${JSON.stringify({ t: Date.now() })}\n\n`);
+    } catch {
+      // handled by close
+    }
+  }, 15000);
+
+  req.on('close', () => {
+    clearInterval(keepalive);
+    sseClients.delete(res);
+  });
+});
+
 app.post('/api/workflow/stop-order/run', async (req, res) => {
   const symbol = String(req.body?.symbol || 'BTC-USDT').trim().toUpperCase();
   const takeProfit = Number(req.body?.takeProfit);
@@ -1011,6 +1047,7 @@ app.post('/api/workflow/stop-order/run', async (req, res) => {
     updatedAt: new Date().toISOString()
   };
   upsertWorkflow(workflow);
+  broadcastEvent('workflow_started', { traceId, state: workflow.state, input: workflow.input });
 
   try {
     if (!symbol || !Number.isFinite(takeProfit) || !Number.isFinite(stopLoss) || takeProfit <= 0 || stopLoss <= 0) {
@@ -1038,6 +1075,12 @@ app.post('/api/workflow/stop-order/run', async (req, res) => {
     }
     workflow.requestId = requestId;
     appendWorkflowStep(workflow, 'challenge_issued', 'ok', {
+      requestId,
+      amount: accept.amount,
+      recipient: accept.recipient
+    });
+    broadcastEvent('challenge_issued', {
+      traceId,
       requestId,
       amount: accept.amount,
       recipient: accept.recipient
@@ -1070,6 +1113,7 @@ app.post('/api/workflow/stop-order/run', async (req, res) => {
       txHash,
       userOpHash
     });
+    broadcastEvent('payment_sent', { traceId, requestId, txHash, userOpHash });
     workflow.updatedAt = new Date().toISOString();
     upsertWorkflow(workflow);
 
@@ -1096,8 +1140,15 @@ app.post('/api/workflow/stop-order/run', async (req, res) => {
     appendWorkflowStep(workflow, 'proof_submitted', 'ok', {
       verified: true
     });
+    broadcastEvent('proof_submitted', { traceId, requestId, verified: true });
     appendWorkflowStep(workflow, 'unlocked', 'ok', {
       result: proofResult?.body?.result?.summary || ''
+    });
+    broadcastEvent('unlocked', {
+      traceId,
+      requestId,
+      txHash,
+      summary: proofResult?.body?.result?.summary || ''
     });
     workflow.state = 'unlocked';
     workflow.result = proofResult?.body?.result || null;
@@ -1115,6 +1166,7 @@ app.post('/api/workflow/stop-order/run', async (req, res) => {
     });
   } catch (error) {
     appendWorkflowStep(workflow, 'failed', 'error', { reason: error.message });
+    broadcastEvent('failed', { traceId, state: 'failed', reason: error.message });
     workflow.state = 'failed';
     workflow.error = error.message;
     workflow.updatedAt = new Date().toISOString();

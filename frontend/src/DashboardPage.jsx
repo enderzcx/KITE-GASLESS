@@ -92,6 +92,7 @@ export default function DashboardPage({
   const [workflowStopLoss, setWorkflowStopLoss] = useState('50000');
   const [workflowSourceAgentId, setWorkflowSourceAgentId] = useState('1');
   const [workflowTargetAgentId, setWorkflowTargetAgentId] = useState('2');
+  const [liveEvents, setLiveEvents] = useState([]);
 
   const rpcUrl =
     import.meta.env.VITE_KITEAI_RPC_URL ||
@@ -166,6 +167,53 @@ export default function DashboardPage({
     }, 3000);
     return () => clearInterval(timer);
   }, [traceId]);
+
+  useEffect(() => {
+    const es = new EventSource('/api/events/stream');
+    const append = (label, payload) => {
+      setLiveEvents((prev) => [
+        { label, payload, at: new Date().toISOString() },
+        ...prev
+      ].slice(0, 20));
+    };
+
+    es.addEventListener('connected', (evt) => {
+      append('connected', evt?.data ? JSON.parse(evt.data) : {});
+    });
+    es.addEventListener('challenge_issued', (evt) => {
+      const payload = evt?.data ? JSON.parse(evt.data) : {};
+      append('challenge_issued', payload);
+      if (payload?.traceId) setTraceId(payload.traceId);
+      void refreshMapping();
+    });
+    es.addEventListener('payment_sent', (evt) => {
+      const payload = evt?.data ? JSON.parse(evt.data) : {};
+      append('payment_sent', payload);
+      if (payload?.traceId) setTraceId(payload.traceId);
+      void Promise.allSettled([refreshMapping(), refreshOnchain()]);
+    });
+    es.addEventListener('proof_submitted', (evt) => {
+      const payload = evt?.data ? JSON.parse(evt.data) : {};
+      append('proof_submitted', payload);
+      if (payload?.traceId) setTraceId(payload.traceId);
+    });
+    es.addEventListener('unlocked', (evt) => {
+      const payload = evt?.data ? JSON.parse(evt.data) : {};
+      append('unlocked', payload);
+      if (payload?.traceId) setTraceId(payload.traceId);
+      void Promise.allSettled([refreshMapping(), refreshOnchain()]);
+    });
+    es.addEventListener('failed', (evt) => {
+      const payload = evt?.data ? JSON.parse(evt.data) : {};
+      append('failed', payload);
+      if (payload?.traceId) setTraceId(payload.traceId);
+      if (payload?.reason) setWorkflowError(String(payload.reason));
+    });
+    es.onerror = () => {
+      // fallback is polling already
+    };
+    return () => es.close();
+  }, []);
 
   const getSigner = async () => {
     if (!walletState?.ownerAddress || typeof window.ethereum === 'undefined') {
@@ -585,6 +633,23 @@ export default function DashboardPage({
             ))}
           </div>
         )}
+      </section>
+
+      <section className="vault-card">
+        <h2>Live Event Stream (SSE)</h2>
+        <div className="workflow-timeline">
+          {liveEvents.length === 0 && <div className="dashboard-empty">No live events yet.</div>}
+          {liveEvents.map((evt, idx) => (
+            <div className="workflow-step ok" key={`${evt.at}-${idx}`}>
+              <div className="workflow-step-head">
+                <strong>{evt.label}</strong>
+                <span>event</span>
+              </div>
+              <small>{evt.at}</small>
+              <div className="workflow-reason">{JSON.stringify(evt.payload || {})}</div>
+            </div>
+          ))}
+        </div>
       </section>
 
       <section className="vault-card">
