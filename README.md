@@ -1,12 +1,12 @@
 ﻿# KITECLAW
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-v1.5.5-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-v1.6.0-blue)](./CHANGELOG.md)
 [![Demo Status](https://img.shields.io/badge/demo-ready-brightgreen)](#demo-walkthrough-for-humans)
 
 KITECLAW (formerly KITE GASLESS) is an agent-native payment demo on **KiteAI Testnet**.
 
-Current Version: `v1.5.5`
+Current Version: `v1.6.0`
 
 ## Why this project is different (Core Innovations)
 

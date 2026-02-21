@@ -11,6 +11,36 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 - `KNOWN_ISSUES.md` for timeout/mapping/identity troubleshooting.
 - README pre-demo checklist and stable-baseline section.
 
+## [v1.6.0] - 2026-02-21
+
+### Added
+- Iteration-1 dashboard backend APIs:
+  - `POST /api/chat/agent`
+  - `GET /api/x402/mapping/latest?limit=20`
+  - `GET /api/identity/current`
+  - `GET /api/onchain/latest?limit=20`
+- Iteration-1 dashboard frontend:
+  - KPI cards (`Pending`, `Paid`, `Failed`, `Today Spend`)
+  - Chat panel with trace-aware replies
+  - status cards for `Session / x402 / On-chain / Identity`
+  - 3-second polling loop for runtime/mapping/on-chain updates
+- Iteration-2 workflow backend orchestration:
+  - `POST /api/workflow/stop-order/run`
+  - `GET /api/workflow/:traceId`
+  - persisted workflow timeline in `data/workflows.json`
+- Iteration-2 real-time event stream:
+  - `GET /api/events/stream` (SSE)
+  - events: `workflow_started`, `challenge_issued`, `payment_sent`, `proof_submitted`, `unlocked`, `failed`
+- Iteration-2 dashboard workflow UI:
+  - one-click `Place Stop Order` execution card
+  - timeline rendering by `traceId`
+  - failure reason visualization (`reason`)
+  - live SSE event feed panel
+
+### Changed
+- README updated to align with dashboard-first setup and workflow-first demo path.
+- OpenClaw integration docs aligned with orchestrated workflow endpoints.
+
 ## [v1.5.4] - 2026-02-20
 
 ### Changed
