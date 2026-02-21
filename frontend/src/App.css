@@ -296,7 +296,8 @@ body::after {
   min-height: 300px;
   max-height: 420px;
   overflow-y: auto;
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 10px;
 }
 
@@ -843,11 +844,6 @@ button.loading::after {
     padding: 6px 0;
   }
 
-  .dashboard-status-stack {
-    max-height: calc(100vh - 130px);
-    overflow: auto;
-    padding-right: 2px;
-  }
 }
 
 .request-error {
@@ -998,8 +994,8 @@ button.loading::after {
 
 .x402-head,
 .x402-row {
-  grid-template-columns: 100px 96px 96px 130px 80px 1.05fr 1.25fr 1fr 80px 80px 130px;
-  min-width: 1440px;
+  grid-template-columns: 210px 100px 96px 96px 130px 80px 1.05fr 1.25fr 1fr 80px 80px;
+  min-width: 1540px;
 }
 
 .x402-row .records-cell,
@@ -1009,6 +1005,12 @@ button.loading::after {
   overflow: hidden;
   text-overflow: ellipsis;
   word-break: normal;
+}
+
+.x402-head .paid-at-col,
+.x402-row .paid-at-col {
+  overflow: visible;
+  text-overflow: clip;
 }
 
 .cases-grid {

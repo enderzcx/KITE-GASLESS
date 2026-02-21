@@ -1,4 +1,4 @@
-import 'dotenv/config';
+﻿import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import fs from 'fs';
@@ -31,7 +31,7 @@ const KITE_AGENT2_ID = process.env.KITE_AGENT2_ID || '2';
 const POLICY_MAX_PER_TX_DEFAULT = Number(process.env.KITE_POLICY_MAX_PER_TX || '0.20');
 const POLICY_DAILY_LIMIT_DEFAULT = Number(process.env.KITE_POLICY_DAILY_LIMIT || '0.60');
 const POLICY_ALLOWED_RECIPIENTS_DEFAULT = String(
-  process.env.KITE_POLICY_ALLOWED_RECIPIENTS || MERCHANT_ADDRESS
+  process.env.KITE_POLICY_ALLOWED_RECIPIENTS || `${MERCHANT_ADDRESS},${KITE_AGENT2_AA_ADDRESS}`
 )
   .split(',')
   .map((item) => item.trim().toLowerCase())
@@ -46,11 +46,16 @@ const BACKEND_BUNDLER_URL =
   process.env.KITEAI_BUNDLER_URL || 'https://bundler-service.staging.gokite.ai/rpc/';
 const BACKEND_ENTRYPOINT_ADDRESS =
   process.env.KITE_ENTRYPOINT_ADDRESS || '0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108';
+const PROOF_RPC_TIMEOUT_MS = Number(process.env.KITE_PROOF_RPC_TIMEOUT_MS || 10_000);
+const PROOF_RPC_RETRIES = Number(process.env.KITE_PROOF_RPC_RETRIES || 3);
 const OPENCLAW_BASE_URL = String(process.env.OPENCLAW_BASE_URL || '').trim();
 const OPENCLAW_CHAT_PATH = String(process.env.OPENCLAW_CHAT_PATH || '/api/v1/chat').trim();
 const OPENCLAW_HEALTH_PATH = String(process.env.OPENCLAW_HEALTH_PATH || '/health').trim();
 const OPENCLAW_API_KEY = String(process.env.OPENCLAW_API_KEY || '').trim();
 const OPENCLAW_TIMEOUT_MS = Number(process.env.OPENCLAW_TIMEOUT_MS || 12_000);
+const OPENCLAW_CHAT_PROTOCOL = String(process.env.OPENCLAW_CHAT_PROTOCOL || 'auto').trim().toLowerCase();
+const OPENCLAW_MODEL = String(process.env.OPENCLAW_MODEL || '').trim();
+const OPENCLAW_SYSTEM_PROMPT = String(process.env.OPENCLAW_SYSTEM_PROMPT || '').trim();
 const ERC8004_IDENTITY_REGISTRY = process.env.ERC8004_IDENTITY_REGISTRY || '';
 const ERC8004_AGENT_ID_RAW = process.env.ERC8004_AGENT_ID || '';
 const ERC8004_AGENT_ID = Number.isFinite(Number(ERC8004_AGENT_ID_RAW))
@@ -73,7 +78,10 @@ const openclawAdapter = createOpenClawAdapter({
   chatPath: OPENCLAW_CHAT_PATH,
   healthPath: OPENCLAW_HEALTH_PATH,
   apiKey: OPENCLAW_API_KEY,
-  timeoutMs: OPENCLAW_TIMEOUT_MS
+  timeoutMs: OPENCLAW_TIMEOUT_MS,
+  protocol: OPENCLAW_CHAT_PROTOCOL,
+  model: OPENCLAW_MODEL,
+  systemPrompt: OPENCLAW_SYSTEM_PROMPT
 });
 
 function authConfigured() {
@@ -357,16 +365,31 @@ function normalizeAddresses(input) {
     .filter((addr, index, self) => addr && ethers.isAddress(addr) && self.indexOf(addr) === index);
 }
 
+function getCoreAllowedRecipients() {
+  return normalizeRecipients([MERCHANT_ADDRESS, KITE_AGENT2_AA_ADDRESS]);
+}
+
+function mergeAllowedRecipients(addresses = []) {
+  const merged = normalizeRecipients(addresses);
+  for (const core of getCoreAllowedRecipients()) {
+    if (!merged.includes(core)) merged.push(core);
+  }
+  return merged;
+}
+
 function sanitizePolicy(input = {}) {
   const maxPerTx = Number(input.maxPerTx);
   const dailyLimit = Number(input.dailyLimit);
-  const allowedRecipients = normalizeRecipients(input.allowedRecipients);
+  const allowedRecipients = mergeAllowedRecipients(
+    normalizeRecipients(input.allowedRecipients).length > 0
+      ? input.allowedRecipients
+      : POLICY_ALLOWED_RECIPIENTS_DEFAULT
+  );
   const revokedPayers = normalizeAddresses(input.revokedPayers);
   return {
     maxPerTx: Number.isFinite(maxPerTx) && maxPerTx > 0 ? maxPerTx : POLICY_MAX_PER_TX_DEFAULT,
     dailyLimit: Number.isFinite(dailyLimit) && dailyLimit > 0 ? dailyLimit : POLICY_DAILY_LIMIT_DEFAULT,
-    allowedRecipients:
-      allowedRecipients.length > 0 ? allowedRecipients : POLICY_ALLOWED_RECIPIENTS_DEFAULT,
+    allowedRecipients,
     revokedPayers
   };
 }
@@ -549,6 +572,9 @@ function normalizeReactiveParams(actionParams = {}) {
   const symbol = String(actionParams.symbol || '').trim().toUpperCase();
   const takeProfitRaw = Number(actionParams.takeProfit);
   const stopLossRaw = Number(actionParams.stopLoss);
+  const quantityText = String(actionParams.quantity ?? '').trim();
+  const hasQuantity = quantityText !== '';
+  const quantityRaw = hasQuantity ? Number(quantityText) : null;
   if (!symbol) {
     throw new Error('Reactive action requires symbol.');
   }
@@ -558,11 +584,27 @@ function normalizeReactiveParams(actionParams = {}) {
   if (!Number.isFinite(stopLossRaw) || stopLossRaw <= 0) {
     throw new Error('Reactive action requires a valid stopLoss.');
   }
+  if (hasQuantity && (!Number.isFinite(quantityRaw) || quantityRaw <= 0)) {
+    throw new Error('Reactive action requires a valid quantity when quantity is provided.');
+  }
   return {
     symbol,
     takeProfit: takeProfitRaw,
-    stopLoss: stopLossRaw
+    stopLoss: stopLossRaw,
+    ...(hasQuantity ? { quantity: quantityRaw } : {})
   };
+}
+
+function computeReactiveStopOrderAmount(actionParams = {}) {
+  const baseAmount = Number(X402_REACTIVE_PRICE || '0.03');
+  const base = Number.isFinite(baseAmount) && baseAmount > 0 ? baseAmount : 0.03;
+  const qty = Number(actionParams?.quantity);
+  if (Number.isFinite(qty) && qty > 0) {
+    const scaled = qty * 0.01;
+    const computed = Math.max(base, scaled);
+    return String(Number(computed.toFixed(6)));
+  }
+  return String(Number(base.toFixed(6)));
 }
 
 function buildA2ACapabilities() {
@@ -585,7 +627,8 @@ function buildA2ACapabilities() {
         input: {
           symbol: 'string',
           takeProfit: 'number > 0',
-          stopLoss: 'number > 0'
+          stopLoss: 'number > 0',
+          quantity: 'number > 0 (optional)'
         },
         price: X402_REACTIVE_PRICE,
         recipient: KITE_AGENT2_AA_ADDRESS
@@ -749,78 +792,145 @@ function evaluateTransferPolicy({ payer, recipient, amount, requests }) {
 }
 
 async function verifyProofOnChain(reqItem, paymentProof) {
-  const txHash = String(paymentProof?.txHash || '').trim();
-  if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) {
-    return { ok: false, reason: 'invalid txHash format' };
-  }
-
-  const tokenAddress = normalizeAddress(reqItem?.tokenAddress || '');
-  const recipient = normalizeAddress(reqItem?.recipient || '');
-  const payer = normalizeAddress(reqItem?.payer || '');
-  if (!tokenAddress || !recipient) {
-    return { ok: false, reason: 'missing expected token/recipient in request' };
-  }
-
-  let expectedAmountRaw = null;
   try {
-    expectedAmountRaw = ethers.parseUnits(String(reqItem?.amount || '0'), 18);
-  } catch {
-    return { ok: false, reason: 'invalid expected amount' };
-  }
+    const txHash = String(paymentProof?.txHash || '').trim();
+    if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) {
+      return { ok: false, reason: 'invalid txHash format' };
+    }
 
-  const provider = new ethers.JsonRpcProvider(BACKEND_RPC_URL);
-  const receipt = await provider.getTransactionReceipt(txHash);
-  if (!receipt) {
-    return { ok: false, reason: 'transaction receipt not found (pending or unknown)' };
-  }
-  if (Number(receipt.status) !== 1) {
-    return { ok: false, reason: 'transaction reverted on-chain' };
-  }
+    const tokenAddress = normalizeAddress(reqItem?.tokenAddress || '');
+    const recipient = normalizeAddress(reqItem?.recipient || '');
+    const payer = normalizeAddress(reqItem?.payer || '');
+    if (!tokenAddress || !recipient) {
+      return { ok: false, reason: 'missing expected token/recipient in request' };
+    }
 
-  const transferTopic = ethers.id('Transfer(address,address,uint256)');
-  const transferIface = new ethers.Interface([
-    'event Transfer(address indexed from, address indexed to, uint256 value)'
-  ]);
-
-  const candidateLogs = (receipt.logs || []).filter((log) => {
-    return (
-      normalizeAddress(log.address) === tokenAddress &&
-      Array.isArray(log.topics) &&
-      String(log.topics[0] || '').toLowerCase() === String(transferTopic).toLowerCase()
-    );
-  });
-
-  for (const log of candidateLogs) {
+    let expectedAmountRaw = null;
     try {
-      const parsed = transferIface.parseLog(log);
-      const from = normalizeAddress(String(parsed.args.from));
-      const to = normalizeAddress(String(parsed.args.to));
-      const value = ethers.getBigInt(parsed.args.value);
-      const amountMatch = value === expectedAmountRaw;
-      const toMatch = to === recipient;
-      const fromMatch = !payer || from === payer;
-      if (amountMatch && toMatch && fromMatch) {
-        return {
-          ok: true,
-          details: {
-            txHash,
-            blockNumber: Number(receipt.blockNumber || 0),
-            tokenAddress,
-            from,
-            to,
-            valueRaw: value.toString()
-          }
-        };
-      }
+      expectedAmountRaw = ethers.parseUnits(String(reqItem?.amount || '0'), 18);
     } catch {
-      // ignore unparsable transfer logs
+      return { ok: false, reason: 'invalid expected amount' };
+    }
+
+    const receipt = await fetchReceiptWithRetry(txHash);
+    if (!receipt) {
+      return { ok: false, reason: 'transaction receipt not found (pending or unknown)' };
+    }
+    if (parseHexNumber(receipt.status) !== 1) {
+      return { ok: false, reason: 'transaction reverted on-chain' };
+    }
+
+    const transferTopic = ethers.id('Transfer(address,address,uint256)');
+    const transferIface = new ethers.Interface([
+      'event Transfer(address indexed from, address indexed to, uint256 value)'
+    ]);
+
+    const candidateLogs = (receipt.logs || []).filter((log) => {
+      return (
+        normalizeAddress(log.address) === tokenAddress &&
+        Array.isArray(log.topics) &&
+        String(log.topics[0] || '').toLowerCase() === String(transferTopic).toLowerCase()
+      );
+    });
+
+    for (const log of candidateLogs) {
+      try {
+        const parsed = transferIface.parseLog({
+          topics: log.topics,
+          data: log.data
+        });
+        const from = normalizeAddress(String(parsed.args.from));
+        const to = normalizeAddress(String(parsed.args.to));
+        const value = ethers.getBigInt(parsed.args.value);
+        const amountMatch = value === expectedAmountRaw;
+        const toMatch = to === recipient;
+        const fromMatch = !payer || from === payer;
+        if (amountMatch && toMatch && fromMatch) {
+          return {
+            ok: true,
+            details: {
+              txHash,
+              blockNumber: parseHexNumber(receipt.blockNumber),
+              tokenAddress,
+              from,
+              to,
+              valueRaw: value.toString()
+            }
+          };
+        }
+      } catch {
+        // ignore unparsable transfer logs
+      }
+    }
+
+    return {
+      ok: false,
+      reason: 'no matching ERC20 Transfer log found for token/recipient/amount/payer'
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: `proof verification rpc error: ${error?.message || 'unknown'}`
+    };
+  }
+}
+
+function parseHexNumber(value) {
+  if (value === null || value === undefined) return 0;
+  if (typeof value === 'number') return value;
+  const str = String(value).trim();
+  if (!str) return 0;
+  if (str.startsWith('0x') || str.startsWith('0X')) return Number(BigInt(str));
+  const n = Number(str);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function waitMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function callRpc(method, params = []) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PROOF_RPC_TIMEOUT_MS);
+  try {
+    const resp = await fetch(BACKEND_RPC_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: Date.now(),
+        method,
+        params
+      }),
+      signal: controller.signal
+    });
+    if (!resp.ok) {
+      throw new Error(`rpc http ${resp.status}`);
+    }
+    const json = await resp.json().catch(() => ({}));
+    if (json?.error) {
+      throw new Error(json.error?.message || 'rpc returned error');
+    }
+    return json?.result;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchReceiptWithRetry(txHash) {
+  const retries = Number.isFinite(PROOF_RPC_RETRIES) && PROOF_RPC_RETRIES > 0 ? PROOF_RPC_RETRIES : 1;
+  let lastError = null;
+  for (let i = 0; i < retries; i += 1) {
+    try {
+      return await callRpc('eth_getTransactionReceipt', [txHash]);
+    } catch (error) {
+      lastError = error;
+      if (i < retries - 1) {
+        await waitMs(300 * (i + 1));
+      }
     }
   }
-
-  return {
-    ok: false,
-    reason: 'no matching ERC20 Transfer log found for token/recipient/amount/payer'
-  };
+  throw lastError || new Error('rpc receipt lookup failed');
 }
 
 function getBackendSignerState() {
@@ -1077,6 +1187,16 @@ app.post('/api/chat/agent', requireRole('agent'), async (req, res) => {
   const message = String(req.body?.message || '').trim();
   const sessionId = String(req.body?.sessionId || '').trim();
   const traceId = String(req.body?.traceId || `trace_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`).trim();
+  const agent = String(req.body?.agent || '').trim();
+  const history = Array.isArray(req.body?.history)
+    ? req.body.history
+        .slice(-20)
+        .map((item) => ({
+          role: String(item?.role || '').trim(),
+          content: String(item?.content || item?.text || item?.message || '').trim()
+        }))
+        .filter((item) => item.content)
+    : [];
 
   if (!message) {
     return res.status(400).json({
@@ -1089,16 +1209,124 @@ app.post('/api/chat/agent', requireRole('agent'), async (req, res) => {
 
   try {
     const runtime = readSessionRuntime();
-    const result = await openclawAdapter.chat({
+    const inferStopOrderIntent = ({ text = '', suggestions = [] }) => {
+      const fromSuggestions = Array.isArray(suggestions)
+        ? suggestions.find((item) => {
+            const action = String(item?.action || '').trim().toLowerCase();
+            const endpoint = String(item?.endpoint || '').trim().toLowerCase();
+            return (
+              action === 'place_stop_order' ||
+              action === 'reactive-stop-orders' ||
+              endpoint.includes('/workflow/stop-order/run') ||
+              endpoint.includes('/a2a/tasks/stop-orders')
+            );
+          })
+        : null;
+
+      if (fromSuggestions) {
+        try {
+          const params = fromSuggestions?.params || fromSuggestions?.task || {};
+          return normalizeReactiveParams(params);
+        } catch {
+          // fall through to text parser
+        }
+      }
+
+      const raw = String(text || '').trim();
+      if (!raw) return null;
+      const triggerLike = /(stop[\s-]*order|reactive\s*stop|a2a|agent\s*to\s*agent|a\s*to\s*a|tp|sl)/i.test(raw);
+      if (!triggerLike) return null;
+
+      const symbolCandidates = Array.from(
+        raw.matchAll(/\b([A-Za-z]{2,10}\s*[-/]\s*[A-Za-z]{2,10})\b/g),
+        (m) => String(m?.[1] || '').replace(/\s+/g, '').replace('/', '-').toUpperCase()
+      ).filter(Boolean);
+      const symbolFromText =
+        symbolCandidates.find((s) => /(USDT|USD|BTC|ETH|BNB|SOL)$/.test(s.split('-')[1] || '')) ||
+        symbolCandidates.find((s) => s !== 'STOP-ORDER' && s !== 'TAKE-PROFIT' && s !== 'STOP-LOSS') ||
+        '';
+      const tpMatch = raw.match(/(?:\btp\b|take\s*profit)\s*[:=]?\s*(\d+(?:\.\d+)?)/i);
+      const slMatch = raw.match(/(?:\bsl\b|stop\s*loss)\s*[:=]?\s*(\d+(?:\.\d+)?)/i);
+      const qtyMatch = raw.match(/(?:\bqty\b|quantity|size|amount)\s*[:=]?\s*(\d+(?:\.\d+)?)/i);
+      if (!tpMatch || !slMatch) return null;
+
+      try {
+        const parsed = {
+          symbol: symbolFromText || 'BTC-USDT',
+          takeProfit: Number(tpMatch[1]),
+          stopLoss: Number(slMatch[1])
+        };
+        if (qtyMatch) {
+          parsed.quantity = Number(qtyMatch[1]);
+        }
+        return normalizeReactiveParams(parsed);
+      } catch {
+        return null;
+      }
+    };
+
+    const runStopOrderWorkflow = async ({ intent, workflowTraceId }) => {
+      const internalApiKey = getInternalAgentApiKey();
+      const headers = { 'Content-Type': 'application/json' };
+      if (internalApiKey) {
+        headers['x-api-key'] = internalApiKey;
+      }
+      const payer = normalizeAddress(req.body?.payer || runtime?.aaWallet || '');
+      const sourceAgentId = String(req.body?.sourceAgentId || KITE_AGENT1_ID).trim();
+      const targetAgentId = String(req.body?.targetAgentId || KITE_AGENT2_ID).trim();
+      const workflowResp = await fetch(`http://127.0.0.1:${PORT}/api/workflow/stop-order/run`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          symbol: intent.symbol,
+          takeProfit: intent.takeProfit,
+          stopLoss: intent.stopLoss,
+          ...(Number.isFinite(intent.quantity) ? { quantity: intent.quantity } : {}),
+          payer,
+          sourceAgentId,
+          targetAgentId,
+          traceId: workflowTraceId
+        })
+      });
+      const workflowBody = await workflowResp.json().catch(() => ({}));
+      return {
+        ok: workflowResp.ok && Boolean(workflowBody?.ok),
+        status: workflowResp.status,
+        body: workflowBody
+      };
+    };
+
+    const fallbackIntent = inferStopOrderIntent({ text: message, suggestions: [] });
+    let result = await openclawAdapter.chat({
       message,
       sessionId,
       traceId,
+      history,
+      agent,
       context: {
         aaWallet: runtime?.aaWallet || '',
         owner: runtime?.owner || '',
-        runtimeReady: Boolean(runtime?.sessionAddress && runtime?.hasSessionPrivateKey)
+        runtimeReady: Boolean(runtime?.sessionAddress && runtime?.sessionPrivateKey)
       }
     });
+
+    if (!result?.ok && fallbackIntent) {
+      result = {
+        ok: true,
+        mode: 'intent-fallback',
+        reply: 'Intent recognized. Running x402 stop-order workflow now.',
+        traceId,
+        state: 'intent_recognized',
+        step: 'intent_parsed',
+        suggestions: [
+          {
+            action: 'place_stop_order',
+            endpoint: '/api/workflow/stop-order/run',
+            params: fallbackIntent
+          }
+        ]
+      };
+    }
 
     if (!result?.ok) {
       return res.status(result?.statusCode || 503).json({
@@ -1109,14 +1337,56 @@ app.post('/api/chat/agent', requireRole('agent'), async (req, res) => {
       });
     }
 
+    const resolvedSuggestions = Array.isArray(result.suggestions) ? result.suggestions : [];
+    const intent = inferStopOrderIntent({ text: message, suggestions: resolvedSuggestions });
+    const nextTraceId = String(result.traceId || traceId).trim() || traceId;
+
+    if (intent) {
+      const workflow = await runStopOrderWorkflow({
+        intent,
+        workflowTraceId: nextTraceId
+      });
+      if (!workflow.ok) {
+        return res.status(workflow.status || 500).json({
+          ok: false,
+          mode: 'x402',
+          error: workflow.body?.error || 'workflow_failed',
+          reason: workflow.body?.reason || `workflow failed: HTTP ${workflow.status}`,
+          traceId: nextTraceId,
+          state: workflow.body?.state || 'failed',
+          step: 'workflow_failed'
+        });
+      }
+
+      return res.json({
+        ok: true,
+        mode: 'x402',
+        reply:
+          workflow.body?.state === 'unlocked'
+            ? `A2A stop-order unlocked: ${intent.symbol} TP ${intent.takeProfit} SL ${intent.stopLoss}${
+              Number.isFinite(intent.quantity) ? ` QTY ${intent.quantity}` : ''
+            }`
+            : (result.reply || 'Workflow accepted.'),
+        traceId: nextTraceId,
+        sessionId: sessionId || null,
+        state: workflow.body?.state || 'unlocked',
+        step: workflow.body?.state === 'unlocked' ? 'workflow_unlocked' : 'workflow_running',
+        requestId: workflow.body?.requestId || workflow.body?.workflow?.requestId || '',
+        txHash: workflow.body?.txHash || workflow.body?.workflow?.txHash || '',
+        userOpHash: workflow.body?.userOpHash || workflow.body?.workflow?.userOpHash || '',
+        suggestions: resolvedSuggestions
+      });
+    }
+
     return res.json({
       ok: true,
+      mode: result.mode || 'local-fallback',
       reply: result.reply || 'Received.',
-      traceId: result.traceId || traceId,
+      traceId: nextTraceId,
       sessionId: sessionId || null,
       state: result.state || 'received',
       step: result.step || 'chat_received',
-      suggestions: Array.isArray(result.suggestions) ? result.suggestions : []
+      suggestions: resolvedSuggestions
     });
   } catch (error) {
     return res.status(500).json({
@@ -1130,6 +1400,7 @@ app.post('/api/chat/agent', requireRole('agent'), async (req, res) => {
 
 app.get('/api/chat/agent/health', requireRole('viewer'), async (req, res) => {
   try {
+    const adapterInfo = typeof openclawAdapter.info === 'function' ? openclawAdapter.info() : {};
     const health = await openclawAdapter.health();
     if (!health?.ok) {
       return res.status(503).json({
@@ -1138,6 +1409,7 @@ app.get('/api/chat/agent/health', requireRole('viewer'), async (req, res) => {
         mode: health?.mode || 'remote',
         connected: false,
         reason: health?.reason || 'OpenClaw health check failed',
+        adapter: adapterInfo,
         traceId: req.traceId || ''
       });
     }
@@ -1146,6 +1418,7 @@ app.get('/api/chat/agent/health', requireRole('viewer'), async (req, res) => {
       mode: health.mode || 'local-fallback',
       connected: Boolean(health.connected),
       reason: health.reason || 'ok',
+      adapter: adapterInfo,
       traceId: req.traceId || ''
     });
   } catch (error) {
@@ -1186,11 +1459,20 @@ app.post('/api/workflow/stop-order/run', requireRole('agent'), async (req, res) 
   const symbol = String(req.body?.symbol || 'BTC-USDT').trim().toUpperCase();
   const takeProfit = Number(req.body?.takeProfit);
   const stopLoss = Number(req.body?.stopLoss);
+  const quantityText = String(req.body?.quantity ?? '').trim();
+  const hasQuantity = quantityText !== '';
+  const quantity = hasQuantity ? Number(quantityText) : null;
   const sourceAgentId = String(req.body?.sourceAgentId || KITE_AGENT1_ID).trim();
   const targetAgentId = String(req.body?.targetAgentId || KITE_AGENT2_ID).trim();
   const traceId = String(req.body?.traceId || createTraceId('workflow')).trim();
   const runtime = readSessionRuntime();
   const payer = normalizeAddress(req.body?.payer || runtime.aaWallet || '');
+  const taskPayload = {
+    symbol,
+    takeProfit,
+    stopLoss,
+    ...(hasQuantity ? { quantity } : {})
+  };
   const workflow = {
     traceId,
     type: 'stop-order',
@@ -1198,11 +1480,7 @@ app.post('/api/workflow/stop-order/run', requireRole('agent'), async (req, res) 
     sourceAgentId,
     targetAgentId,
     payer,
-    input: {
-      symbol,
-      takeProfit,
-      stopLoss
-    },
+    input: taskPayload,
     requestId: '',
     txHash: '',
     userOpHash: '',
@@ -1217,12 +1495,15 @@ app.post('/api/workflow/stop-order/run', requireRole('agent'), async (req, res) 
     if (!symbol || !Number.isFinite(takeProfit) || !Number.isFinite(stopLoss) || takeProfit <= 0 || stopLoss <= 0) {
       throw new Error('Invalid stop-order params. symbol/takeProfit/stopLoss are required.');
     }
+    if (hasQuantity && (!Number.isFinite(quantity) || quantity <= 0)) {
+      throw new Error('Invalid stop-order params. quantity must be > 0 when provided.');
+    }
 
     const challengeResult = await handleA2AStopOrders({
       payer,
       sourceAgentId,
       targetAgentId,
-      task: { symbol, takeProfit, stopLoss }
+      task: taskPayload
     });
     if (challengeResult.status !== 402) {
       throw new Error(
@@ -1247,7 +1528,11 @@ app.post('/api/workflow/stop-order/run', requireRole('agent'), async (req, res) 
       traceId,
       requestId,
       amount: accept.amount,
-      recipient: accept.recipient
+      recipient: accept.recipient,
+      symbol,
+      takeProfit,
+      stopLoss,
+      ...(hasQuantity ? { quantity } : {})
     });
     workflow.updatedAt = new Date().toISOString();
     upsertWorkflow(workflow);
@@ -1266,11 +1551,25 @@ app.post('/api/workflow/stop-order/run', requireRole('agent'), async (req, res) 
         amount: accept.amount,
         requestId,
         action: 'reactive-stop-orders',
-        query: `A2A stop-order ${symbol} tp=${takeProfit} sl=${stopLoss}`
+        query: `A2A stop-order ${symbol} tp=${takeProfit} sl=${stopLoss}${
+          hasQuantity ? ` qty=${quantity}` : ''
+        }`
       })
     });
     const payBody = await payResp.json().catch(() => ({}));
     if (!payResp.ok || !payBody?.ok) {
+      const payError = String(payBody?.error || '').trim().toLowerCase();
+      if (payError === 'insufficient_funds') {
+        const required = String(payBody?.details?.required || accept.amount || '').trim();
+        const balance = String(payBody?.details?.balance || '').trim();
+        const err = new Error(
+          `Insufficient balance: requires ${required || accept.amount} USDT, current balance ${balance || 'unknown'}.`
+        );
+        err.code = 'insufficient_funds';
+        err.required = required || String(accept.amount || '');
+        err.balance = balance || '';
+        throw err;
+      }
       throw new Error(payBody?.reason || payBody?.error || `session pay failed: HTTP ${payResp.status}`);
     }
     const txHash = String(payBody?.payment?.txHash || '').trim();
@@ -1282,7 +1581,16 @@ app.post('/api/workflow/stop-order/run', requireRole('agent'), async (req, res) 
       txHash,
       userOpHash
     });
-    broadcastEvent('payment_sent', { traceId, requestId, txHash, userOpHash });
+    broadcastEvent('payment_sent', {
+      traceId,
+      requestId,
+      txHash,
+      userOpHash,
+      symbol,
+      takeProfit,
+      stopLoss,
+      ...(hasQuantity ? { quantity } : {})
+    });
     workflow.updatedAt = new Date().toISOString();
     upsertWorkflow(workflow);
 
@@ -1299,7 +1607,7 @@ app.post('/api/workflow/stop-order/run', requireRole('agent'), async (req, res) 
         recipient: accept.recipient,
         amount: accept.amount
       },
-      task: { symbol, takeProfit, stopLoss }
+      task: taskPayload
     });
     if (proofResult.status !== 200) {
       throw new Error(
@@ -1317,7 +1625,11 @@ app.post('/api/workflow/stop-order/run', requireRole('agent'), async (req, res) 
       traceId,
       requestId,
       txHash,
-      summary: proofResult?.body?.result?.summary || ''
+      summary: proofResult?.body?.result?.summary || '',
+      symbol,
+      takeProfit,
+      stopLoss,
+      ...(hasQuantity ? { quantity } : {})
     });
     workflow.state = 'unlocked';
     workflow.result = proofResult?.body?.result || null;
@@ -1335,7 +1647,14 @@ app.post('/api/workflow/stop-order/run', requireRole('agent'), async (req, res) 
     });
   } catch (error) {
     appendWorkflowStep(workflow, 'failed', 'error', { reason: error.message });
-    broadcastEvent('failed', { traceId, state: 'failed', reason: error.message });
+    broadcastEvent('failed', {
+      traceId,
+      state: 'failed',
+      reason: error.message,
+      code: error?.code || 'workflow_failed',
+      required: error?.required || '',
+      balance: error?.balance || ''
+    });
     workflow.state = 'failed';
     workflow.error = error.message;
     workflow.updatedAt = new Date().toISOString();
@@ -1443,8 +1762,11 @@ async function handleA2AStopOrders(body = {}) {
   }
 
   const actionCfg = getActionConfig('reactive-stop-orders');
+  const actionAmount = computeReactiveStopOrderAmount(actionParams);
   const requests = readX402Requests();
-  const a2aQuery = `A2A stop-order ${actionParams.symbol} tp=${actionParams.takeProfit} sl=${actionParams.stopLoss}`;
+  const a2aQuery = `A2A stop-order ${actionParams.symbol} tp=${actionParams.takeProfit} sl=${actionParams.stopLoss}${
+    Number.isFinite(actionParams?.quantity) ? ` qty=${actionParams.quantity}` : ''
+  }`;
 
   if (!requestId || !paymentProof) {
     const policyResult = evaluateTransferPolicy({
@@ -1474,7 +1796,7 @@ async function handleA2AStopOrders(body = {}) {
     }
 
     const reqItem = createX402Request(a2aQuery, payer, actionCfg.action, {
-      amount: actionCfg.amount,
+      amount: actionAmount,
       recipient: actionCfg.recipient,
       policy: {
         decision: 'allowed',
@@ -1540,6 +1862,7 @@ async function handleA2AStopOrders(body = {}) {
             symbol: reqItem?.actionParams?.symbol || '-',
             takeProfit: reqItem?.actionParams?.takeProfit ?? '-',
             stopLoss: reqItem?.actionParams?.stopLoss ?? '-',
+            quantity: reqItem?.actionParams?.quantity ?? '-',
             provider: 'Reactive Contracts'
           }
         },
@@ -1600,6 +1923,7 @@ async function handleA2AStopOrders(body = {}) {
           symbol: reqItem?.actionParams?.symbol || '-',
           takeProfit: reqItem?.actionParams?.takeProfit ?? '-',
           stopLoss: reqItem?.actionParams?.stopLoss ?? '-',
+          quantity: reqItem?.actionParams?.quantity ?? '-',
           provider: 'Reactive Contracts'
         }
       },
@@ -1613,8 +1937,16 @@ async function handleA2AStopOrders(body = {}) {
 }
 
 app.post('/api/a2a/tasks/stop-orders', requireRole('agent'), async (req, res) => {
-  const result = await handleA2AStopOrders(req.body);
-  return res.status(result.status).json(result.body);
+  try {
+    const result = await handleA2AStopOrders(req.body);
+    return res.status(result.status).json(result.body);
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: 'a2a_handler_failed',
+      reason: error.message || 'Unknown error'
+    });
+  }
 });
 
 app.get('/api/skill/openclaw/manifest', (req, res) => {
@@ -1643,7 +1975,8 @@ app.get('/api/skill/openclaw/manifest', (req, res) => {
             properties: {
               symbol: { type: 'string' },
               takeProfit: { type: 'number' },
-              stopLoss: { type: 'number' }
+              stopLoss: { type: 'number' },
+              quantity: { type: 'number' }
             }
           },
           requestId: { type: 'string' },
@@ -1655,12 +1988,21 @@ app.get('/api/skill/openclaw/manifest', (req, res) => {
 });
 
 app.post('/api/skill/openclaw/invoke', requireRole('agent'), async (req, res) => {
-  const result = await handleA2AStopOrders(req.body);
-  return res.status(result.status).json({
-    ok: result.status >= 200 && result.status < 300,
-    status: result.status,
-    ...result.body
-  });
+  try {
+    const result = await handleA2AStopOrders(req.body);
+    return res.status(result.status).json({
+      ok: result.status >= 200 && result.status < 300,
+      status: result.status,
+      ...result.body
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      status: 500,
+      error: 'openclaw_invoke_failed',
+      reason: error.message || 'Unknown error'
+    });
+  }
 });
 
 app.get('/api/skill/openclaw/status/:requestId', requireRole('agent'), (req, res) => {
@@ -1750,7 +2092,7 @@ app.post('/api/x402/kol-score', requireRole('agent'), async (req, res) => {
   if (!ethers.isAddress(actionCfg.recipient)) {
     return res.status(400).json({
       error: 'invalid_action_recipient',
-      reason: `非法地址: action recipient is invalid (${actionCfg.recipient})`
+      reason: `Invalid address: action recipient is invalid (${actionCfg.recipient})`
     });
   }
 
@@ -1766,6 +2108,10 @@ app.post('/api/x402/kol-score', requireRole('agent'), async (req, res) => {
       });
     }
   }
+  const amountToCharge =
+    actionCfg.action === 'reactive-stop-orders'
+      ? computeReactiveStopOrderAmount(normalizedActionParams || {})
+      : actionCfg.amount;
   if (!requestId || !paymentProof) {
     const policyResult = evaluateTransferPolicy({
       payer,
@@ -1804,7 +2150,7 @@ app.post('/api/x402/kol-score', requireRole('agent'), async (req, res) => {
       });
     }
     const reqItem = createX402Request(query, payer, actionCfg.action, {
-      amount: actionCfg.amount,
+      amount: amountToCharge,
       recipient: actionCfg.recipient,
       policy: {
         decision: 'allowed',
@@ -1842,6 +2188,7 @@ app.post('/api/x402/kol-score', requireRole('agent'), async (req, res) => {
               symbol: reqItem?.actionParams?.symbol || '-',
               takeProfit: reqItem?.actionParams?.takeProfit ?? '-',
               stopLoss: reqItem?.actionParams?.stopLoss ?? '-',
+              quantity: reqItem?.actionParams?.quantity ?? '-',
               provider: 'Reactive Contracts'
             }
           }
@@ -1908,6 +2255,7 @@ app.post('/api/x402/kol-score', requireRole('agent'), async (req, res) => {
               symbol: reqItem?.actionParams?.symbol || '-',
               takeProfit: reqItem?.actionParams?.takeProfit ?? '-',
               stopLoss: reqItem?.actionParams?.stopLoss ?? '-',
+              quantity: reqItem?.actionParams?.quantity ?? '-',
               provider: 'Reactive Contracts'
             }
           }
@@ -2280,13 +2628,6 @@ app.post('/api/session/pay', requireRole('agent'), async (req, res) => {
         reason: `On-chain session agent mismatch. expected=${agentAddr}, current=${sessionSignerAddress}`
       });
     }
-    if (!rulePass) {
-      return res.status(400).json({
-        ok: false,
-        error: 'session_rule_failed',
-        reason: 'Session spending rule precheck failed (amount/provider out of scope).'
-      });
-    }
 
     const erc20Abi = ['function balanceOf(address account) view returns (uint256)'];
     const tokenContract = new ethers.Contract(tokenAddress, erc20Abi, provider);
@@ -2301,6 +2642,13 @@ app.post('/api/session/pay', requireRole('agent'), async (req, res) => {
           balance: ethers.formatUnits(aaBalance, decimals),
           required: amount
         }
+      });
+    }
+    if (!rulePass) {
+      return res.status(400).json({
+        ok: false,
+        error: 'session_rule_failed',
+        reason: 'Session spending rule precheck failed (amount/provider out of scope).'
       });
     }
 

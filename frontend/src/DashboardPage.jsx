@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+﻿import { useEffect, useMemo, useRef, useState } from 'react';
 import { ethers } from 'ethers';
 import { GokiteAASDK } from './gokite-aa-sdk';
 
@@ -39,6 +39,11 @@ function shortHash(v = '') {
   return `${s.slice(0, 10)}...${s.slice(-8)}`;
 }
 
+function toNumberOrNaN(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : NaN;
+}
+
 const initialFlow = {
   state: 'idle',
   message: 'Waiting for agent command.',
@@ -56,6 +61,10 @@ const initialFlow = {
   requestId: '',
   traceId: ''
 };
+
+function isA2AServiceMessage(text = '') {
+  return /(\ba2a\b|a\s*to\s*a|agent\s*to\s*agent|stop\s*order|reactive\s*stop)/i.test(String(text || ''));
+}
 
 export default function DashboardPage({
   walletState,
@@ -88,6 +97,7 @@ export default function DashboardPage({
   const [chatInput, setChatInput] = useState('');
   const [chatBusy, setChatBusy] = useState(false);
   const [chatHistory, setChatHistory] = useState([]);
+  const chatBottomRef = useRef(null);
   const [openclawHealth, setOpenclawHealth] = useState({
     connected: true,
     mode: 'local-fallback',
@@ -197,6 +207,11 @@ export default function DashboardPage({
   }, []);
 
   useEffect(() => {
+    if (!chatBottomRef.current) return;
+    chatBottomRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  }, [chatHistory]);
+
+  useEffect(() => {
     const es = new EventSource(apiUrl('/api/events/stream'));
 
     es.addEventListener('challenge_issued', (evt) => {
@@ -211,6 +226,15 @@ export default function DashboardPage({
         steps: { ...prev.steps, challenge: true }
       }));
       if (payload?.traceId) setTraceId(payload.traceId);
+      const fee = String(payload?.amount || '0.03');
+      setChatHistory((prev) => [
+        ...prev,
+        {
+          role: 'agent',
+          text: `Request submitted. This service costs ${fee} USDT. Auto payment started, please check the payment status on the right panel.`,
+          ts: Date.now()
+        }
+      ]);
     });
 
     es.addEventListener('payment_sent', (evt) => {
@@ -224,6 +248,14 @@ export default function DashboardPage({
         steps: { ...prev.steps, challenge: true, payment: true }
       }));
       if (payload?.traceId) setTraceId(payload.traceId);
+      setChatHistory((prev) => [
+        ...prev,
+        {
+          role: 'agent',
+          text: `Payment succeeded. Tx: ${payload?.txHash || payload?.paymentTxHash || '-'}`,
+          ts: Date.now()
+        }
+      ]);
     });
 
     es.addEventListener('proof_submitted', (evt) => {
@@ -257,18 +289,48 @@ export default function DashboardPage({
         }
       }));
       if (payload?.traceId) setTraceId(payload.traceId);
+      const qty = toNumberOrNaN(payload?.quantity);
+      const symbol = String(payload?.symbol || '').trim();
+      const tp = toNumberOrNaN(payload?.takeProfit);
+      const sl = toNumberOrNaN(payload?.stopLoss);
+      const parts = [];
+      if (symbol) parts.push(symbol);
+      if (Number.isFinite(tp)) parts.push(`TP ${tp}`);
+      if (Number.isFinite(sl)) parts.push(`SL ${sl}`);
+      if (Number.isFinite(qty)) parts.push(`QTY ${qty}`);
+      const orderText = parts.length > 0 ? parts.join(' ') : 'stop-order details unavailable';
+      setChatHistory((prev) => [
+        ...prev,
+        {
+          role: 'agent',
+          text: `Payment verified successfully. Stop-order confirmed: ${orderText}.`,
+          ts: Date.now()
+        }
+      ]);
     });
 
     es.addEventListener('failed', (evt) => {
       const payload = evt?.data ? JSON.parse(evt.data) : {};
+      const reason = String(payload?.reason || payload?.error || 'Unknown error');
+      const insufficient = /(insufficient|balance)/i.test(reason);
       setFlow((prev) => ({
         ...prev,
         state: 'error',
         message: 'Workflow failed.',
-        error: payload?.reason || payload?.error || 'Unknown error',
+        error: reason,
         traceId: payload?.traceId || prev.traceId
       }));
       if (payload?.traceId) setTraceId(payload.traceId);
+      setChatHistory((prev) => [
+        ...prev,
+        {
+          role: 'agent',
+          text: insufficient
+            ? `Oops, insufficient balance. This request needs ${payload?.required || 'unknown'} USDT, current balance is ${payload?.balance || 'unknown'}.`
+            : `Workflow failed: ${reason}`,
+          ts: Date.now()
+        }
+      ]);
     });
 
     return () => es.close();
@@ -380,19 +442,66 @@ export default function DashboardPage({
   const sendChat = async () => {
     if (!chatInput.trim() || chatBusy) return;
     const userText = chatInput.trim();
+    const requiresA2AVerification = isA2AServiceMessage(userText);
+    const historyPayload = [...chatHistory, { role: 'user', text: userText }]
+      .slice(-12)
+      .map((item) => ({
+        role: item.role === 'agent' ? 'assistant' : 'user',
+        content: String(item.text || '').trim()
+      }))
+      .filter((item) => item.content);
     setChatInput('');
     setChatBusy(true);
-    setFlow((prev) => ({ ...prev, state: 'running', message: 'Agent is processing your command.', error: '' }));
+    setFlow((prev) => ({ ...prev, error: '' }));
     setChatHistory((prev) => [...prev, { role: 'user', text: userText, ts: Date.now() }]);
 
     try {
+      let identityInfo = null;
+      if (requiresA2AVerification) {
+        setFlow((prev) => ({ ...prev, message: 'Verifying agent identity for A2A request...' }));
+        const idRes = await fetch(apiUrl('/api/identity/current'));
+        const idBody = await idRes.json().catch(() => ({}));
+        const profile = idBody?.profile || {};
+        const verified = Boolean(idRes.ok && idBody?.ok && profile?.available);
+        const failureReason = profile?.reason || 'unknown_reason';
+        identityInfo = {
+          verified,
+          agentId: profile?.configured?.agentId || '',
+          agentWallet: profile?.agentWallet || '',
+          checkedAt: Date.now()
+        };
+
+        setChatHistory((prev) => [
+          ...prev,
+          {
+            role: 'agent',
+            text: verified
+              ? 'A2A identity verification passed. Request accepted, preparing x402 challenge...'
+              : `A2A identity verification failed: ${failureReason}`,
+            ts: Date.now(),
+            identity: identityInfo
+          }
+        ]);
+
+        if (!verified) {
+          setFlow((prev) => ({
+            ...prev,
+            state: 'idle',
+            message: 'A2A request blocked: identity verification failed.',
+            error: ''
+          }));
+          return;
+        }
+      }
+
       const resp = await fetch(apiUrl('/api/chat/agent'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           message: userText,
           sessionId: sessionId || runtime?.sessionId || '',
-          traceId: traceId || undefined
+          traceId: traceId || undefined,
+          history: historyPayload
         })
       });
       const body = await resp.json().catch(() => ({}));
@@ -400,10 +509,33 @@ export default function DashboardPage({
         throw new Error(body?.reason || body?.error || `chat failed: HTTP ${resp.status}`);
       }
       if (body.traceId) setTraceId(body.traceId);
+      const stateStepText = `${body.state || ''} ${body.step || ''}`.toLowerCase();
+      const isSuccess = /(unlocked|completed|success|done)/i.test(stateStepText);
+      const isRunning = /(x402|challenge|payment|proof|onchain|settle|intent|workflow_running)/i.test(
+        stateStepText
+      );
       setFlow((prev) => ({
         ...prev,
-        state: body.state === 'intent_recognized' ? 'running' : prev.state,
-        message: body.step ? `Agent step: ${body.step}` : prev.message
+        state: isSuccess
+          ? 'success'
+          : isRunning
+            ? 'running'
+            : (prev.steps.challenge || prev.steps.payment || prev.steps.proof || prev.steps.onchain
+              ? prev.state
+              : 'idle'),
+        message: body.step ? `Agent step: ${body.step}` : prev.message,
+        requestId: body.requestId || prev.requestId,
+        txHash: body.txHash || prev.txHash,
+        steps: isSuccess
+          ? {
+              ...prev.steps,
+              challenge: true,
+              payment: true,
+              proof: true,
+              onchain: true,
+              done: true
+            }
+          : prev.steps
       }));
       setChatHistory((prev) => [
         ...prev,
@@ -412,16 +544,24 @@ export default function DashboardPage({
           text: body.reply || '(no reply)',
           ts: Date.now(),
           traceId: body.traceId || '',
+          mode: body.mode || '',
           state: body.state || '',
-          step: body.step || ''
+          step: body.step || '',
+          identity: identityInfo
         }
       ]);
     } catch (err) {
       setFlow((prev) => ({
         ...prev,
-        state: 'error',
-        message: 'Agent request failed.',
-        error: err.message
+        state: prev.steps.challenge || prev.steps.payment || prev.steps.proof || prev.steps.onchain
+          ? 'error'
+          : 'idle',
+        message: prev.steps.challenge || prev.steps.payment || prev.steps.proof || prev.steps.onchain
+          ? 'Workflow failed.'
+          : prev.message,
+        error: prev.steps.challenge || prev.steps.payment || prev.steps.proof || prev.steps.onchain
+          ? err.message
+          : ''
       }));
       setChatHistory((prev) => [...prev, { role: 'agent', text: `Error: ${err.message}`, ts: Date.now() }]);
     } finally {
@@ -482,11 +622,9 @@ export default function DashboardPage({
         <div className="top-entry">
           <button className="icon-refresh-btn" onClick={() => void refreshDashboard()} title="Refresh Dashboard" aria-label="Refresh Dashboard">↻</button>
           {onBack && <button className="link-btn" onClick={onBack}>Switch Wallet</button>}
-          {onOpenTransfer && <button className="link-btn" onClick={onOpenTransfer}>Open Transfer</button>}
-          {onOpenVault && <button className="link-btn" onClick={onOpenVault}>Open Vault</button>}
-          {onOpenRecords && <button className="link-btn" onClick={onOpenRecords}>Transfer Records</button>}
-          {onOpenOnChain && <button className="link-btn" onClick={onOpenOnChain}>On-chain Confirmation</button>}
-          {onOpenAbuseCases && <button className="link-btn" onClick={onOpenAbuseCases}>Abuse / Limit Cases</button>}
+          {onOpenTransfer && <button className="link-btn" onClick={onOpenTransfer}>Transfer</button>}
+          {onOpenRecords && <button className="link-btn" onClick={onOpenRecords}>Records</button>}
+          {onOpenOnChain && <button className="link-btn" onClick={onOpenOnChain}>Audit</button>}
         </div>
       </header>
 
@@ -499,17 +637,22 @@ export default function DashboardPage({
               <div key={`${item.ts}-${idx}`} className={`dashboard-chat-msg ${item.role}`}>
                 <strong>{item.role === 'user' ? 'You' : 'KiteClaw'}</strong>
                 <p>{item.text}</p>
-                {item.traceId && <small>traceId: {item.traceId}</small>}
-                {item.step && <small>step: {item.step}</small>}
-                {item.state && <small>state: {item.state}</small>}
+                {item.identity && (
+                  <>
+                    <small>identity: {item.identity.verified ? 'verified' : 'failed'}</small>
+                    {item.identity.agentId && <small>agentId: {item.identity.agentId}</small>}
+                    {item.identity.agentWallet && <small>agentWallet: {shortHash(item.identity.agentWallet)}</small>}
+                  </>
+                )}
               </div>
             ))}
+            <div ref={chatBottomRef} />
           </div>
           <div className="request-input dashboard-chat-input-bottom">
             <input
               value={chatInput}
               onChange={(e) => setChatInput(e.target.value)}
-              placeholder='Try: "place stop order BTC-USDT TP 80000 SL 50000"'
+              placeholder='Try: "place stop order BTC-USDT TP 80000 SL 50000 QTY 0.1"'
               onKeyDown={(e) => {
                 if (e.key === 'Enter') void sendChat();
               }}
@@ -522,128 +665,56 @@ export default function DashboardPage({
 
         <aside className="dashboard-status-stack">
           <article className="vault-card">
-            <h2>Session</h2>
-            <div className="result-row"><span className="label">Setup</span><span className="value">{setupReady ? 'ready' : 'not ready'}</span></div>
-            <div className="result-row"><span className="label">AA Wallet</span><span className="value hash">{shortHash(accountAddress)}</span></div>
-            <div className="result-row"><span className="label">Session</span><span className="value hash">{shortHash(runtime?.sessionAddress || sessionKey)}</span></div>
-            <div className="result-row"><span className="label">Session ID</span><span className="value hash">{shortHash(runtime?.sessionId || sessionId)}</span></div>
-          </article>
-          <article className="vault-card">
-            <h2>x402</h2>
-            <div className="result-row"><span className="label">Latest</span><span className="value">{latestMapping?.status || '-'}</span></div>
-            <div className="result-row"><span className="label">Action</span><span className="value">{latestMapping?.action || '-'}</span></div>
-            <div className="result-row"><span className="label">Request</span><span className="value hash">{shortHash(latestMapping?.requestId || '')}</span></div>
-            <div className="result-row"><span className="label">Tx</span><span className="value hash">{shortHash(latestMapping?.paymentTxHash || '')}</span></div>
-          </article>
-          <article className="vault-card">
-            <h2>On-chain</h2>
-            <div className="result-row"><span className="label">Latest Tx</span><span className="value hash">{shortHash(latestOnchain?.txHash || '')}</span></div>
-            <div className="result-row"><span className="label">Amount</span><span className="value">{latestOnchain?.amount || '-'}</span></div>
-            <div className="result-row"><span className="label">To</span><span className="value hash">{shortHash(latestOnchain?.to || '')}</span></div>
-            <div className="result-row"><span className="label">Time</span><span className="value">{latestOnchain?.time || '-'}</span></div>
-          </article>
-          <article className="vault-card">
-            <h2>Identity</h2>
-            <div className="result-row"><span className="label">Configured</span><span className="value">{identityProfile?.configured ? 'yes' : 'no'}</span></div>
-            <div className="result-row"><span className="label">Registry</span><span className="value hash">{shortHash(identityProfile?.registry || '')}</span></div>
-            <div className="result-row"><span className="label">Agent ID</span><span className="value">{identityProfile?.agentId ?? '-'}</span></div>
-            <div className="result-row"><span className="label">Wallet</span><span className="value hash">{shortHash(identityProfile?.agentWallet || '')}</span></div>
-          </article>
-        </aside>
-      </section>
-
-      <section className="vault-card">
-        <h2>Place Stop Order (One-click Workflow)</h2>
-        <div className="vault-actions">
-          <div className="vault-input">
-            <label>Symbol</label>
-            <input value={workflowSymbol} onChange={(e) => setWorkflowSymbol(e.target.value)} />
-          </div>
-          <div className="vault-input">
-            <label>Take Profit</label>
-            <input value={workflowTakeProfit} onChange={(e) => setWorkflowTakeProfit(e.target.value)} />
-          </div>
-          <div className="vault-input">
-            <label>Stop Loss</label>
-            <input value={workflowStopLoss} onChange={(e) => setWorkflowStopLoss(e.target.value)} />
-          </div>
-          <div className="vault-input">
-            <label>Source Agent ID</label>
-            <input value={workflowSourceAgentId} onChange={(e) => setWorkflowSourceAgentId(e.target.value)} />
-          </div>
-          <div className="vault-input">
-            <label>Target Agent ID</label>
-            <input value={workflowTargetAgentId} onChange={(e) => setWorkflowTargetAgentId(e.target.value)} />
-          </div>
-        </div>
-        <div className="vault-actions">
-          <button onClick={() => void runWorkflow()} disabled={workflowBusy}>
-            {workflowBusy ? 'Running...' : 'Run Stop-order Workflow'}
-          </button>
-          <button
-            onClick={() => {
-              if (traceId) void fetchWorkflow(traceId);
-            }}
-            disabled={!traceId}
-          >
-            Refresh Workflow
-          </button>
-          <button onClick={() => void exportEvidence()} disabled={!traceId}>
-            Export Evidence JSON
-          </button>
-        </div>
-        <div className="result-row">
-          <span className="label">Trace ID</span>
-          <span className="value hash">{traceId || '-'}</span>
-        </div>
-        <div className="result-row">
-          <span className="label">State</span>
-          <span className="value">{workflowData?.state || '-'}</span>
-        </div>
-        <div className="result-row">
-          <span className="label">Request ID</span>
-          <span className="value hash">{workflowData?.requestId || '-'}</span>
-        </div>
-        <div className="result-row">
-          <span className="label">Payment Tx</span>
-          <span className="value hash">{workflowData?.txHash || '-'}</span>
-        </div>
-        <div className="result-row">
-          <span className="label">UserOp Hash</span>
-          <span className="value hash">{workflowData?.userOpHash || '-'}</span>
-        </div>
-        {workflowError && <div className="request-error">Workflow Error: {workflowError}</div>}
-        {workflowData?.steps?.length > 0 && (
-          <div className="workflow-timeline">
-            {workflowData.steps.map((step, idx) => (
-              <div className={`workflow-step ${step.status === 'error' ? 'error' : 'ok'}`} key={`${step.at}-${idx}`}>
-                <div className="workflow-step-head">
-                  <strong>{step.name}</strong>
-                  <span>{step.status}</span>
+            <div className="status-current-card">
+              <span className="status-current-title">Current Stage</span>
+              <strong className="status-current-label">{currentStep.label}</strong>
+              <small className="status-current-message">{flow.message || '-'}</small>
+            </div>
+            {completedSteps.length > 0 && (
+              <details className="status-history">
+                <summary>Completed Steps ({completedSteps.length})</summary>
+                <div className="status-history-chips">
+                  {completedSteps.map((step) => (
+                    <span key={step.key} className="status-chip">
+                      {step.label}
+                    </span>
+                  ))}
                 </div>
-                <small>{step.at}</small>
-                {step?.details?.reason && <div className="workflow-reason">reason: {step.details.reason}</div>}
-                {!step?.details?.reason && step?.details && (
-                  <div className="workflow-reason">{JSON.stringify(step.details)}</div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
+              </details>
+            )}
+            <div className="result-row">
+              <span className="label">State</span>
+              <span className="value">{flow.state}</span>
+            </div>
+            <div className="result-row">
+              <span className="label">OpenClaw</span>
+              <span className="value">{openclawHealth.connected ? 'online' : 'offline'}</span>
+            </div>
+            <div className="result-row">
+              <span className="label">Mode</span>
+              <span className="value">{openclawHealth.mode || '-'}</span>
+            </div>
+            <div className="result-row">
+              <span className="label">Message</span>
+              <span className="value">{flow.message || '-'}</span>
+            </div>
+            <div className="result-row">
+              <span className="label">Request</span>
+              <span className="value hash">{shortHash(flow.requestId)}</span>
+            </div>
+            <div className="result-row">
+              <span className="label">Tx</span>
+              <span className="value hash">{flow.txHash || '-'}</span>
+            </div>
+            {flow.error && <div className="request-error">{flow.error}</div>}
+            {identityError && <div className="request-error">{identityError}</div>}
+            {!openclawHealth.connected && <div className="request-error">OpenClaw: {openclawHealth.reason}</div>}
+          </article>
 
-      <section className="vault-card">
-        <h2>Live Event Stream (SSE)</h2>
-        <div className="workflow-timeline">
-          {liveEvents.length === 0 && <div className="dashboard-empty">No live events yet.</div>}
-          {liveEvents.map((evt, idx) => (
-            <div className="workflow-step ok" key={`${evt.at}-${idx}`}>
-              <div className="workflow-step-head">
-                <strong>{evt.label}</strong>
-                <span>event</span>
-              </div>
-              <small>{evt.at}</small>
-              <div className="workflow-reason">{JSON.stringify(evt.payload || {})}</div>
+          <article className="vault-card loop-indicator-card">
+            <h2>Payment Loop</h2>
+            <div className={`loop-indicator ${flowClass}`}>
+              <span className="loop-indicator-icon">{flowIcon}</span>
             </div>
             <p className="loop-indicator-text">
               {flow.state === 'running' && 'Processing payment + verification...'}
@@ -680,3 +751,4 @@ export default function DashboardPage({
     </div>
   );
 }
+

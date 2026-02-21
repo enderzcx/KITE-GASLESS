@@ -1,4 +1,4 @@
-import crypto from 'crypto';
+﻿import crypto from 'crypto';
 
 function createTraceId(prefix = 'trace') {
   return `${prefix}_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
@@ -6,19 +6,22 @@ function createTraceId(prefix = 'trace') {
 
 function parseStopOrderIntent(message = '') {
   const text = String(message || '').trim();
-  const stopLike = /(stop|tp|sl|止盈|止损)/i.test(text);
+  const stopLike = /(stop|tp|sl)/i.test(text);
   if (!stopLike) return null;
 
   const symbolMatch = text.match(/\b([A-Z]{2,10}-[A-Z]{2,10})\b/i);
   const tpMatch = text.match(/\b(?:tp|take\s*profit)\s*[:=]?\s*(\d+(?:\.\d+)?)\b/i);
   const slMatch = text.match(/\b(?:sl|stop\s*loss)\s*[:=]?\s*(\d+(?:\.\d+)?)\b/i);
+  const qtyMatch = text.match(/\b(?:qty|quantity|size|amount)\s*[:=]?\s*(\d+(?:\.\d+)?)\b/i);
 
-  return {
+  const parsed = {
     action: 'place_stop_order',
     symbol: symbolMatch ? symbolMatch[1].toUpperCase() : 'BTC-USDT',
     takeProfit: tpMatch ? Number(tpMatch[1]) : 80000,
     stopLoss: slMatch ? Number(slMatch[1]) : 50000
   };
+  if (qtyMatch) parsed.quantity = Number(qtyMatch[1]);
+  return parsed;
 }
 
 function normalizeRole(rawRole = '') {
@@ -355,7 +358,8 @@ export function createOpenClawAdapter(config = {}) {
         params: {
           symbol: intent.symbol,
           takeProfit: intent.takeProfit,
-          stopLoss: intent.stopLoss
+          stopLoss: intent.stopLoss,
+          ...(Number.isFinite(intent.quantity) ? { quantity: intent.quantity } : {})
         }
       });
     }

@@ -6,6 +6,11 @@ const GOLDSKY_ENDPOINT =
   'https://api.goldsky.com/api/public/project_cmlrmfrtks90001wg8goma8pv/subgraphs/kk/1.0.0/gn';
 
 const explorerTx = (txHash) => `https://testnet.kitescan.ai/tx/${txHash}`;
+const formatUtcSeconds = (value) => {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return '-';
+  return `${new Date(n).toISOString().slice(0, 19).replace('T', ' ')} UTC`;
+};
 
 function OnChainPage({ onBack }) {
   const [txHashFilter, setTxHashFilter] = useState('');
@@ -235,14 +240,14 @@ function OnChainPage({ onBack }) {
           </button>
         )}
         <button className="link-btn" onClick={loadTransfers} disabled={loading}>
-          {loading ? 'Refreshing...' : 'Refresh Goldsky Audit'}
+          {loading ? 'Refreshing...' : 'Refresh Audit'}
         </button>
         <button className="link-btn" onClick={refreshAll} disabled={loading}>
           {loading ? 'Refreshing...' : 'Refresh All'}
         </button>
       </div>
 
-      <h1>Audit Evidence (Goldsky)</h1>
+      <h1>Audit Evidence</h1>
 
       <div className="vault-card">
         <div className="result-row">
@@ -313,6 +318,7 @@ function OnChainPage({ onBack }) {
         <h2>x402 Settlement Mapping</h2>
         <div className="x402-table-wrap">
           <div className="records-head x402-head">
+            <span className="paid-at-col">Paid At (UTC)</span>
             <span>Flow Mode</span>
             <span>Source Agent</span>
             <span>Target Agent</span>
@@ -323,7 +329,6 @@ function OnChainPage({ onBack }) {
             <span>Payer</span>
             <span>Amount</span>
             <span>Status</span>
-            <span>Paid At</span>
           </div>
 
           {displayedX402Requests.length === 0 && (
@@ -332,6 +337,9 @@ function OnChainPage({ onBack }) {
 
           {displayedX402Requests.map((item) => (
             <div className="records-row x402-row" key={item.requestId}>
+              <span className="records-cell paid-at-col" title={formatUtcSeconds(item.paidAt)}>
+                {formatUtcSeconds(item.paidAt)}
+              </span>
               <span className="records-cell">{resolveFlowMode(item)}</span>
               <span className="records-cell">{item?.a2a?.sourceAgentId || '-'}</span>
               <span className="records-cell">{item?.a2a?.targetAgentId || '-'}</span>
@@ -352,9 +360,6 @@ function OnChainPage({ onBack }) {
               <span className="records-cell hash" title={item.payer || ''}>{item.payer || '-'}</span>
               <span className="records-cell">{item.amount || '-'}</span>
               <span className="records-cell">{item.status || '-'}</span>
-              <span className="records-cell">
-                {item.paidAt ? new Date(Number(item.paidAt)).toISOString() : '-'}
-              </span>
             </div>
           ))}
         </div>
