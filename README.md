@@ -180,6 +180,13 @@ Fill `backend/.env` with real values:
 - `IDENTITY_VERIFY_MODE=registry_only` (recommended for public demo websites)
 - OpenClaw remote API settings (`OPENCLAW_BASE_URL`, `OPENCLAW_MODEL`, etc.)
 
+If session payment fails with `sessionExists BAD_DATA`, ensure AA account is deployed first:
+
+```bash
+cd backend
+npm run aa:ensure -- --owner 0xYourOwnerEOA
+```
+
 ### 3) Deploy app
 
 ```bash

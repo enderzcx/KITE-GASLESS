@@ -2923,6 +2923,19 @@ app.post('/api/session/pay', requireRole('agent'), async (req, res) => {
     const sessionSignerAddress = await sessionWallet.getAddress();
     const serviceProvider = getServiceProviderBytes32(action);
 
+    const accountCode = await provider.getCode(runtime.aaWallet);
+    if (!accountCode || accountCode === '0x') {
+      return res.status(400).json({
+        ok: false,
+        error: 'aa_wallet_not_deployed_or_incompatible',
+        reason: `No contract code found at runtime aaWallet: ${runtime.aaWallet}. Deploy AA account first, then recreate/sync session.`,
+        details: {
+          aaWallet: runtime.aaWallet,
+          sessionId
+        }
+      });
+    }
+
     const sessionReadAbi = [
       'function sessionExists(bytes32 sessionId) view returns (bool)',
       'function getSessionAgent(bytes32 sessionId) view returns (address)',

@@ -7,6 +7,7 @@
     "probe:erc8004": "node scripts/probe-erc8004-kite.js",
     "erc8004:register": "node scripts/erc8004-register-kiteclaw.js",
     "erc8004:read": "node scripts/erc8004-read-agent.js",
+    "aa:ensure": "node scripts/aa-ensure-account.js",
     "aa:preflight": "node scripts/aa-preflight.js",
     "aa:upgrade": "node scripts/aa-upgrade.js"
   },
