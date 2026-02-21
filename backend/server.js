@@ -14,6 +14,7 @@ const x402Path = path.resolve('data', 'x402_requests.json');
 const policyFailurePath = path.resolve('data', 'policy_failures.json');
 const policyConfigPath = path.resolve('data', 'policy_config.json');
 const sessionRuntimePath = path.resolve('data', 'session_runtime.json');
+const workflowPath = path.resolve('data', 'workflows.json');
 
 const SETTLEMENT_TOKEN =
   process.env.KITE_SETTLEMENT_TOKEN || '0x0fF5393387ad2f9f691FD6Fd28e07E3969e27e63';
@@ -121,6 +122,23 @@ function readPolicyFailures() {
 
 function writePolicyFailures(records) {
   writeJsonArray(policyFailurePath, records);
+}
+
+function readWorkflows() {
+  return readJsonArray(workflowPath);
+}
+
+function writeWorkflows(records) {
+  writeJsonArray(workflowPath, records);
+}
+
+function upsertWorkflow(workflow) {
+  const rows = readWorkflows();
+  const idx = rows.findIndex((w) => String(w.traceId || '') === String(workflow.traceId || ''));
+  if (idx >= 0) rows[idx] = workflow;
+  else rows.unshift(workflow);
+  writeWorkflows(rows);
+  return workflow;
 }
 
 function sanitizeSessionRuntime(input = {}) {
@@ -314,6 +332,20 @@ function computeDashboardKpi(items = []) {
     failed,
     todaySpend: Number(todaySpend.toFixed(6))
   };
+}
+
+function createTraceId(prefix = 'trace') {
+  return `${prefix}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+}
+
+function appendWorkflowStep(workflow, name, status, details = {}) {
+  if (!workflow.steps) workflow.steps = [];
+  workflow.steps.push({
+    name,
+    status,
+    at: new Date().toISOString(),
+    details
+  });
 }
 
 function createX402Request(query, payer, action = 'kol-score', options = {}) {
@@ -948,6 +980,167 @@ app.post('/api/chat/agent', (req, res) => {
     sessionId: sessionId || null,
     suggestions
   });
+});
+
+app.post('/api/workflow/stop-order/run', async (req, res) => {
+  const symbol = String(req.body?.symbol || 'BTC-USDT').trim().toUpperCase();
+  const takeProfit = Number(req.body?.takeProfit);
+  const stopLoss = Number(req.body?.stopLoss);
+  const sourceAgentId = String(req.body?.sourceAgentId || KITE_AGENT1_ID).trim();
+  const targetAgentId = String(req.body?.targetAgentId || KITE_AGENT2_ID).trim();
+  const traceId = String(req.body?.traceId || createTraceId('workflow')).trim();
+  const runtime = readSessionRuntime();
+  const payer = normalizeAddress(req.body?.payer || runtime.aaWallet || '');
+  const workflow = {
+    traceId,
+    type: 'stop-order',
+    state: 'running',
+    sourceAgentId,
+    targetAgentId,
+    payer,
+    input: {
+      symbol,
+      takeProfit,
+      stopLoss
+    },
+    requestId: '',
+    txHash: '',
+    userOpHash: '',
+    steps: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  upsertWorkflow(workflow);
+
+  try {
+    if (!symbol || !Number.isFinite(takeProfit) || !Number.isFinite(stopLoss) || takeProfit <= 0 || stopLoss <= 0) {
+      throw new Error('Invalid stop-order params. symbol/takeProfit/stopLoss are required.');
+    }
+
+    const challengeResult = await handleA2AStopOrders({
+      payer,
+      sourceAgentId,
+      targetAgentId,
+      task: { symbol, takeProfit, stopLoss }
+    });
+    if (challengeResult.status !== 402) {
+      throw new Error(
+        challengeResult?.body?.reason ||
+          challengeResult?.body?.error ||
+          `Expected 402 challenge, got ${challengeResult.status}`
+      );
+    }
+    const challenge = challengeResult.body?.x402;
+    const requestId = String(challenge?.requestId || '').trim();
+    const accept = Array.isArray(challenge?.accepts) ? challenge.accepts[0] : null;
+    if (!requestId || !accept?.tokenAddress || !accept?.recipient || !accept?.amount) {
+      throw new Error('Malformed x402 challenge payload.');
+    }
+    workflow.requestId = requestId;
+    appendWorkflowStep(workflow, 'challenge_issued', 'ok', {
+      requestId,
+      amount: accept.amount,
+      recipient: accept.recipient
+    });
+    workflow.updatedAt = new Date().toISOString();
+    upsertWorkflow(workflow);
+
+    const payResp = await fetch(`http://127.0.0.1:${PORT}/api/session/pay`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tokenAddress: accept.tokenAddress,
+        recipient: accept.recipient,
+        amount: accept.amount,
+        requestId,
+        action: 'reactive-stop-orders',
+        query: `A2A stop-order ${symbol} tp=${takeProfit} sl=${stopLoss}`
+      })
+    });
+    const payBody = await payResp.json().catch(() => ({}));
+    if (!payResp.ok || !payBody?.ok) {
+      throw new Error(payBody?.reason || payBody?.error || `session pay failed: HTTP ${payResp.status}`);
+    }
+    const txHash = String(payBody?.payment?.txHash || '').trim();
+    const userOpHash = String(payBody?.payment?.userOpHash || '').trim();
+    if (!txHash) throw new Error('session pay returned empty txHash.');
+    workflow.txHash = txHash;
+    workflow.userOpHash = userOpHash;
+    appendWorkflowStep(workflow, 'payment_sent', 'ok', {
+      txHash,
+      userOpHash
+    });
+    workflow.updatedAt = new Date().toISOString();
+    upsertWorkflow(workflow);
+
+    const proofResult = await handleA2AStopOrders({
+      payer,
+      sourceAgentId,
+      targetAgentId,
+      requestId,
+      paymentProof: {
+        requestId,
+        txHash,
+        payer,
+        tokenAddress: accept.tokenAddress,
+        recipient: accept.recipient,
+        amount: accept.amount
+      },
+      task: { symbol, takeProfit, stopLoss }
+    });
+    if (proofResult.status !== 200) {
+      throw new Error(
+        proofResult?.body?.reason || proofResult?.body?.error || `proof submit failed: ${proofResult.status}`
+      );
+    }
+    appendWorkflowStep(workflow, 'proof_submitted', 'ok', {
+      verified: true
+    });
+    appendWorkflowStep(workflow, 'unlocked', 'ok', {
+      result: proofResult?.body?.result?.summary || ''
+    });
+    workflow.state = 'unlocked';
+    workflow.result = proofResult?.body?.result || null;
+    workflow.updatedAt = new Date().toISOString();
+    upsertWorkflow(workflow);
+
+    return res.json({
+      ok: true,
+      traceId,
+      requestId,
+      txHash,
+      userOpHash,
+      state: workflow.state,
+      workflow
+    });
+  } catch (error) {
+    appendWorkflowStep(workflow, 'failed', 'error', { reason: error.message });
+    workflow.state = 'failed';
+    workflow.error = error.message;
+    workflow.updatedAt = new Date().toISOString();
+    upsertWorkflow(workflow);
+    return res.status(500).json({
+      ok: false,
+      traceId,
+      state: workflow.state,
+      error: 'workflow_failed',
+      reason: error.message,
+      workflow
+    });
+  }
+});
+
+app.get('/api/workflow/:traceId', (req, res) => {
+  const traceId = String(req.params.traceId || '').trim();
+  if (!traceId) {
+    return res.status(400).json({ ok: false, error: 'traceId_required' });
+  }
+  const rows = readWorkflows();
+  const workflow = rows.find((w) => String(w.traceId || '') === traceId);
+  if (!workflow) {
+    return res.status(404).json({ ok: false, error: 'workflow_not_found', traceId });
+  }
+  return res.json({ ok: true, traceId, workflow });
 });
 
 app.get('/api/a2a/capabilities', (req, res) => {
