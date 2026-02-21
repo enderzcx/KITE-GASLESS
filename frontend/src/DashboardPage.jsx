@@ -838,6 +838,9 @@ export default function DashboardPage({
                 </a>
               )}
             </div>
+            <p className="dashboard-aa-footer-tip">
+              Fund this AA wallet first: transfer KITE (gas) and USDT (x402 payments) to this address.
+            </p>
           </div>
         </article>
 

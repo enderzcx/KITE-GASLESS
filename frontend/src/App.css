@@ -850,6 +850,22 @@ button.loading::after {
   margin-top: 8px;
 }
 
+.dashboard-aa-footer-actions .link-btn {
+  min-width: 220px;
+  min-height: 44px;
+  padding: 0 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dashboard-aa-footer-tip {
+  margin-top: 8px;
+  color: var(--kite-text-muted);
+  font-size: 0.86rem;
+  line-height: 1.45;
+}
+
 @media (min-width: 1200px) {
   .shell-header {
     padding-bottom: 10px;

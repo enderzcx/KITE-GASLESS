@@ -47,6 +47,7 @@ const BACKEND_BUNDLER_URL =
   process.env.KITEAI_BUNDLER_URL || 'https://bundler-service.staging.gokite.ai/rpc/';
 const BACKEND_ENTRYPOINT_ADDRESS =
   process.env.KITE_ENTRYPOINT_ADDRESS || '0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108';
+const KITE_MIN_NATIVE_GAS = String(process.env.KITE_MIN_NATIVE_GAS || '0.0001').trim();
 const PROOF_RPC_TIMEOUT_MS = Number(process.env.KITE_PROOF_RPC_TIMEOUT_MS || 10_000);
 const PROOF_RPC_RETRIES = Number(process.env.KITE_PROOF_RPC_RETRIES || 3);
 const OPENCLAW_BASE_URL = String(process.env.OPENCLAW_BASE_URL || '').trim();
@@ -3084,6 +3085,25 @@ app.post('/api/session/pay', requireRole('agent'), async (req, res) => {
           aaWallet: runtime.aaWallet,
           balance: ethers.formatUnits(aaBalance, decimals),
           required: amount
+        }
+      });
+    }
+    let minNativeGas = 0n;
+    try {
+      minNativeGas = ethers.parseEther(KITE_MIN_NATIVE_GAS || '0');
+    } catch {
+      minNativeGas = ethers.parseEther('0.0001');
+    }
+    const nativeBalance = await provider.getBalance(runtime.aaWallet);
+    if (nativeBalance < minNativeGas) {
+      return res.status(400).json({
+        ok: false,
+        error: 'insufficient_kite_gas',
+        reason: `AA wallet ${runtime.aaWallet} has insufficient KITE for gas. Need >= ${ethers.formatEther(minNativeGas)} KITE.`,
+        details: {
+          aaWallet: runtime.aaWallet,
+          balance: ethers.formatEther(nativeBalance),
+          required: ethers.formatEther(minNativeGas)
         }
       });
     }
