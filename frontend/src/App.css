@@ -643,6 +643,12 @@ button:disabled {
   box-shadow: var(--shadow-sm);
 }
 
+.dashboard-inline-link {
+  margin-top: 0;
+  display: inline-flex;
+  align-self: flex-start;
+}
+
 .icon-refresh-btn {
   width: 38px;
   min-width: 38px;
@@ -820,6 +826,28 @@ button.loading::after {
 .request-input button {
   width: 120px;
   margin-top: 0;
+}
+
+.dashboard-aa-footer {
+  margin-top: 10px;
+  border: 1px solid oklch(0.78 0.02 108 / 0.34);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  background: oklch(0.998 0.002 90 / 0.72);
+}
+
+.dashboard-aa-footer-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.dashboard-aa-footer-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
 }
 
 @media (min-width: 1200px) {

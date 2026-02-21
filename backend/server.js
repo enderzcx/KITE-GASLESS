@@ -179,6 +179,61 @@ if (BACKEND_SIGNER_PRIVATE_KEY) {
   }
 }
 
+async function ensureAAAccountDeployment({ owner, salt = 0n } = {}) {
+  if (!backendSigner) {
+    throw new Error('Backend signer unavailable. Set KITECLAW_BACKEND_SIGNER_PRIVATE_KEY first.');
+  }
+  const normalizedOwner = normalizeAddress(owner || '');
+  if (!ethers.isAddress(normalizedOwner)) {
+    throw new Error('A valid owner address is required.');
+  }
+
+  const sdk = new GokiteAASDK({
+    network: 'kite_testnet',
+    rpcUrl: BACKEND_RPC_URL,
+    bundlerUrl: BACKEND_BUNDLER_URL,
+    entryPointAddress: BACKEND_ENTRYPOINT_ADDRESS
+  });
+  const accountAddress = sdk.getAccountAddress(normalizedOwner, salt);
+  const provider = backendSigner.provider || new ethers.JsonRpcProvider(BACKEND_RPC_URL);
+  const beforeCode = await provider.getCode(accountAddress);
+  const alreadyDeployed = Boolean(beforeCode && beforeCode !== '0x');
+
+  if (alreadyDeployed) {
+    return {
+      owner: normalizedOwner,
+      accountAddress,
+      salt: salt.toString(),
+      deployed: true,
+      createdNow: false,
+      txHash: ''
+    };
+  }
+
+  const factory = new ethers.Contract(
+    sdk.config.accountFactoryAddress,
+    ['function createAccount(address owner, uint256 salt) returns (address)'],
+    backendSigner
+  );
+  const tx = await factory.createAccount(normalizedOwner, salt);
+  await tx.wait();
+
+  const afterCode = await provider.getCode(accountAddress);
+  const deployed = Boolean(afterCode && afterCode !== '0x');
+  if (!deployed) {
+    throw new Error('AA createAccount confirmed, but no code found at predicted address.');
+  }
+
+  return {
+    owner: normalizedOwner,
+    accountAddress,
+    salt: salt.toString(),
+    deployed: true,
+    createdNow: true,
+    txHash: tx.hash
+  };
+}
+
 app.use(cors());
 app.use(express.json());
 app.use((req, res, next) => {
@@ -1174,6 +1229,61 @@ app.post('/api/session/runtime/sync', requireRole('admin'), (req, res) => {
       hasSessionPrivateKey: Boolean(next.sessionPrivateKey)
     }
   });
+});
+
+app.post('/api/aa/ensure', requireRole('admin'), async (req, res) => {
+  try {
+    const body = req.body || {};
+    const runtime = readSessionRuntime();
+    const owner = String(body.owner || runtime.owner || '').trim();
+    const saltRaw = String(body.salt ?? process.env.KITECLAW_AA_SALT ?? '0').trim();
+    let salt = 0n;
+    try {
+      salt = BigInt(saltRaw || '0');
+    } catch {
+      return res.status(400).json({
+        ok: false,
+        error: 'invalid_salt',
+        reason: `Invalid salt: ${saltRaw}`,
+        traceId: req.traceId || ''
+      });
+    }
+
+    const ensured = await ensureAAAccountDeployment({ owner, salt });
+    const merged = writeSessionRuntime({
+      ...runtime,
+      aaWallet: ensured.accountAddress,
+      owner: ensured.owner,
+      source: 'aa-ensure',
+      updatedAt: Date.now()
+    });
+
+    return res.json({
+      ok: true,
+      traceId: req.traceId || '',
+      aaWallet: ensured.accountAddress,
+      owner: ensured.owner,
+      salt: ensured.salt,
+      deployed: ensured.deployed,
+      createdNow: ensured.createdNow,
+      txHash: ensured.txHash,
+      runtime: {
+        ...merged,
+        sessionPrivateKey: undefined,
+        sessionPrivateKeyMasked: maskSecret(merged.sessionPrivateKey),
+        hasSessionPrivateKey: Boolean(merged.sessionPrivateKey)
+      }
+    });
+  } catch (error) {
+    const isSignerErr =
+      /backend signer unavailable|KITECLAW_BACKEND_SIGNER_PRIVATE_KEY/i.test(String(error?.message || ''));
+    return res.status(isSignerErr ? 503 : 400).json({
+      ok: false,
+      error: isSignerErr ? 'backend_signer_unavailable' : 'aa_ensure_failed',
+      reason: error?.message || 'aa_ensure_failed',
+      traceId: req.traceId || ''
+    });
+  }
 });
 
 app.delete('/api/session/runtime', requireRole('admin'), (req, res) => {

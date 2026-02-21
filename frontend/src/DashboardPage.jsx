@@ -104,6 +104,7 @@ export default function DashboardPage({
 
   const [chatInput, setChatInput] = useState('');
   const [chatBusy, setChatBusy] = useState(false);
+  const [setupBusy, setSetupBusy] = useState(false);
   const [chatHistory, setChatHistory] = useState([]);
   const chatBottomRef = useRef(null);
   const [openclawHealth, setOpenclawHealth] = useState({
@@ -123,8 +124,14 @@ export default function DashboardPage({
     import.meta.env.VITE_KITEAI_BUNDLER_URL ||
     import.meta.env.VITE_BUNDLER_URL ||
     'https://bundler-service.staging.gokite.ai/rpc/';
+  const addressExplorerBase = String(
+    import.meta.env.VITE_KITE_EXPLORER_ADDRESS_BASE || 'https://testnet.kitescan.ai/address/'
+  ).trim();
   const apiBase = String(import.meta.env.VITE_API_BASE_URL || '').trim().replace(/\/+$/, '');
   const apiUrl = (pathname) => (apiBase ? `${apiBase}${pathname}` : pathname);
+  const ownerAddress = walletState?.ownerAddress || runtime?.owner || '';
+  const aaWalletAddress = accountAddress || runtime?.aaWallet || walletState?.aaAddress || '';
+  const aaExplorerUrl = aaWalletAddress ? `${addressExplorerBase}${aaWalletAddress}` : '';
 
   useEffect(() => {
     const ownerAddress = walletState?.ownerAddress || '';
@@ -148,6 +155,9 @@ export default function DashboardPage({
     if (res.ok && body?.ok) {
       const rt = body.runtime || null;
       setRuntime(rt);
+      if (!accountAddress && rt?.aaWallet) {
+        setAccountAddress(rt.aaWallet);
+      }
       setFlow((prev) => ({
         ...prev,
         steps: {
@@ -430,6 +440,7 @@ export default function DashboardPage({
   };
 
   const syncSessionRuntime = async ({
+    aaWallet = aaWalletAddress,
     sessionAddress = sessionKey,
     sessionPrivateKey = sessionPrivKey,
     currentSessionId = sessionId,
@@ -444,8 +455,8 @@ export default function DashboardPage({
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        aaWallet: accountAddress,
-        owner: walletState?.ownerAddress || '',
+        aaWallet,
+        owner: ownerAddress,
         sessionAddress,
         sessionPrivateKey,
         sessionId: currentSessionId,
@@ -464,55 +475,119 @@ export default function DashboardPage({
     await refreshRuntime();
   };
 
-  const handleCreateSession = async () => {
+  const copyToClipboardSafe = async (value) => {
+    if (!value) return false;
+    if (!navigator?.clipboard?.writeText) return false;
     try {
-      setStatus('Creating session and applying rules...');
-      const signer = await getSigner();
-      const generatedSessionWallet = ethers.Wallet.createRandom();
-      const nextSessionId = ethers.keccak256(
-        ethers.toUtf8Bytes(`${generatedSessionWallet.address}-${Date.now()}`)
+      await navigator.clipboard.writeText(value);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const ensureAADeployed = async () => {
+    const owner = String(ownerAddress || '').trim();
+    if (!owner) {
+      throw new Error('Please connect wallet first.');
+    }
+    const resp = await fetch(apiUrl('/api/aa/ensure'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ owner })
+    });
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok || !body?.ok) {
+      throw new Error(body?.reason || body?.error || `AA deploy failed: HTTP ${resp.status}`);
+    }
+    const wallet = String(body?.aaWallet || '').trim();
+    if (!wallet) {
+      throw new Error('AA deployment response missing aaWallet.');
+    }
+    setAccountAddress(wallet);
+    await refreshRuntime();
+    return {
+      aaWallet: wallet,
+      txHash: String(body?.txHash || '').trim(),
+      createdNow: Boolean(body?.createdNow)
+    };
+  };
+
+  const createSessionWithAddress = async (targetAAWallet) => {
+    const wallet = String(targetAAWallet || aaWalletAddress || '').trim();
+    if (!wallet) {
+      throw new Error('AA wallet not ready.');
+    }
+    setStatus('Creating session and applying rules...');
+    const signer = await getSigner();
+    const generatedSessionWallet = ethers.Wallet.createRandom();
+    const nextSessionId = ethers.keccak256(
+      ethers.toUtf8Bytes(`${generatedSessionWallet.address}-${Date.now()}`)
+    );
+    const rules = await buildRules(signer.provider);
+    const data = accountInterface.encodeFunctionData('createSession', [
+      nextSessionId,
+      generatedSessionWallet.address,
+      rules
+    ]);
+    const tx = await signer.sendTransaction({ to: wallet, data });
+    await tx.wait();
+
+    localStorage.setItem(SESSION_KEY_ADDR_STORAGE, generatedSessionWallet.address);
+    localStorage.setItem(SESSION_KEY_PRIV_STORAGE, generatedSessionWallet.privateKey);
+    localStorage.setItem(SESSION_ID_STORAGE, nextSessionId);
+    localStorage.setItem(SESSION_TX_STORAGE, tx.hash);
+
+    setSessionKey(generatedSessionWallet.address);
+    setSessionPrivKey(generatedSessionWallet.privateKey);
+    setSessionId(nextSessionId);
+    setSessionTxHash(tx.hash);
+
+    await syncSessionRuntime({
+      aaWallet: wallet,
+      sessionAddress: generatedSessionWallet.address,
+      sessionPrivateKey: generatedSessionWallet.privateKey,
+      currentSessionId: nextSessionId,
+      currentSessionTxHash: tx.hash
+    });
+
+    setFlow((prev) => ({
+      ...prev,
+      steps: { ...prev.steps, session: true },
+      message: 'Session setup completed.'
+    }));
+    return { sessionTxHash: tx.hash };
+  };
+
+  const handleOneClickSetup = async () => {
+    if (setupBusy) return;
+    setSetupBusy(true);
+    try {
+      setStatus('Step 1/3: Generating and deploying AA wallet...');
+      const deploy = await ensureAADeployed();
+      const copied = await copyToClipboardSafe(deploy.aaWallet);
+      setStatus('Step 2/3: AA ready. Creating session key and applying rules...');
+      const session = await createSessionWithAddress(deploy.aaWallet);
+      setStatus(
+        `Step 3/3 done. AA ${deploy.createdNow ? 'deployed' : 'already deployed'} (${shortHash(deploy.aaWallet)}), ` +
+          `session ${shortHash(session.sessionTxHash)}. ${copied ? 'Address copied.' : 'Copy address manually if needed.'}`
       );
-      const rules = await buildRules(signer.provider);
-      const data = accountInterface.encodeFunctionData('createSession', [
-        nextSessionId,
-        generatedSessionWallet.address,
-        rules
-      ]);
-      const tx = await signer.sendTransaction({ to: accountAddress, data });
-      await tx.wait();
-
-      localStorage.setItem(SESSION_KEY_ADDR_STORAGE, generatedSessionWallet.address);
-      localStorage.setItem(SESSION_KEY_PRIV_STORAGE, generatedSessionWallet.privateKey);
-      localStorage.setItem(SESSION_ID_STORAGE, nextSessionId);
-      localStorage.setItem(SESSION_TX_STORAGE, tx.hash);
-
-      setSessionKey(generatedSessionWallet.address);
-      setSessionPrivKey(generatedSessionWallet.privateKey);
-      setSessionId(nextSessionId);
-      setSessionTxHash(tx.hash);
-
-      await syncSessionRuntime({
-        sessionAddress: generatedSessionWallet.address,
-        sessionPrivateKey: generatedSessionWallet.privateKey,
-        currentSessionId: nextSessionId,
-        currentSessionTxHash: tx.hash
-      });
-
-      setFlow((prev) => ({
-        ...prev,
-        steps: { ...prev.steps, session: true },
-        message: 'Session setup completed.'
-      }));
-      setStatus(`Session created and synced: ${tx.hash}`);
     } catch (err) {
-      setStatus(`Create session failed: ${err.message}`);
+      setStatus(`One-click setup failed: ${err.message}`);
       setFlow((prev) => ({
         ...prev,
         state: 'error',
-        message: 'Session setup failed.',
+        message: 'AA/session setup failed.',
         error: err.message
       }));
+    } finally {
+      setSetupBusy(false);
     }
+  };
+
+  const handleCopyAAAddress = async () => {
+    const copied = await copyToClipboardSafe(aaWalletAddress);
+    setStatus(copied ? 'AA wallet address copied.' : 'Copy failed. Please copy the address manually.');
   };
 
   const sendChat = async () => {
@@ -744,6 +819,26 @@ export default function DashboardPage({
               {chatBusy ? 'Sending...' : 'Send'}
             </button>
           </div>
+          <div className="dashboard-aa-footer">
+            <div className="dashboard-aa-footer-row">
+              <span className="label">AA Wallet</span>
+              <span className="value hash">{aaWalletAddress || '-'}</span>
+            </div>
+            <div className="dashboard-aa-footer-actions">
+              <button
+                type="button"
+                className="link-btn dashboard-inline-link"
+                onClick={() => void handleCopyAAAddress()}
+              >
+                Copy AA Address
+              </button>
+              {aaExplorerUrl && (
+                <a className="link-btn dashboard-inline-link" href={aaExplorerUrl} target="_blank" rel="noreferrer">
+                  View AA on Kitescan
+                </a>
+              )}
+            </div>
+          </div>
         </article>
 
         <aside className="dashboard-status-stack">
@@ -826,7 +921,9 @@ export default function DashboardPage({
               </div>
             </div>
 
-            <button onClick={() => void handleCreateSession()}>Generate Session Key & Apply Rules</button>
+            <button onClick={() => void handleOneClickSetup()} disabled={setupBusy}>
+              {setupBusy ? 'Setting up AA + Session...' : 'Generate + Deploy AA, Copy, View & Apply Session Rules'}
+            </button>
             {status && <div className="request-error">{status}</div>}
           </article>
         </aside>
