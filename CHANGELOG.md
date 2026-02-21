@@ -6,10 +6,33 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 
 ## [Unreleased]
 
+### Changed
+- Pending.
+
+## [v1.6.1] - 2026-02-21
+
 ### Added
-- `STABLE_BASELINE.md` for reproducible demo parameters and run order.
-- `KNOWN_ISSUES.md` for timeout/mapping/identity troubleshooting.
-- README pre-demo checklist and stable-baseline section.
+- Packaged OpenClaw skill artifact:
+  - `skills/releases/kiteclaw-stop-orders-v1.6.1.zip`
+
+### Changed
+- README rewritten to match the real current demo flow:
+  - dashboard session setup
+  - repeated autonomous x402-paid stop-order execution
+  - insufficient-balance failure demonstration
+  - explicit OpenClaw runtime configuration (`/v1/chat/completions`, `/v1/models`)
+- README now includes skill packaging and script usage instructions.
+
+### Removed
+- Non-essential top-level docs removed to keep repository focused:
+  - `AA_V2_UPGRADE_PLAYBOOK.md`
+  - `DEMO_X402_SCRIPT.md`
+  - `ERC8004_SETUP.md`
+  - `KNOWN_ISSUES.md`
+  - `OPENCLAW_SKILL_INTEGRATION.md`
+  - `STABLE_BASELINE.md`
+- Removed sample metadata directory:
+  - `metadata/`
 
 ## [v1.6.0] - 2026-02-21
 
