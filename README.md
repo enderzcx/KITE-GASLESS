@@ -1,12 +1,12 @@
 ﻿# KITECLAW
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-v1.5.4-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-v1.5.5-blue)](./CHANGELOG.md)
 [![Demo Status](https://img.shields.io/badge/demo-ready-brightgreen)](#demo-walkthrough-for-humans)
 
 KITECLAW (formerly KITE GASLESS) is an agent-native payment demo on **KiteAI Testnet**.
 
-Current Version: `v1.5.4`
+Current Version: `v1.5.5`
 
 ## Why this project is different (Core Innovations)
 
@@ -110,12 +110,14 @@ If your goal is autonomous execution via OpenClaw, start here first.
 - `GET /api/skill/openclaw/status/:requestId`
 - `GET /api/skill/openclaw/evidence/:requestId`
 - `GET /api/session/runtime/secret` (runtime session source)
+- `POST /api/workflow/stop-order/run` (one-click orchestration)
+- `GET /api/workflow/:traceId` (timeline/status fetch)
 
 ### 3) One-time human setup (for agent autonomy)
 Before OpenClaw runs fully autonomous:
-1. Open frontend `Agent Payment Settings`
+1. Open frontend `/dashboard`
 2. Click `Generate Session Key & Apply Rules`
-3. Click `Sync Session To KITECLAW Runtime`
+3. Click `Sync Session Runtime`
 4. Confirm runtime is synced
 
 Then OpenClaw scripts can read latest runtime session and execute without re-entering payer/session parameters.
@@ -125,6 +127,11 @@ Then OpenClaw scripts can read latest runtime session and execute without re-ent
 2. Pay on-chain with challenge fields
 3. Submit proof (`invoke`, phase-2)
 4. Poll status + fetch evidence
+
+Or use orchestrated flow:
+1. Call `POST /api/workflow/stop-order/run`
+2. Backend runs `challenge -> pay -> proof -> unlock`
+3. Poll `GET /api/workflow/:traceId` for timeline
 
 ### 5) Script helpers
 In `skills/kiteclaw-stop-orders/scripts/`:
@@ -164,14 +171,25 @@ Backend: `http://localhost:3001`
 ### Demo walkthrough (for humans)
 1. Open app and connect wallet
 2. Authenticate once
-3. Open `Agent Payment Settings` and create session + rules
-4. In `Transfer`, click `Request Payment Info (402)`
-5. Click `Pay & Submit Proof`
-6. Show:
+3. Open `Dashboard` and create session + rules
+4. In `Dashboard`, run `Place Stop Order (One-click Workflow)`
+5. Show workflow timeline (`challenge_issued -> payment_sent -> proof_submitted -> unlocked`)
+6. Optionally show manual path in `Transfer`:
+   - click `Request Payment Info (402)`
+   - click `Pay & Submit Proof`
+7. Show:
    - x402 mapping panel
    - on-chain confirmation panel
    - transfer records page
    - abuse/limit graceful failure page
+
+## Iteration Progress
+
+| Iteration | Status | Notes |
+|---|---|---|
+| Iteration 1 (MVP dashboard) | Mostly Done | `/dashboard`, KPI, Chat panel, Session/x402/On-chain/Identity cards, 3s polling, `GET /api/session/runtime`, `GET /api/x402/mapping/latest`, `GET /api/identity/current`, `GET /api/onchain/latest`, `POST /api/chat/agent` |
+| Iteration 2 (automation core) | Mostly Done | `POST /api/workflow/stop-order/run`, `GET /api/workflow/:traceId`, real `POST /api/session/pay`, timeline + failure reason UI |
+| Iteration 3 (productization/multi-agent) | In Progress | multi-agent admin, evidence export, role-based auth, API key levels, request signing/rate-limit still pending |
 
 ---
 
