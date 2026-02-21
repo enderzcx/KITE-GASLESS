@@ -451,6 +451,33 @@ export default function DashboardPage({
     }
   };
 
+  const exportEvidence = async () => {
+    try {
+      if (!traceId) {
+        throw new Error('traceId is empty. Run workflow first.');
+      }
+      const res = await fetch(`/api/evidence/export?traceId=${encodeURIComponent(traceId)}`);
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || !body?.ok) {
+        throw new Error(body?.reason || body?.error || `export failed: HTTP ${res.status}`);
+      }
+      const blob = new Blob([JSON.stringify(body.evidence || {}, null, 2)], {
+        type: 'application/json;charset=utf-8'
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `kiteclaw-evidence-${traceId}.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setStatus(`Evidence exported for ${traceId}`);
+    } catch (err) {
+      setWorkflowError(err.message);
+    }
+  };
+
   const setupReady = useMemo(
     () =>
       Boolean(sessionKey && sessionId) &&
@@ -593,6 +620,9 @@ export default function DashboardPage({
             disabled={!traceId}
           >
             Refresh Workflow
+          </button>
+          <button onClick={() => void exportEvidence()} disabled={!traceId}>
+            Export Evidence JSON
           </button>
         </div>
         <div className="result-row">

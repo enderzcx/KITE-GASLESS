@@ -188,8 +188,8 @@ Backend: `http://localhost:3001`
 | Iteration | Status | Notes |
 |---|---|---|
 | Iteration 1 (MVP dashboard) | Mostly Done | `/dashboard`, KPI, Chat panel, Session/x402/On-chain/Identity cards, 3s polling, `GET /api/session/runtime`, `GET /api/x402/mapping/latest`, `GET /api/identity/current`, `GET /api/onchain/latest`, `POST /api/chat/agent` |
-| Iteration 2 (automation core) | Mostly Done | `POST /api/workflow/stop-order/run`, `GET /api/workflow/:traceId`, real `POST /api/session/pay`, timeline + failure reason UI |
-| Iteration 3 (productization/multi-agent) | In Progress | multi-agent admin, evidence export, role-based auth, API key levels, request signing/rate-limit still pending |
+| Iteration 2 (automation core) | Done | `POST /api/workflow/stop-order/run`, `GET /api/workflow/:traceId`, real `POST /api/session/pay`, `GET /api/events/stream` (SSE), timeline + failure reason + live event feed UI |
+| Iteration 3 (productization/multi-agent) | In Progress | `GET /api/evidence/export` + Dashboard export button done; multi-agent admin, role-based auth, API key levels, request signing/rate-limit still pending |
 
 ---
 

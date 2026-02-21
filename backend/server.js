@@ -1195,6 +1195,59 @@ app.get('/api/workflow/:traceId', (req, res) => {
   return res.json({ ok: true, traceId, workflow });
 });
 
+app.get('/api/evidence/export', (req, res) => {
+  const traceId = String(req.query.traceId || '').trim();
+  if (!traceId) {
+    return res.status(400).json({ ok: false, error: 'traceId_required' });
+  }
+
+  const workflows = readWorkflows();
+  const workflow = workflows.find((w) => String(w.traceId || '') === traceId);
+  if (!workflow) {
+    return res.status(404).json({ ok: false, error: 'workflow_not_found', traceId });
+  }
+
+  const requests = readX402Requests();
+  const reqItem = requests.find((r) => String(r.requestId || '') === String(workflow.requestId || ''));
+  const records = readRecords();
+  const paymentRecord = records.find((r) => String(r.txHash || '').toLowerCase() === String(workflow.txHash || '').toLowerCase());
+  const runtime = readSessionRuntime();
+
+  const exportPayload = {
+    traceId,
+    exportedAt: new Date().toISOString(),
+    workflow: workflow || null,
+    x402: reqItem
+      ? {
+          requestId: reqItem.requestId || '',
+          status: reqItem.status || '',
+          action: reqItem.action || '',
+          amount: reqItem.amount || '',
+          payer: reqItem.payer || '',
+          recipient: reqItem.recipient || '',
+          tokenAddress: reqItem.tokenAddress || '',
+          paymentTxHash: reqItem.paymentTxHash || reqItem?.paymentProof?.txHash || '',
+          proofVerification: reqItem.proofVerification || null,
+          policy: reqItem.policy || null,
+          identity: reqItem.identity || null,
+          actionParams: reqItem.actionParams || null,
+          a2a: reqItem.a2a || null
+        }
+      : null,
+    paymentRecord: paymentRecord || null,
+    runtimeSnapshot: {
+      aaWallet: runtime.aaWallet || '',
+      sessionAddress: runtime.sessionAddress || '',
+      sessionId: runtime.sessionId || '',
+      maxPerTx: runtime.maxPerTx || 0,
+      dailyLimit: runtime.dailyLimit || 0,
+      gatewayRecipient: runtime.gatewayRecipient || ''
+    }
+  };
+
+  return res.json({ ok: true, traceId, evidence: exportPayload });
+});
+
 app.get('/api/a2a/capabilities', (req, res) => {
   res.json({ ok: true, capabilities: buildA2ACapabilities() });
 });
