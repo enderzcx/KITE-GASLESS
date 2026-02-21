@@ -2001,6 +2001,27 @@ app.post('/api/workflow/stop-order/run', requireRole('agent'), async (req, res) 
         err.balance = balance || '';
         throw err;
       }
+      if (payError === 'insufficient_kite_gas') {
+        const requiredGas = String(payBody?.details?.required || '0.0001').trim();
+        const gasBalance = String(payBody?.details?.balance || '').trim();
+        const err = new Error(
+          `Insufficient KITE gas: requires >= ${requiredGas} KITE, current balance ${gasBalance || 'unknown'}.`
+        );
+        err.code = 'insufficient_kite_gas';
+        err.requiredGas = requiredGas;
+        err.balance = gasBalance || '';
+        throw err;
+      }
+      if (payError === 'unsupported_settlement_token' || payError === 'invalid_token_contract') {
+        const err = new Error(payBody?.reason || 'Settlement token config is invalid.');
+        err.code = payError;
+        throw err;
+      }
+      if (payError === 'session_not_found' || payError === 'session_agent_mismatch' || payError === 'session_rule_failed') {
+        const err = new Error(payBody?.reason || payError);
+        err.code = payError;
+        throw err;
+      }
       throw new Error(payBody?.reason || payBody?.error || `session pay failed: HTTP ${payResp.status}`);
     }
     const txHash = String(payBody?.payment?.txHash || '').trim();
@@ -3011,6 +3032,18 @@ app.post('/api/session/pay', requireRole('agent'), async (req, res) => {
     if (!tokenAddress || !ethers.isAddress(tokenAddress)) {
       return res.status(400).json({ ok: false, error: 'invalid_tokenAddress' });
     }
+    const expectedSettlementToken = normalizeAddress(SETTLEMENT_TOKEN || '');
+    if (
+      expectedSettlementToken &&
+      ethers.isAddress(expectedSettlementToken) &&
+      normalizeAddress(tokenAddress) !== expectedSettlementToken
+    ) {
+      return res.status(400).json({
+        ok: false,
+        error: 'unsupported_settlement_token',
+        reason: `Unsupported settlement token. expected=${expectedSettlementToken}, got=${normalizeAddress(tokenAddress)}`
+      });
+    }
     if (!recipient || !ethers.isAddress(recipient)) {
       return res.status(400).json({ ok: false, error: 'invalid_recipient' });
     }
@@ -3074,6 +3107,14 @@ app.post('/api/session/pay', requireRole('agent'), async (req, res) => {
     }
 
     const erc20Abi = ['function balanceOf(address account) view returns (uint256)'];
+    const tokenCode = await provider.getCode(tokenAddress);
+    if (!tokenCode || tokenCode === '0x') {
+      return res.status(400).json({
+        ok: false,
+        error: 'invalid_token_contract',
+        reason: `No contract code at tokenAddress: ${tokenAddress}`
+      });
+    }
     const tokenContract = new ethers.Contract(tokenAddress, erc20Abi, provider);
     const aaBalance = await tokenContract.balanceOf(runtime.aaWallet);
     if (aaBalance < amountRaw) {

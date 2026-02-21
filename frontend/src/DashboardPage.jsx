@@ -3,6 +3,10 @@ import { ethers } from 'ethers';
 import { GokiteAASDK } from './gokite-aa-sdk';
 
 const TOKEN_DECIMALS = 18;
+const SETTLEMENT_TOKEN =
+  import.meta.env.VITE_KITEAI_SETTLEMENT_TOKEN ||
+  import.meta.env.VITE_SETTLEMENT_TOKEN ||
+  '0x0fF5393387ad2f9f691FD6Fd28e07E3969e27e63';
 const SESSION_KEY_ADDR_STORAGE = 'kiteclaw_session_address';
 const SESSION_KEY_PRIV_STORAGE = 'kiteclaw_session_privkey';
 const SESSION_ID_STORAGE = 'kiteclaw_session_id';
@@ -31,6 +35,11 @@ const accountInterface = new ethers.Interface([
     type: 'function'
   }
 ]);
+
+const tokenSupportAbi = [
+  'function isTokenSupported(address token) view returns (bool)',
+  'function addSupportedToken(address token)'
+];
 
 function shortHash(v = '') {
   const s = String(v || '');
@@ -559,17 +568,52 @@ export default function DashboardPage({
     return { sessionTxHash: tx.hash };
   };
 
+  const ensureSettlementTokenConfigured = async (targetAAWallet) => {
+    const wallet = String(targetAAWallet || aaWalletAddress || '').trim();
+    if (!wallet || !ethers.isAddress(wallet)) {
+      throw new Error('AA wallet not ready for token setup.');
+    }
+    if (!SETTLEMENT_TOKEN || !ethers.isAddress(SETTLEMENT_TOKEN)) {
+      throw new Error('Settlement token is not configured correctly.');
+    }
+
+    const signer = await getSigner();
+    const contract = new ethers.Contract(wallet, tokenSupportAbi, signer);
+
+    try {
+      const already = await contract.isTokenSupported(SETTLEMENT_TOKEN);
+      if (already) return { tokenTxHash: '', already: true };
+    } catch {
+      // continue to add token when read call is unavailable on some implementations
+    }
+
+    try {
+      const tx = await contract.addSupportedToken(SETTLEMENT_TOKEN);
+      await tx.wait();
+      return { tokenTxHash: tx.hash, already: false };
+    } catch (error) {
+      const msg = String(error?.message || '').toLowerCase();
+      if (msg.includes('tokenalreadysupported') || msg.includes('already supported')) {
+        return { tokenTxHash: '', already: true };
+      }
+      throw error;
+    }
+  };
+
   const handleOneClickSetup = async () => {
     if (setupBusy) return;
     setSetupBusy(true);
     try {
-      setStatus('Step 1/3: Generating and deploying AA wallet...');
+      setStatus('Step 1/4: Generating and deploying AA wallet...');
       const deploy = await ensureAADeployed();
       const copied = await copyToClipboardSafe(deploy.aaWallet);
-      setStatus('Step 2/3: AA ready. Creating session key and applying rules...');
+      setStatus('Step 2/4: Setting settlement token (USDT)...');
+      const tokenSetup = await ensureSettlementTokenConfigured(deploy.aaWallet);
+      setStatus('Step 3/4: Creating session key and applying rules...');
       const session = await createSessionWithAddress(deploy.aaWallet);
       setStatus(
-        `Step 3/3 done. AA ${deploy.createdNow ? 'deployed' : 'already deployed'} (${shortHash(deploy.aaWallet)}), ` +
+        `Step 4/4 done. AA ${deploy.createdNow ? 'deployed' : 'already deployed'} (${shortHash(deploy.aaWallet)}), ` +
+          `token ${tokenSetup.already ? 'already set' : `set ${shortHash(tokenSetup.tokenTxHash)}`}, ` +
           `session ${shortHash(session.sessionTxHash)}. ${copied ? 'Address copied.' : 'Copy address manually if needed.'}`
       );
     } catch (err) {
