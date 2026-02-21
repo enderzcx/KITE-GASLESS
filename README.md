@@ -177,6 +177,7 @@ Fill `backend/.env` with real values:
 - `KITECLAW_BACKEND_SIGNER_PRIVATE_KEY`
 - `ERC8004_IDENTITY_REGISTRY`
 - `ERC8004_AGENT_ID`
+- `IDENTITY_VERIFY_MODE=registry_only` (recommended for public demo websites)
 - OpenClaw remote API settings (`OPENCLAW_BASE_URL`, `OPENCLAW_MODEL`, etc.)
 
 ### 3) Deploy app

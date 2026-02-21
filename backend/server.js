@@ -69,6 +69,7 @@ const RATE_LIMIT_WINDOW_MS = Number(process.env.KITECLAW_RATE_LIMIT_WINDOW_MS ||
 const RATE_LIMIT_MAX = Number(process.env.KITECLAW_RATE_LIMIT_MAX || 240);
 const IDENTITY_CHALLENGE_TTL_MS = Number(process.env.IDENTITY_CHALLENGE_TTL_MS || 120_000);
 const IDENTITY_CHALLENGE_MAX_ROWS = Number(process.env.IDENTITY_CHALLENGE_MAX_ROWS || 500);
+const IDENTITY_VERIFY_MODE = String(process.env.IDENTITY_VERIFY_MODE || 'signature').trim().toLowerCase();
 
 const ROLE_RANK = {
   viewer: 1,
@@ -981,6 +982,12 @@ function parseAgentId(raw) {
   return Number.isFinite(n) && n >= 0 ? n : null;
 }
 
+function isIdentitySignatureRequired() {
+  return !['registry', 'registry_only', 'service', 'service_registry'].includes(
+    IDENTITY_VERIFY_MODE
+  );
+}
+
 function buildIdentitySummary(profile = {}) {
   return {
     available: Boolean(profile?.available),
@@ -1228,6 +1235,18 @@ app.post('/api/identity/challenge', requireRole('viewer'), async (req, res) => {
         reason: 'Configured identity wallet is invalid.',
         profile: buildIdentitySummary(profile),
         traceId: req.traceId || ''
+      });
+    }
+
+    if (!isIdentitySignatureRequired()) {
+      return res.json({
+        ok: true,
+        traceId: req.traceId || '',
+        challenge: {
+          mode: 'registry',
+          signatureRequired: false
+        },
+        profile: buildIdentitySummary(profile)
       });
     }
 

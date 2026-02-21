@@ -68,6 +68,10 @@ function normalizeContent(content) {
   return '';
 }
 
+function isHeaderSafeAscii(value = '') {
+  return /^[\x20-\x7E]*$/.test(String(value || ''));
+}
+
 function extractReplyFromBody(body) {
   if (!body || typeof body !== 'object') return '';
 
@@ -123,7 +127,8 @@ export function createOpenClawAdapter(config = {}) {
   const baseUrl = String(config.baseUrl || '').trim().replace(/\/+$/, '');
   const chatPath = String(config.chatPath || '/api/v1/chat').trim();
   const healthPath = String(config.healthPath || '/health').trim();
-  const apiKey = String(config.apiKey || '').trim();
+  const rawApiKey = String(config.apiKey || '').trim();
+  const apiKey = isHeaderSafeAscii(rawApiKey) ? rawApiKey : '';
   const timeoutMs = Number(config.timeoutMs || 12_000);
   const protocol = resolveProtocol(config.protocol, chatPath);
   const model = String(config.model || '').trim();
@@ -384,7 +389,9 @@ export function createOpenClawAdapter(config = {}) {
       chatPath,
       healthPath,
       baseUrl: hasRemote ? baseUrl : '',
-      model: model || ''
+      model: model || '',
+      authHeaderEnabled: Boolean(apiKey),
+      authHeaderSanitized: rawApiKey ? apiKey !== rawApiKey : false
     };
   }
 

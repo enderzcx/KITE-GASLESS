@@ -1,4 +1,11 @@
+import { config as loadEnv } from 'dotenv';
 import { ethers } from 'ethers';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+loadEnv({ path: path.resolve(__dirname, '..', '.env') });
 
 const RPC_URL = process.env.KITEAI_RPC_URL || 'https://rpc-testnet.gokite.ai/';
 const IDENTITY_REGISTRY = process.env.ERC8004_IDENTITY_REGISTRY || '';

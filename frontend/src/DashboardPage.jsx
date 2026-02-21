@@ -376,6 +376,16 @@ export default function DashboardPage({
     }
 
     const challenge = challengeBody?.challenge || {};
+    if (challenge?.signatureRequired === false || String(challenge?.mode || '').trim() === 'registry') {
+      const profile = challengeBody?.profile || {};
+      return {
+        verified: true,
+        agentId: profile?.configured?.agentId || profile?.agentId || '',
+        agentWallet: profile?.agentWallet || '',
+        checkedAt: Date.now()
+      };
+    }
+
     const challengeId = String(challenge?.challengeId || '').trim();
     const message = String(challenge?.message || '').trim();
     if (!challengeId || !message) {
