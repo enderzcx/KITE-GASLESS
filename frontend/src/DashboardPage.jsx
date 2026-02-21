@@ -362,6 +362,54 @@ export default function DashboardPage({
     return provider.getSigner();
   };
 
+  const verifyA2AIdentitySignature = async ({ requestTraceId = '' } = {}) => {
+    const challengeResp = await fetch(apiUrl('/api/identity/challenge'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ traceId: requestTraceId })
+    });
+    const challengeBody = await challengeResp.json().catch(() => ({}));
+    if (!challengeResp.ok || !challengeBody?.ok) {
+      throw new Error(
+        challengeBody?.reason || challengeBody?.error || `identity challenge failed: HTTP ${challengeResp.status}`
+      );
+    }
+
+    const challenge = challengeBody?.challenge || {};
+    const challengeId = String(challenge?.challengeId || '').trim();
+    const message = String(challenge?.message || '').trim();
+    if (!challengeId || !message) {
+      throw new Error('identity challenge payload is invalid');
+    }
+
+    const signer = await getSigner();
+    const signature = await signer.signMessage(message);
+
+    const verifyResp = await fetch(apiUrl('/api/identity/verify'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        challengeId,
+        signature,
+        traceId: requestTraceId
+      })
+    });
+    const verifyBody = await verifyResp.json().catch(() => ({}));
+    if (!verifyResp.ok || !verifyBody?.ok || !verifyBody?.verified) {
+      throw new Error(
+        verifyBody?.reason || verifyBody?.error || `identity verify failed: HTTP ${verifyResp.status}`
+      );
+    }
+
+    const profile = verifyBody?.profile || challengeBody?.profile || {};
+    return {
+      verified: true,
+      agentId: profile?.configured?.agentId || profile?.agentId || '',
+      agentWallet: profile?.agentWallet || '',
+      checkedAt: Date.now()
+    };
+  };
+
   const buildRules = async (provider) => {
     const latestBlock = await provider.getBlock('latest');
     const nowTs = Number(latestBlock?.timestamp || Math.floor(Date.now() / 1000));
@@ -479,31 +527,36 @@ export default function DashboardPage({
       let identityInfo = null;
       if (requiresA2AVerification) {
         setFlow((prev) => ({ ...prev, message: 'Verifying agent identity for A2A request...' }));
-        const idRes = await fetch(apiUrl('/api/identity/current'));
-        const idBody = await idRes.json().catch(() => ({}));
-        const profile = idBody?.profile || {};
-        const verified = Boolean(idRes.ok && idBody?.ok && profile?.available);
-        const failureReason = profile?.reason || 'unknown_reason';
-        identityInfo = {
-          verified,
-          agentId: profile?.configured?.agentId || '',
-          agentWallet: profile?.agentWallet || '',
-          checkedAt: Date.now()
-        };
+        let identityErrorReason = '';
+        try {
+          identityInfo = await verifyA2AIdentitySignature({ requestTraceId });
+        } catch (error) {
+          identityErrorReason = error?.message || 'unknown_reason';
+          identityInfo = {
+            verified: false,
+            agentId: '',
+            agentWallet: '',
+            checkedAt: Date.now()
+          };
+        }
 
         setChatHistory((prev) => [
           ...prev,
           {
             role: 'agent',
-            text: verified
+            text: identityInfo.verified
               ? 'A2A identity verification passed. Request accepted, preparing x402 challenge...'
-              : `A2A identity verification failed: ${failureReason}`,
+              : `A2A identity verification failed: ${identityErrorReason || 'unknown_reason'}`,
             ts: Date.now(),
             identity: identityInfo
           }
         ]);
+        setFlow((prev) => ({
+          ...prev,
+          steps: { ...prev.steps, identity: Boolean(identityInfo?.verified) }
+        }));
 
-        if (!verified) {
+        if (!identityInfo.verified) {
           setFlow((prev) => ({
             ...prev,
             state: 'idle',
