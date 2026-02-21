@@ -36,6 +36,9 @@ These contracts are part of our open implementation contribution for verifiable 
 
 So for this project, `aa-v2` represents both the secure implementation mechanism and the achieved UX outcome (single authorization, then autonomous constrained execution).
 
+Others can reuse our `GokiteAccountV2` implementation address to upgrade their own owner-controlled proxies.
+Upgrade authority remains with each proxy owner; this project does not grant permission to upgrade third-party proxies.
+
 ## Real Demo Flow (Current Implementation)
 
 1. Open app and connect wallet.
