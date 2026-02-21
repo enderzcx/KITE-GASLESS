@@ -76,6 +76,17 @@ This makes the flow transparent, reproducible, and judge-verifiable.
 - On-chain confirmation and reconciliation UI
 - Abuse/over-limit graceful failure with evidence logs
 
+## Why x402 and Goldsky are both shown (not duplicate)
+
+- `x402 settlement confirmation` answers: **"Did this paid action actually settle and unlock?"**
+  - source: challenge/proof/payment mapping (`requestId <-> txHash`)
+  - used for action-level payment correctness
+- `Goldsky audit evidence` answers: **"Can an independent indexer observe and verify this on-chain transfer?"**
+  - source: indexed on-chain transfer data (subgraph)
+  - used for third-party auditability and reconciliation
+
+In short: x402 is the payment-unlock execution truth, Goldsky is independent indexed audit truth.
+
 ## x402 Layer Mapping (this project)
 
 | x402 Layer | This project |
@@ -93,13 +104,25 @@ This makes the flow transparent, reproducible, and judge-verifiable.
 | Action | Type | Current status |
 |---|---|---|
 | `kol-score` | agent-to-API reference action | Implemented as demo/mock paid API. Full x402 flow is live (`402 -> pay -> proof -> 200`). Business payload is sample data. |
-| `reactive-stop-orders` | agent-to-agent/business action | Payment + parameter flow implemented (`symbol`, `takeProfit`, `stopLoss`). Full stop-order strategy execution backend is still in progress. |
+| `reactive-stop-orders` | agent-to-agent demo action | Payment + parameter flow implemented (`symbol`, `takeProfit`, `stopLoss`). This is used as a workflow demo carrier; full trading strategy engine is intentionally out of current scope. |
 
 ---
 
 ## OpenClaw First: Integration Guide (for agents)
 
 If your goal is autonomous execution via OpenClaw, start here first.
+
+### Local Native Mode (recommended for current phase)
+- UI chat is native React (no iframe/widget)
+- Frontend talks only to your backend
+- Backend proxies/adapts OpenClaw runtime via adapter layer
+
+Flow:
+`Frontend -> /api/chat/agent -> OpenClaw Adapter -> OpenClaw Runtime/Gateway (optional)`
+
+Health endpoint:
+- `GET /api/chat/agent/health`
+  - returns `connected`, `mode`, `reason`
 
 ### 1) Skill package
 - Skill folder: `skills/kiteclaw-stop-orders/`
@@ -117,8 +140,7 @@ If your goal is autonomous execution via OpenClaw, start here first.
 Before OpenClaw runs fully autonomous:
 1. Open frontend `/dashboard`
 2. Click `Generate Session Key & Apply Rules`
-3. Click `Sync Session Runtime`
-4. Confirm runtime is synced
+3. Confirm runtime is marked ready in status card
 
 Then OpenClaw scripts can read latest runtime session and execute without re-entering payer/session parameters.
 
@@ -178,8 +200,8 @@ Backend: `http://localhost:3001`
    - click `Request Payment Info (402)`
    - click `Pay & Submit Proof`
 7. Show:
-   - x402 mapping panel
-   - on-chain confirmation panel
+   - x402 settlement mapping panel
+   - Goldsky audit evidence page
    - transfer records page
    - abuse/limit graceful failure page
 
@@ -189,7 +211,7 @@ Backend: `http://localhost:3001`
 |---|---|---|
 | Iteration 1 (MVP dashboard) | Mostly Done | `/dashboard`, KPI, Chat panel, Session/x402/On-chain/Identity cards, 3s polling, `GET /api/session/runtime`, `GET /api/x402/mapping/latest`, `GET /api/identity/current`, `GET /api/onchain/latest`, `POST /api/chat/agent` |
 | Iteration 2 (automation core) | Done | `POST /api/workflow/stop-order/run`, `GET /api/workflow/:traceId`, real `POST /api/session/pay`, `GET /api/events/stream` (SSE), timeline + failure reason + live event feed UI |
-| Iteration 3 (productization/multi-agent) | In Progress | `GET /api/evidence/export` + Dashboard export button done; multi-agent admin, role-based auth, API key levels, request signing/rate-limit still pending |
+| Iteration 3 (productization/multi-agent) | In Progress | `GET /api/evidence/export` + Dashboard export button done; API key role auth is now added (`admin/agent/viewer`) + policy aliases (`/api/policy/update|revoke|unrevoke`) done; multi-agent admin and request signing/rate-limit still pending |
 
 ---
 
@@ -219,6 +241,7 @@ For `reactive-stop-orders`:
 
 ### Frontend (`frontend/.env`)
 ```env
+VITE_API_BASE_URL=http://localhost:3001
 VITE_KITEAI_RPC_URL=https://rpc-testnet.gokite.ai/
 VITE_KITEAI_BUNDLER_URL=https://bundler-service.staging.gokite.ai/rpc/
 VITE_KITEAI_SETTLEMENT_TOKEN=0x0fF5393387ad2f9f691FD6Fd28e07E3969e27e63
@@ -240,11 +263,23 @@ KITE_POLICY_DAILY_LIMIT=0.60
 KITE_POLICY_ALLOWED_RECIPIENTS=0x6D705b93F0Da7DC26e46cB39Decc3baA4fb4dd29
 ERC8004_IDENTITY_REGISTRY=0x_your_identity_registry
 ERC8004_AGENT_ID=0
+KITECLAW_API_KEY_ADMIN=
+KITECLAW_API_KEY_AGENT=
+KITECLAW_API_KEY_VIEWER=
+KITECLAW_RATE_LIMIT_WINDOW_MS=60000
+KITECLAW_RATE_LIMIT_MAX=240
+OPENCLAW_BASE_URL=
+OPENCLAW_CHAT_PATH=/api/v1/chat
+OPENCLAW_HEALTH_PATH=/health
+OPENCLAW_API_KEY=
+OPENCLAW_TIMEOUT_MS=12000
 ```
 
 Notes:
 - Never commit real private keys
 - Use local-only runtime/session secrets
+- API key auth is auto-enabled if any key is set.
+- When enabled, call APIs with `x-api-key: <key>` (or `Authorization: Bearer <key>`).
 
 ## Funding Prerequisites
 

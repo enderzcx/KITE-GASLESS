@@ -3,8 +3,6 @@ import { ethers } from 'ethers';
 import { GokiteAASDK } from './gokite-aa-sdk';
 
 const TOKEN_DECIMALS = 18;
-const DEFAULT_TOKEN = '0x0fF5393387ad2f9f691FD6Fd28e07E3969e27e63';
-const DEFAULT_GATEWAY_RECIPIENT = '0x6D705b93F0Da7DC26e46cB39Decc3baA4fb4dd29';
 const SESSION_KEY_ADDR_STORAGE = 'kiteclaw_session_address';
 const SESSION_KEY_PRIV_STORAGE = 'kiteclaw_session_privkey';
 const SESSION_ID_STORAGE = 'kiteclaw_session_id';
@@ -31,30 +29,40 @@ const accountInterface = new ethers.Interface([
     outputs: [],
     stateMutability: 'nonpayable',
     type: 'function'
-  },
-  {
-    inputs: [{ internalType: 'address', name: 'token', type: 'address' }],
-    name: 'addSupportedToken',
-    outputs: [],
-    stateMutability: 'nonpayable',
-    type: 'function'
   }
 ]);
 
 function shortHash(v = '') {
   const s = String(v || '');
-  if (s.length < 16) return s || '-';
+  if (!s) return '-';
+  if (s.length < 16) return s;
   return `${s.slice(0, 10)}...${s.slice(-8)}`;
 }
+
+const initialFlow = {
+  state: 'idle',
+  message: 'Waiting for agent command.',
+  error: '',
+  steps: {
+    session: false,
+    challenge: false,
+    payment: false,
+    proof: false,
+    onchain: false,
+    identity: false,
+    done: false
+  },
+  txHash: '',
+  requestId: '',
+  traceId: ''
+};
 
 export default function DashboardPage({
   walletState,
   onBack,
   onOpenTransfer,
-  onOpenVault,
   onOpenRecords,
-  onOpenOnChain,
-  onOpenAbuseCases
+  onOpenOnChain
 }) {
   const [accountAddress, setAccountAddress] = useState(
     import.meta.env.VITE_KITECLAW_AA_WALLET_ADDRESS ||
@@ -62,37 +70,32 @@ export default function DashboardPage({
       walletState?.aaAddress ||
       ''
   );
+
   const [singleLimit, setSingleLimit] = useState('0.1');
   const [dailyLimit, setDailyLimit] = useState('0.6');
-  const [gatewayRecipient, setGatewayRecipient] = useState(DEFAULT_GATEWAY_RECIPIENT);
-  const [allowedToken, setAllowedToken] = useState(DEFAULT_TOKEN);
+  const [sessionHours, setSessionHours] = useState('168');
   const [status, setStatus] = useState('');
 
   const [sessionKey, setSessionKey] = useState('');
   const [sessionPrivKey, setSessionPrivKey] = useState('');
   const [sessionId, setSessionId] = useState('');
   const [sessionTxHash, setSessionTxHash] = useState('');
-  const [runtime, setRuntime] = useState(null);
-  const [runtimeSyncInfo, setRuntimeSyncInfo] = useState('');
 
+  const [runtime, setRuntime] = useState(null);
   const [identityProfile, setIdentityProfile] = useState(null);
-  const [mappingRows, setMappingRows] = useState([]);
-  const [onchainRows, setOnchainRows] = useState([]);
-  const [kpi, setKpi] = useState({ pending: 0, paid: 0, failed: 0, todaySpend: 0 });
+  const [identityError, setIdentityError] = useState('');
 
   const [chatInput, setChatInput] = useState('');
-  const [chatHistory, setChatHistory] = useState([]);
   const [chatBusy, setChatBusy] = useState(false);
+  const [chatHistory, setChatHistory] = useState([]);
+  const [openclawHealth, setOpenclawHealth] = useState({
+    connected: true,
+    mode: 'local-fallback',
+    reason: 'Checking...'
+  });
+
   const [traceId, setTraceId] = useState('');
-  const [workflowBusy, setWorkflowBusy] = useState(false);
-  const [workflowData, setWorkflowData] = useState(null);
-  const [workflowError, setWorkflowError] = useState('');
-  const [workflowSymbol, setWorkflowSymbol] = useState('BTC-USDT');
-  const [workflowTakeProfit, setWorkflowTakeProfit] = useState('80000');
-  const [workflowStopLoss, setWorkflowStopLoss] = useState('50000');
-  const [workflowSourceAgentId, setWorkflowSourceAgentId] = useState('1');
-  const [workflowTargetAgentId, setWorkflowTargetAgentId] = useState('2');
-  const [liveEvents, setLiveEvents] = useState([]);
+  const [flow, setFlow] = useState(initialFlow);
 
   const rpcUrl =
     import.meta.env.VITE_KITEAI_RPC_URL ||
@@ -102,6 +105,8 @@ export default function DashboardPage({
     import.meta.env.VITE_KITEAI_BUNDLER_URL ||
     import.meta.env.VITE_BUNDLER_URL ||
     'https://bundler-service.staging.gokite.ai/rpc/';
+  const apiBase = String(import.meta.env.VITE_API_BASE_URL || '').trim().replace(/\/+$/, '');
+  const apiUrl = (pathname) => (apiBase ? `${apiBase}${pathname}` : pathname);
 
   useEffect(() => {
     const ownerAddress = walletState?.ownerAddress || '';
@@ -120,34 +125,60 @@ export default function DashboardPage({
   }, [walletState?.ownerAddress, rpcUrl, bundlerUrl]);
 
   const refreshRuntime = async () => {
-    const res = await fetch('/api/session/runtime');
-    const body = await res.json().catch(() => ({}));
-    if (res.ok && body?.ok) setRuntime(body.runtime || null);
-  };
-
-  const refreshIdentity = async () => {
-    const res = await fetch('/api/identity/current');
-    const body = await res.json().catch(() => ({}));
-    if (res.ok && body?.ok) setIdentityProfile(body.profile || null);
-  };
-
-  const refreshMapping = async () => {
-    const res = await fetch('/api/x402/mapping/latest?limit=20');
+    const res = await fetch(apiUrl('/api/session/runtime'));
     const body = await res.json().catch(() => ({}));
     if (res.ok && body?.ok) {
-      setMappingRows(body.items || []);
-      setKpi(body.kpi || { pending: 0, paid: 0, failed: 0, todaySpend: 0 });
+      const rt = body.runtime || null;
+      setRuntime(rt);
+      setFlow((prev) => ({
+        ...prev,
+        steps: {
+          ...prev.steps,
+          session: Boolean(rt?.hasSessionPrivateKey && rt?.sessionAddress)
+        }
+      }));
     }
   };
 
-  const refreshOnchain = async () => {
-    const res = await fetch('/api/onchain/latest?limit=20');
+  const refreshIdentity = async () => {
+    const res = await fetch(apiUrl('/api/identity/current'));
     const body = await res.json().catch(() => ({}));
-    if (res.ok && body?.ok) setOnchainRows(body.items || []);
+    if (res.ok && body?.ok) {
+      setIdentityProfile(body.profile || null);
+      setIdentityError('');
+      setFlow((prev) => ({
+        ...prev,
+        steps: {
+          ...prev.steps,
+          identity: Boolean(body?.profile?.configured)
+        }
+      }));
+    } else {
+      setIdentityProfile(null);
+      setIdentityError(body?.reason || `Identity load failed: HTTP ${res.status}`);
+    }
   };
 
   const refreshDashboard = async () => {
-    await Promise.allSettled([refreshRuntime(), refreshIdentity(), refreshMapping(), refreshOnchain()]);
+    await Promise.allSettled([refreshRuntime(), refreshIdentity(), refreshOpenclawHealth()]);
+  };
+
+  const refreshOpenclawHealth = async () => {
+    const res = await fetch(apiUrl('/api/chat/agent/health'));
+    const body = await res.json().catch(() => ({}));
+    if (res.ok && body?.ok) {
+      setOpenclawHealth({
+        connected: Boolean(body.connected),
+        mode: body.mode || 'remote',
+        reason: body.reason || 'ok'
+      });
+      return;
+    }
+    setOpenclawHealth({
+      connected: false,
+      mode: body?.mode || 'remote',
+      reason: body?.reason || `health HTTP ${res.status}`
+    });
   };
 
   useEffect(() => {
@@ -160,58 +191,86 @@ export default function DashboardPage({
 
   useEffect(() => {
     const timer = setInterval(() => {
-      void Promise.allSettled([refreshRuntime(), refreshMapping(), refreshOnchain()]);
-      if (traceId) {
-        void fetchWorkflow(traceId);
-      }
+      void refreshDashboard();
     }, 3000);
     return () => clearInterval(timer);
-  }, [traceId]);
+  }, []);
 
   useEffect(() => {
-    const es = new EventSource('/api/events/stream');
-    const append = (label, payload) => {
-      setLiveEvents((prev) => [
-        { label, payload, at: new Date().toISOString() },
-        ...prev
-      ].slice(0, 20));
-    };
+    const es = new EventSource(apiUrl('/api/events/stream'));
 
-    es.addEventListener('connected', (evt) => {
-      append('connected', evt?.data ? JSON.parse(evt.data) : {});
-    });
     es.addEventListener('challenge_issued', (evt) => {
       const payload = evt?.data ? JSON.parse(evt.data) : {};
-      append('challenge_issued', payload);
+      setFlow((prev) => ({
+        ...prev,
+        state: 'running',
+        error: '',
+        message: 'x402 challenge issued.',
+        requestId: payload?.requestId || prev.requestId,
+        traceId: payload?.traceId || prev.traceId,
+        steps: { ...prev.steps, challenge: true }
+      }));
       if (payload?.traceId) setTraceId(payload.traceId);
-      void refreshMapping();
     });
+
     es.addEventListener('payment_sent', (evt) => {
       const payload = evt?.data ? JSON.parse(evt.data) : {};
-      append('payment_sent', payload);
+      setFlow((prev) => ({
+        ...prev,
+        state: 'running',
+        error: '',
+        message: 'Payment sent on-chain.',
+        txHash: payload?.txHash || payload?.paymentTxHash || prev.txHash,
+        steps: { ...prev.steps, challenge: true, payment: true }
+      }));
       if (payload?.traceId) setTraceId(payload.traceId);
-      void Promise.allSettled([refreshMapping(), refreshOnchain()]);
     });
+
     es.addEventListener('proof_submitted', (evt) => {
       const payload = evt?.data ? JSON.parse(evt.data) : {};
-      append('proof_submitted', payload);
+      setFlow((prev) => ({
+        ...prev,
+        state: 'running',
+        error: '',
+        message: 'Payment proof submitted.',
+        steps: { ...prev.steps, challenge: true, payment: true, proof: true }
+      }));
       if (payload?.traceId) setTraceId(payload.traceId);
     });
+
     es.addEventListener('unlocked', (evt) => {
       const payload = evt?.data ? JSON.parse(evt.data) : {};
-      append('unlocked', payload);
+      setFlow((prev) => ({
+        ...prev,
+        state: 'success',
+        message: 'Transaction completed and verification passed.',
+        error: '',
+        traceId: payload?.traceId || prev.traceId,
+        txHash: payload?.txHash || payload?.paymentTxHash || prev.txHash,
+        steps: {
+          ...prev.steps,
+          challenge: true,
+          payment: true,
+          proof: true,
+          onchain: true,
+          done: true
+        }
+      }));
       if (payload?.traceId) setTraceId(payload.traceId);
-      void Promise.allSettled([refreshMapping(), refreshOnchain()]);
     });
+
     es.addEventListener('failed', (evt) => {
       const payload = evt?.data ? JSON.parse(evt.data) : {};
-      append('failed', payload);
+      setFlow((prev) => ({
+        ...prev,
+        state: 'error',
+        message: 'Workflow failed.',
+        error: payload?.reason || payload?.error || 'Unknown error',
+        traceId: payload?.traceId || prev.traceId
+      }));
       if (payload?.traceId) setTraceId(payload.traceId);
-      if (payload?.reason) setWorkflowError(String(payload.reason));
     });
-    es.onerror = () => {
-      // fallback is polling already
-    };
+
     return () => es.close();
   }, []);
 
@@ -232,43 +291,18 @@ export default function DashboardPage({
     ];
   };
 
-  const syncGatewayPolicy = async () => {
-    const maxPerTx = Number(singleLimit);
-    const daily = Number(dailyLimit);
-    if (!Number.isFinite(maxPerTx) || maxPerTx <= 0) {
-      throw new Error('Single Tx Limit must be a positive number.');
-    }
-    if (!Number.isFinite(daily) || daily <= 0) {
-      throw new Error('Daily Limit must be a positive number.');
-    }
-    if (!gatewayRecipient || !ethers.isAddress(gatewayRecipient)) {
-      throw new Error('Gateway allowed recipient must be a valid address.');
-    }
-    const resp = await fetch('/api/x402/policy', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        maxPerTx,
-        dailyLimit: daily,
-        allowedRecipients: [gatewayRecipient]
-      })
-    });
-    const body = await resp.json().catch(() => ({}));
-    if (!resp.ok || !body?.ok) {
-      throw new Error(body?.reason || `Gateway policy sync failed: HTTP ${resp.status}`);
-    }
-  };
-
   const syncSessionRuntime = async ({
     sessionAddress = sessionKey,
     sessionPrivateKey = sessionPrivKey,
     currentSessionId = sessionId,
     currentSessionTxHash = sessionTxHash
   } = {}) => {
-    if (!sessionAddress || !sessionPrivateKey || !currentSessionId) {
-      throw new Error('Missing session key/session private key/session id. Generate session first.');
-    }
-    const resp = await fetch('/api/session/runtime/sync', {
+    const hours = Number(sessionHours);
+    const expiresAt = Number.isFinite(hours) && hours > 0
+      ? Math.floor(Date.now() / 1000) + Math.floor(hours * 3600)
+      : 0;
+
+    const resp = await fetch(apiUrl('/api/session/runtime/sync'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -278,21 +312,17 @@ export default function DashboardPage({
         sessionPrivateKey,
         sessionId: currentSessionId,
         sessionTxHash: currentSessionTxHash,
-        expiresAt: 0,
+        expiresAt,
         maxPerTx: Number(singleLimit),
         dailyLimit: Number(dailyLimit),
-        gatewayRecipient,
         source: 'dashboard-setup'
       })
     });
+
     const body = await resp.json().catch(() => ({}));
     if (!resp.ok || !body?.ok) {
       throw new Error(body?.reason || body?.error || `Session runtime sync failed: HTTP ${resp.status}`);
     }
-    const rt = body?.runtime || {};
-    setRuntimeSyncInfo(
-      `Runtime synced: ${rt.sessionAddress || '-'} (${new Date(Number(rt.updatedAt || Date.now())).toISOString()})`
-    );
     await refreshRuntime();
   };
 
@@ -323,50 +353,27 @@ export default function DashboardPage({
       setSessionId(nextSessionId);
       setSessionTxHash(tx.hash);
 
-      await syncGatewayPolicy();
       await syncSessionRuntime({
         sessionAddress: generatedSessionWallet.address,
         sessionPrivateKey: generatedSessionWallet.privateKey,
         currentSessionId: nextSessionId,
         currentSessionTxHash: tx.hash
       });
-      setStatus(`Session created + rules applied + runtime synced: ${tx.hash}`);
+
+      setFlow((prev) => ({
+        ...prev,
+        steps: { ...prev.steps, session: true },
+        message: 'Session setup completed.'
+      }));
+      setStatus(`Session created and synced: ${tx.hash}`);
     } catch (err) {
       setStatus(`Create session failed: ${err.message}`);
-    }
-  };
-
-  const handleSyncRuntime = async () => {
-    try {
-      setStatus('Syncing session runtime...');
-      await syncSessionRuntime();
-      setStatus('Session runtime synced successfully.');
-    } catch (err) {
-      setStatus(`Runtime sync failed: ${err.message}`);
-    }
-  };
-
-  const handleSyncPolicy = async () => {
-    try {
-      setStatus('Syncing gateway policy...');
-      await syncGatewayPolicy();
-      setStatus('Gateway policy synced successfully.');
-      await refreshRuntime();
-    } catch (err) {
-      setStatus(`Policy sync failed: ${err.message}`);
-    }
-  };
-
-  const handleSetAllowedToken = async () => {
-    try {
-      setStatus('Setting allowed token...');
-      const signer = await getSigner();
-      const data = accountInterface.encodeFunctionData('addSupportedToken', [allowedToken]);
-      const tx = await signer.sendTransaction({ to: accountAddress, data });
-      await tx.wait();
-      setStatus(`Allowed token updated: ${tx.hash}`);
-    } catch (err) {
-      setStatus(`Set token failed: ${err.message}`);
+      setFlow((prev) => ({
+        ...prev,
+        state: 'error',
+        message: 'Session setup failed.',
+        error: err.message
+      }));
     }
   };
 
@@ -375,9 +382,11 @@ export default function DashboardPage({
     const userText = chatInput.trim();
     setChatInput('');
     setChatBusy(true);
+    setFlow((prev) => ({ ...prev, state: 'running', message: 'Agent is processing your command.', error: '' }));
     setChatHistory((prev) => [...prev, { role: 'user', text: userText, ts: Date.now() }]);
+
     try {
-      const resp = await fetch('/api/chat/agent', {
+      const resp = await fetch(apiUrl('/api/chat/agent'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -391,154 +400,110 @@ export default function DashboardPage({
         throw new Error(body?.reason || body?.error || `chat failed: HTTP ${resp.status}`);
       }
       if (body.traceId) setTraceId(body.traceId);
+      setFlow((prev) => ({
+        ...prev,
+        state: body.state === 'intent_recognized' ? 'running' : prev.state,
+        message: body.step ? `Agent step: ${body.step}` : prev.message
+      }));
       setChatHistory((prev) => [
         ...prev,
-        { role: 'agent', text: body.reply || '(no reply)', ts: Date.now(), traceId: body.traceId || '' }
+        {
+          role: 'agent',
+          text: body.reply || '(no reply)',
+          ts: Date.now(),
+          traceId: body.traceId || '',
+          state: body.state || '',
+          step: body.step || ''
+        }
       ]);
     } catch (err) {
+      setFlow((prev) => ({
+        ...prev,
+        state: 'error',
+        message: 'Agent request failed.',
+        error: err.message
+      }));
       setChatHistory((prev) => [...prev, { role: 'agent', text: `Error: ${err.message}`, ts: Date.now() }]);
     } finally {
       setChatBusy(false);
     }
   };
 
-  const fetchWorkflow = async (id) => {
-    if (!id) return;
-    const res = await fetch(`/api/workflow/${encodeURIComponent(id)}`);
-    const body = await res.json().catch(() => ({}));
-    if (res.ok && body?.ok) {
-      setWorkflowData(body.workflow || null);
-      if (String(body?.workflow?.state || '').toLowerCase() === 'failed') {
-        setWorkflowError(String(body?.workflow?.error || 'Workflow failed'));
-      }
-      return;
-    }
-    if (res.status !== 404) {
-      throw new Error(body?.reason || body?.error || `workflow status failed: HTTP ${res.status}`);
-    }
-  };
+  const flowIcon = useMemo(() => {
+    if (flow.state === 'running') return '↻';
+    if (flow.state === 'success') return '✓';
+    if (flow.state === 'error') return '✕';
+    return '↻';
+  }, [flow.state]);
 
-  const runWorkflow = async () => {
-    try {
-      setWorkflowBusy(true);
-      setWorkflowError('');
-      setStatus('Running stop-order workflow...');
-      const payload = {
-        symbol: workflowSymbol.trim().toUpperCase(),
-        takeProfit: Number(workflowTakeProfit),
-        stopLoss: Number(workflowStopLoss),
-        sourceAgentId: workflowSourceAgentId.trim() || '1',
-        targetAgentId: workflowTargetAgentId.trim() || '2',
-        traceId: traceId || undefined
-      };
-      const res = await fetch('/api/workflow/stop-order/run', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok || !body?.ok) {
-        throw new Error(body?.reason || body?.error || `workflow run failed: HTTP ${res.status}`);
-      }
-      if (body.traceId) setTraceId(body.traceId);
-      setWorkflowData(body.workflow || null);
-      setStatus(`Workflow finished: ${body.state || 'done'}`);
-    } catch (err) {
-      setWorkflowError(err.message);
-      setStatus(`Workflow failed: ${err.message}`);
-    } finally {
-      setWorkflowBusy(false);
-    }
-  };
+  const flowClass = useMemo(() => {
+    if (flow.state === 'running') return 'running';
+    if (flow.state === 'success') return 'success';
+    if (flow.state === 'error') return 'error';
+    return 'idle';
+  }, [flow.state]);
 
-  const exportEvidence = async () => {
-    try {
-      if (!traceId) {
-        throw new Error('traceId is empty. Run workflow first.');
-      }
-      const res = await fetch(`/api/evidence/export?traceId=${encodeURIComponent(traceId)}`);
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok || !body?.ok) {
-        throw new Error(body?.reason || body?.error || `export failed: HTTP ${res.status}`);
-      }
-      const blob = new Blob([JSON.stringify(body.evidence || {}, null, 2)], {
-        type: 'application/json;charset=utf-8'
-      });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `kiteclaw-evidence-${traceId}.json`;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(url);
-      setStatus(`Evidence exported for ${traceId}`);
-    } catch (err) {
-      setWorkflowError(err.message);
-    }
-  };
-
-  const setupReady = useMemo(
-    () =>
-      Boolean(sessionKey && sessionId) &&
-      Boolean(runtime?.hasSessionPrivateKey) &&
-      String(runtime?.aaWallet || '').toLowerCase() === String(accountAddress || '').toLowerCase(),
-    [sessionKey, sessionId, runtime, accountAddress]
+  const statusSteps = useMemo(
+    () => [
+      { key: 'session', label: 'Session Ready' },
+      { key: 'identity', label: 'Identity Verified' },
+      { key: 'challenge', label: 'x402 Challenge' },
+      { key: 'payment', label: 'Payment Sent' },
+      { key: 'proof', label: 'Proof Submitted' },
+      { key: 'onchain', label: 'On-chain Settled' },
+      { key: 'done', label: 'Completed' }
+    ],
+    []
   );
 
-  const latestMapping = mappingRows[0] || null;
-  const latestOnchain = onchainRows[0] || null;
+  const currentStep = useMemo(() => {
+    const firstPending = statusSteps.find((step) => !flow.steps[step.key]);
+    if (flow.state === 'success') return { label: 'Completed', key: 'done' };
+    if (flow.state === 'error') return { label: 'Failed', key: 'failed' };
+    return firstPending || { label: 'Completed', key: 'done' };
+  }, [statusSteps, flow.steps, flow.state]);
+
+  const completedSteps = useMemo(
+    () => statusSteps.filter((step) => Boolean(flow.steps[step.key])),
+    [statusSteps, flow.steps]
+  );
+
+  const setupReady = Boolean(
+    (runtime?.hasSessionPrivateKey && runtime?.sessionAddress) || (sessionKey && sessionId)
+  );
 
   return (
     <div className="transfer-container transfer-shell">
       <header className="shell-header">
-        <div className="shell-brand">
+        <div className="shell-title-inline shell-title-fused">
           <span className="brand-badge">KITECLAW</span>
-          <p>Agent-native Payments Dashboard</p>
+          <h1>DASHBOARD</h1>
         </div>
         <div className="top-entry">
+          <button className="icon-refresh-btn" onClick={() => void refreshDashboard()} title="Refresh Dashboard" aria-label="Refresh Dashboard">↻</button>
           {onBack && <button className="link-btn" onClick={onBack}>Switch Wallet</button>}
-          {onOpenTransfer && <button className="link-btn" onClick={onOpenTransfer}>Open Transfer</button>}
-          {onOpenVault && <button className="link-btn" onClick={onOpenVault}>Open Vault</button>}
-          {onOpenRecords && <button className="link-btn" onClick={onOpenRecords}>Transfer Records</button>}
-          {onOpenOnChain && <button className="link-btn" onClick={onOpenOnChain}>On-chain Confirmation</button>}
-          {onOpenAbuseCases && <button className="link-btn" onClick={onOpenAbuseCases}>Abuse / Limit Cases</button>}
+          {onOpenTransfer && <button className="link-btn" onClick={onOpenTransfer}>Transfer</button>}
+          {onOpenRecords && <button className="link-btn" onClick={onOpenRecords}>Records</button>}
+          {onOpenOnChain && <button className="link-btn" onClick={onOpenOnChain}>Audit</button>}
         </div>
       </header>
-
-      <section className="dashboard-kpi-grid">
-        <article className="vault-card dashboard-kpi-card">
-          <h3>Pending</h3>
-          <p>{kpi.pending}</p>
-        </article>
-        <article className="vault-card dashboard-kpi-card">
-          <h3>Paid</h3>
-          <p>{kpi.paid}</p>
-        </article>
-        <article className="vault-card dashboard-kpi-card">
-          <h3>Failed</h3>
-          <p>{kpi.failed}</p>
-        </article>
-        <article className="vault-card dashboard-kpi-card">
-          <h3>Today Spend</h3>
-          <p>{kpi.todaySpend} USDT</p>
-        </article>
-      </section>
 
       <section className="dashboard-main-grid">
         <article className="vault-card dashboard-chat-card">
           <h2>Chat Agent</h2>
-          <div className="dashboard-chat-history">
+          <div className="dashboard-chat-history dashboard-chat-history-tall">
             {chatHistory.length === 0 && <div className="dashboard-empty">No messages yet.</div>}
             {chatHistory.map((item, idx) => (
               <div key={`${item.ts}-${idx}`} className={`dashboard-chat-msg ${item.role}`}>
                 <strong>{item.role === 'user' ? 'You' : 'KiteClaw'}</strong>
                 <p>{item.text}</p>
                 {item.traceId && <small>traceId: {item.traceId}</small>}
+                {item.step && <small>step: {item.step}</small>}
+                {item.state && <small>state: {item.state}</small>}
               </div>
             ))}
           </div>
-          <div className="request-input">
+          <div className="request-input dashboard-chat-input-bottom">
             <input
               value={chatInput}
               onChange={(e) => setChatInput(e.target.value)}
@@ -555,198 +520,89 @@ export default function DashboardPage({
 
         <aside className="dashboard-status-stack">
           <article className="vault-card">
-            <h2>Session</h2>
-            <div className="result-row"><span className="label">Setup</span><span className="value">{setupReady ? 'ready' : 'not ready'}</span></div>
-            <div className="result-row"><span className="label">AA Wallet</span><span className="value hash">{shortHash(accountAddress)}</span></div>
-            <div className="result-row"><span className="label">Session</span><span className="value hash">{shortHash(runtime?.sessionAddress || sessionKey)}</span></div>
-            <div className="result-row"><span className="label">Session ID</span><span className="value hash">{shortHash(runtime?.sessionId || sessionId)}</span></div>
+            <h2>Dynamic Status</h2>
+            <div className="status-current-card">
+              <span className="status-current-title">Current Stage</span>
+              <strong className="status-current-label">{currentStep.label}</strong>
+              <small className="status-current-message">{flow.message || '-'}</small>
+            </div>
+            {completedSteps.length > 0 && (
+              <details className="status-history">
+                <summary>Completed Steps ({completedSteps.length})</summary>
+                <div className="status-history-chips">
+                  {completedSteps.map((step) => (
+                    <span key={step.key} className="status-chip">
+                      {step.label}
+                    </span>
+                  ))}
+                </div>
+              </details>
+            )}
+            <div className="result-row">
+              <span className="label">State</span>
+              <span className="value">{flow.state}</span>
+            </div>
+            <div className="result-row">
+              <span className="label">OpenClaw</span>
+              <span className="value">{openclawHealth.connected ? 'online' : 'offline'}</span>
+            </div>
+            <div className="result-row">
+              <span className="label">Mode</span>
+              <span className="value">{openclawHealth.mode || '-'}</span>
+            </div>
+            <div className="result-row">
+              <span className="label">Message</span>
+              <span className="value">{flow.message || '-'}</span>
+            </div>
+            <div className="result-row">
+              <span className="label">Request</span>
+              <span className="value hash">{shortHash(flow.requestId)}</span>
+            </div>
+            <div className="result-row">
+              <span className="label">Tx</span>
+              <span className="value hash">{shortHash(flow.txHash)}</span>
+            </div>
+            {flow.error && <div className="request-error">{flow.error}</div>}
+            {identityError && <div className="request-error">{identityError}</div>}
+            {!openclawHealth.connected && <div className="request-error">OpenClaw: {openclawHealth.reason}</div>}
           </article>
-          <article className="vault-card">
-            <h2>x402</h2>
-            <div className="result-row"><span className="label">Latest</span><span className="value">{latestMapping?.status || '-'}</span></div>
-            <div className="result-row"><span className="label">Action</span><span className="value">{latestMapping?.action || '-'}</span></div>
-            <div className="result-row"><span className="label">Request</span><span className="value hash">{shortHash(latestMapping?.requestId || '')}</span></div>
-            <div className="result-row"><span className="label">Tx</span><span className="value hash">{shortHash(latestMapping?.paymentTxHash || '')}</span></div>
+
+          <article className="vault-card loop-indicator-card">
+            <h2>Payment Loop</h2>
+            <div className={`loop-indicator ${flowClass}`}>
+              <span className="loop-indicator-icon">{flowIcon}</span>
+            </div>
+            <p className="loop-indicator-text">
+              {flow.state === 'running' && 'Processing payment + verification...'}
+              {flow.state === 'success' && 'Transaction completed, verification passed.'}
+              {flow.state === 'error' && 'Workflow failed. Check error message above.'}
+              {flow.state === 'idle' && 'Idle. Waiting for next task.'}
+            </p>
           </article>
+
           <article className="vault-card">
-            <h2>On-chain</h2>
-            <div className="result-row"><span className="label">Latest Tx</span><span className="value hash">{shortHash(latestOnchain?.txHash || '')}</span></div>
-            <div className="result-row"><span className="label">Amount</span><span className="value">{latestOnchain?.amount || '-'}</span></div>
-            <div className="result-row"><span className="label">To</span><span className="value hash">{shortHash(latestOnchain?.to || '')}</span></div>
-            <div className="result-row"><span className="label">Time</span><span className="value">{latestOnchain?.time || '-'}</span></div>
-          </article>
-          <article className="vault-card">
-            <h2>Identity</h2>
-            <div className="result-row"><span className="label">Configured</span><span className="value">{identityProfile?.configured ? 'yes' : 'no'}</span></div>
-            <div className="result-row"><span className="label">Registry</span><span className="value hash">{shortHash(identityProfile?.registry || '')}</span></div>
-            <div className="result-row"><span className="label">Agent ID</span><span className="value">{identityProfile?.agentId ?? '-'}</span></div>
-            <div className="result-row"><span className="label">Wallet</span><span className="value hash">{shortHash(identityProfile?.agentWallet || '')}</span></div>
+            <h2>Session Policy</h2>
+            <div className="result-row"><span className="label">Ready</span><span className="value">{setupReady ? 'yes' : 'no'}</span></div>
+
+            <div className="vault-actions">
+              <div className="vault-input">
+                <label>Single Tx Limit (USDT)</label>
+                <input value={singleLimit} onChange={(e) => setSingleLimit(e.target.value)} />
+              </div>
+              <div className="vault-input">
+                <label>Daily Limit (USDT)</label>
+                <input value={dailyLimit} onChange={(e) => setDailyLimit(e.target.value)} />
+              </div>
+              <div className="vault-input">
+                <label>Session Effective (Hours)</label>
+                <input value={sessionHours} onChange={(e) => setSessionHours(e.target.value)} />
+              </div>
+            </div>
+
+            <button onClick={() => void handleCreateSession()}>Generate Session Key & Apply Rules</button>
+            {status && <div className="request-error">{status}</div>}
           </article>
         </aside>
-      </section>
-
-      <section className="vault-card">
-        <h2>Place Stop Order (One-click Workflow)</h2>
-        <div className="vault-actions">
-          <div className="vault-input">
-            <label>Symbol</label>
-            <input value={workflowSymbol} onChange={(e) => setWorkflowSymbol(e.target.value)} />
-          </div>
-          <div className="vault-input">
-            <label>Take Profit</label>
-            <input value={workflowTakeProfit} onChange={(e) => setWorkflowTakeProfit(e.target.value)} />
-          </div>
-          <div className="vault-input">
-            <label>Stop Loss</label>
-            <input value={workflowStopLoss} onChange={(e) => setWorkflowStopLoss(e.target.value)} />
-          </div>
-          <div className="vault-input">
-            <label>Source Agent ID</label>
-            <input value={workflowSourceAgentId} onChange={(e) => setWorkflowSourceAgentId(e.target.value)} />
-          </div>
-          <div className="vault-input">
-            <label>Target Agent ID</label>
-            <input value={workflowTargetAgentId} onChange={(e) => setWorkflowTargetAgentId(e.target.value)} />
-          </div>
-        </div>
-        <div className="vault-actions">
-          <button onClick={() => void runWorkflow()} disabled={workflowBusy}>
-            {workflowBusy ? 'Running...' : 'Run Stop-order Workflow'}
-          </button>
-          <button
-            onClick={() => {
-              if (traceId) void fetchWorkflow(traceId);
-            }}
-            disabled={!traceId}
-          >
-            Refresh Workflow
-          </button>
-          <button onClick={() => void exportEvidence()} disabled={!traceId}>
-            Export Evidence JSON
-          </button>
-        </div>
-        <div className="result-row">
-          <span className="label">Trace ID</span>
-          <span className="value hash">{traceId || '-'}</span>
-        </div>
-        <div className="result-row">
-          <span className="label">State</span>
-          <span className="value">{workflowData?.state || '-'}</span>
-        </div>
-        <div className="result-row">
-          <span className="label">Request ID</span>
-          <span className="value hash">{workflowData?.requestId || '-'}</span>
-        </div>
-        <div className="result-row">
-          <span className="label">Payment Tx</span>
-          <span className="value hash">{workflowData?.txHash || '-'}</span>
-        </div>
-        <div className="result-row">
-          <span className="label">UserOp Hash</span>
-          <span className="value hash">{workflowData?.userOpHash || '-'}</span>
-        </div>
-        {workflowError && <div className="request-error">Workflow Error: {workflowError}</div>}
-        {workflowData?.steps?.length > 0 && (
-          <div className="workflow-timeline">
-            {workflowData.steps.map((step, idx) => (
-              <div className={`workflow-step ${step.status === 'error' ? 'error' : 'ok'}`} key={`${step.at}-${idx}`}>
-                <div className="workflow-step-head">
-                  <strong>{step.name}</strong>
-                  <span>{step.status}</span>
-                </div>
-                <small>{step.at}</small>
-                {step?.details?.reason && <div className="workflow-reason">reason: {step.details.reason}</div>}
-                {!step?.details?.reason && step?.details && (
-                  <div className="workflow-reason">{JSON.stringify(step.details)}</div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
-
-      <section className="vault-card">
-        <h2>Live Event Stream (SSE)</h2>
-        <div className="workflow-timeline">
-          {liveEvents.length === 0 && <div className="dashboard-empty">No live events yet.</div>}
-          {liveEvents.map((evt, idx) => (
-            <div className="workflow-step ok" key={`${evt.at}-${idx}`}>
-              <div className="workflow-step-head">
-                <strong>{evt.label}</strong>
-                <span>event</span>
-              </div>
-              <small>{evt.at}</small>
-              <div className="workflow-reason">{JSON.stringify(evt.payload || {})}</div>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <section className="vault-card">
-        <h2>Session Setup (One-time before OpenClaw auto-run)</h2>
-        <div className="vault-actions">
-          <div className="vault-input">
-            <label>Single Tx Limit (USDT)</label>
-            <input value={singleLimit} onChange={(e) => setSingleLimit(e.target.value)} />
-          </div>
-          <div className="vault-input">
-            <label>Daily Limit (USDT)</label>
-            <input value={dailyLimit} onChange={(e) => setDailyLimit(e.target.value)} />
-          </div>
-          <div className="vault-input">
-            <label>Gateway Allowed Recipient</label>
-            <input value={gatewayRecipient} onChange={(e) => setGatewayRecipient(e.target.value)} />
-          </div>
-        </div>
-        <div className="vault-actions">
-          <div className="vault-input">
-            <label>Allowed Token</label>
-            <input value={allowedToken} onChange={(e) => setAllowedToken(e.target.value)} />
-          </div>
-        </div>
-        <div className="vault-actions">
-          <button onClick={handleCreateSession}>Generate Session Key & Apply Rules</button>
-          <button onClick={handleSyncRuntime}>Sync Session Runtime</button>
-          <button onClick={handleSyncPolicy}>Sync Gateway Policy</button>
-          <button onClick={handleSetAllowedToken}>Set Allowed Token</button>
-          <button onClick={() => void refreshDashboard()}>Refresh Dashboard</button>
-        </div>
-        {runtimeSyncInfo && <div className="request-error">{runtimeSyncInfo}</div>}
-        {status && <div className="request-error">{status}</div>}
-      </section>
-
-      <section className="vault-card x402-table-wrap">
-        <h2>Latest x402 Mapping (20)</h2>
-        <div className="records-head x402-head">
-          <span>Flow</span>
-          <span>Source</span>
-          <span>Target</span>
-          <span>Action</span>
-          <span>Agent</span>
-          <span>Request ID</span>
-          <span>Payer</span>
-          <span>Amount</span>
-          <span>Status</span>
-          <span>Paid At</span>
-          <span>Tx</span>
-        </div>
-        {mappingRows.map((item) => (
-          <div className="records-row x402-row" key={item.requestId}>
-            <span className="records-cell">{item.flowMode || '-'}</span>
-            <span className="records-cell">{item.sourceAgentId || '-'}</span>
-            <span className="records-cell">{item.targetAgentId || '-'}</span>
-            <span className="records-cell">{item.action || '-'}</span>
-            <span className="records-cell">{item.agentId || '-'}</span>
-            <span className="records-cell hash">{item.requestId || '-'}</span>
-            <span className="records-cell hash">{item.payer || '-'}</span>
-            <span className="records-cell">{item.amount || '-'}</span>
-            <span className={`records-cell status ${item.status === 'paid' ? 'success' : item.status === 'pending' ? '' : 'failed'}`}>
-              {item.status || '-'}
-            </span>
-            <span className="records-cell">{item.paidAt || '-'}</span>
-            <span className="records-cell hash">{item.paymentTxHash || '-'}</span>
-          </div>
-        ))}
       </section>
     </div>
   );

@@ -30,7 +30,6 @@ const GOLDSKY_ENDPOINT =
 function Transfer({
   onBack,
   walletState,
-  onOpenVault,
   onOpenAgentSettings,
   onOpenRecords,
   onOpenOnChain,
@@ -217,7 +216,6 @@ function Transfer({
         </div>
         <TransferTopNav
           onBack={onBack}
-          onOpenVault={onOpenVault}
           onOpenAgentSettings={onOpenAgentSettings}
           onOpenRecords={onOpenRecords}
           onOpenOnChain={onOpenOnChain}

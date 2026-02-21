@@ -6,6 +6,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { ethers } from 'ethers';
 import { GokiteAASDK } from '../frontend/src/gokite-aa-sdk.js';
+import { createOpenClawAdapter } from './services/openclawAdapter.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -45,11 +46,118 @@ const BACKEND_BUNDLER_URL =
   process.env.KITEAI_BUNDLER_URL || 'https://bundler-service.staging.gokite.ai/rpc/';
 const BACKEND_ENTRYPOINT_ADDRESS =
   process.env.KITE_ENTRYPOINT_ADDRESS || '0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108';
+const OPENCLAW_BASE_URL = String(process.env.OPENCLAW_BASE_URL || '').trim();
+const OPENCLAW_CHAT_PATH = String(process.env.OPENCLAW_CHAT_PATH || '/api/v1/chat').trim();
+const OPENCLAW_HEALTH_PATH = String(process.env.OPENCLAW_HEALTH_PATH || '/health').trim();
+const OPENCLAW_API_KEY = String(process.env.OPENCLAW_API_KEY || '').trim();
+const OPENCLAW_TIMEOUT_MS = Number(process.env.OPENCLAW_TIMEOUT_MS || 12_000);
 const ERC8004_IDENTITY_REGISTRY = process.env.ERC8004_IDENTITY_REGISTRY || '';
 const ERC8004_AGENT_ID_RAW = process.env.ERC8004_AGENT_ID || '';
 const ERC8004_AGENT_ID = Number.isFinite(Number(ERC8004_AGENT_ID_RAW))
   ? Number(ERC8004_AGENT_ID_RAW)
   : null;
+const API_KEY_ADMIN = String(process.env.KITECLAW_API_KEY_ADMIN || '').trim();
+const API_KEY_AGENT = String(process.env.KITECLAW_API_KEY_AGENT || '').trim();
+const API_KEY_VIEWER = String(process.env.KITECLAW_API_KEY_VIEWER || '').trim();
+const RATE_LIMIT_WINDOW_MS = Number(process.env.KITECLAW_RATE_LIMIT_WINDOW_MS || 60_000);
+const RATE_LIMIT_MAX = Number(process.env.KITECLAW_RATE_LIMIT_MAX || 240);
+
+const ROLE_RANK = {
+  viewer: 1,
+  agent: 2,
+  admin: 3
+};
+
+const openclawAdapter = createOpenClawAdapter({
+  baseUrl: OPENCLAW_BASE_URL,
+  chatPath: OPENCLAW_CHAT_PATH,
+  healthPath: OPENCLAW_HEALTH_PATH,
+  apiKey: OPENCLAW_API_KEY,
+  timeoutMs: OPENCLAW_TIMEOUT_MS
+});
+
+function authConfigured() {
+  return false;
+}
+
+function extractApiKey(req) {
+  const xApiKey = String(req.headers['x-api-key'] || '').trim();
+  if (xApiKey) return xApiKey;
+  const auth = String(req.headers.authorization || '').trim();
+  if (auth.toLowerCase().startsWith('bearer ')) return auth.slice(7).trim();
+  return '';
+}
+
+function resolveRoleByApiKey(key) {
+  if (!key) return '';
+  if (API_KEY_ADMIN && key === API_KEY_ADMIN) return 'admin';
+  if (API_KEY_AGENT && key === API_KEY_AGENT) return 'agent';
+  if (API_KEY_VIEWER && key === API_KEY_VIEWER) return 'viewer';
+  return '';
+}
+
+function requireRole(requiredRole = 'viewer') {
+  return (req, res, next) => {
+    if (!authConfigured()) {
+      req.authRole = 'dev-open';
+      return next();
+    }
+    const providedKey = extractApiKey(req);
+    const role = resolveRoleByApiKey(providedKey);
+    if (!role) {
+      return res.status(401).json({
+        ok: false,
+        error: 'unauthorized',
+        reason: 'Missing or invalid API key.',
+        traceId: req.traceId || ''
+      });
+    }
+    const roleRank = ROLE_RANK[role] || 0;
+    const requiredRank = ROLE_RANK[requiredRole] || ROLE_RANK.viewer;
+    if (roleRank < requiredRank) {
+      return res.status(403).json({
+        ok: false,
+        error: 'forbidden',
+        reason: `Role "${role}" cannot access "${requiredRole}" endpoint.`,
+        traceId: req.traceId || ''
+      });
+    }
+    req.authRole = role;
+    return next();
+  };
+}
+
+function getInternalAgentApiKey() {
+  return API_KEY_AGENT || API_KEY_ADMIN || '';
+}
+
+const rateLimitStore = new Map();
+function getRateKey(req) {
+  const key = extractApiKey(req);
+  if (key) return `k:${key.slice(0, 8)}`;
+  return `ip:${String(req.ip || req.socket?.remoteAddress || 'unknown')}`;
+}
+
+function apiRateLimit(req, res, next) {
+  const now = Date.now();
+  const key = getRateKey(req);
+  const current = rateLimitStore.get(key);
+  if (!current || now - current.startMs >= RATE_LIMIT_WINDOW_MS) {
+    rateLimitStore.set(key, { startMs: now, count: 1 });
+    return next();
+  }
+  current.count += 1;
+  if (current.count > RATE_LIMIT_MAX) {
+    return res.status(429).json({
+      ok: false,
+      error: 'rate_limited',
+      reason: 'Too many API requests',
+      traceId: req.traceId || ''
+    });
+  }
+  return next();
+}
+
 let backendSigner = null;
 if (BACKEND_SIGNER_PRIVATE_KEY) {
   try {
@@ -61,6 +169,17 @@ if (BACKEND_SIGNER_PRIVATE_KEY) {
 
 app.use(cors());
 app.use(express.json());
+app.use((req, res, next) => {
+  const incoming =
+    String(req.headers['x-trace-id'] || '').trim() ||
+    String(req.query.traceId || '').trim() ||
+    String(req.body?.traceId || '').trim();
+  const traceId = incoming || createTraceId('req');
+  req.traceId = traceId;
+  res.setHeader('x-trace-id', traceId);
+  next();
+});
+app.use('/api', apiRateLimit);
 
 const sseClients = new Set();
 
@@ -782,11 +901,11 @@ function assertBackendSigner(res) {
   return true;
 }
 
-app.get('/api/records', (req, res) => {
+app.get('/api/records', requireRole('viewer'), (req, res) => {
   res.json(readRecords());
 });
 
-app.post('/api/records', (req, res) => {
+app.post('/api/records', requireRole('agent'), (req, res) => {
   const record = req.body || {};
   const records = readRecords();
   const normalized = {
@@ -809,11 +928,11 @@ app.post('/api/records', (req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/api/signer/info', (req, res) => {
+app.get('/api/signer/info', requireRole('viewer'), (req, res) => {
   res.json(getBackendSignerState());
 });
 
-app.get('/api/session/runtime', (req, res) => {
+app.get('/api/session/runtime', requireRole('viewer'), (req, res) => {
   const runtime = readSessionRuntime();
   return res.json({
     ok: true,
@@ -826,7 +945,7 @@ app.get('/api/session/runtime', (req, res) => {
   });
 });
 
-app.get('/api/session/runtime/secret', (req, res) => {
+app.get('/api/session/runtime/secret', requireRole('admin'), (req, res) => {
   const runtime = readSessionRuntime();
   return res.json({
     ok: true,
@@ -834,7 +953,7 @@ app.get('/api/session/runtime/secret', (req, res) => {
   });
 });
 
-app.post('/api/session/runtime/sync', (req, res) => {
+app.post('/api/session/runtime/sync', requireRole('admin'), (req, res) => {
   const body = req.body || {};
   const next = writeSessionRuntime({
     aaWallet: body.aaWallet,
@@ -861,12 +980,12 @@ app.post('/api/session/runtime/sync', (req, res) => {
   });
 });
 
-app.delete('/api/session/runtime', (req, res) => {
+app.delete('/api/session/runtime', requireRole('admin'), (req, res) => {
   writeJsonObject(sessionRuntimePath, {});
   return res.json({ ok: true, cleared: true });
 });
 
-app.get('/api/identity', async (req, res) => {
+app.get('/api/identity', requireRole('viewer'), async (req, res) => {
   try {
     const profile = await readIdentityProfile({
       registry: req.query.identityRegistry,
@@ -882,7 +1001,7 @@ app.get('/api/identity', async (req, res) => {
   }
 });
 
-app.get('/api/identity/current', async (req, res) => {
+app.get('/api/identity/current', requireRole('viewer'), async (req, res) => {
   try {
     const profile = await readIdentityProfile({});
     return res.json({ ok: true, profile });
@@ -895,14 +1014,14 @@ app.get('/api/identity/current', async (req, res) => {
   }
 });
 
-app.get('/api/x402/mapping/latest', (req, res) => {
+app.get('/api/x402/mapping/latest', requireRole('viewer'), (req, res) => {
   const limit = Math.max(1, Math.min(Number(req.query.limit || 20), 200));
   const rows = readX402Requests().map(mapX402Item).slice(0, limit);
   const kpi = computeDashboardKpi(readX402Requests());
   return res.json({ ok: true, total: rows.length, kpi, items: rows });
 });
 
-app.get('/api/onchain/latest', (req, res) => {
+app.get('/api/onchain/latest', requireRole('viewer'), (req, res) => {
   const limit = Math.max(1, Math.min(Number(req.query.limit || 20), 200));
   const paidRows = readX402Requests()
     .filter((item) => String(item.status || '').toLowerCase() === 'paid' && (item.paymentTxHash || item?.paymentProof?.txHash))
@@ -954,48 +1073,93 @@ app.get('/api/onchain/latest', (req, res) => {
   return res.json({ ok: true, total: dedup.length, items: dedup.slice(0, limit) });
 });
 
-app.post('/api/chat/agent', (req, res) => {
+app.post('/api/chat/agent', requireRole('agent'), async (req, res) => {
   const message = String(req.body?.message || '').trim();
   const sessionId = String(req.body?.sessionId || '').trim();
   const traceId = String(req.body?.traceId || `trace_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`).trim();
 
   if (!message) {
-    return res.status(400).json({ ok: false, error: 'message_required' });
+    return res.status(400).json({
+      ok: false,
+      error: 'message_required',
+      reason: 'message is required',
+      traceId
+    });
   }
 
-  const lower = message.toLowerCase();
-  let reply = 'Received. Use "Place stop order BTC-USDT TP 80000 SL 50000" to start the payment workflow.';
-  const suggestions = [];
-
-  if (lower.includes('stop') || lower.includes('tp') || lower.includes('sl')) {
-    reply =
-      'Intent recognized: stop-order request. Next step: call workflow endpoint POST /api/workflow/stop-order/run with symbol/takeProfit/stopLoss.';
-    suggestions.push({
-      action: 'place_stop_order',
-      endpoint: '/api/workflow/stop-order/run',
-      params: {
-        symbol: 'BTC-USDT',
-        takeProfit: 80000,
-        stopLoss: 50000,
-        sourceAgentId: KITE_AGENT1_ID,
-        targetAgentId: KITE_AGENT2_ID
+  try {
+    const runtime = readSessionRuntime();
+    const result = await openclawAdapter.chat({
+      message,
+      sessionId,
+      traceId,
+      context: {
+        aaWallet: runtime?.aaWallet || '',
+        owner: runtime?.owner || '',
+        runtimeReady: Boolean(runtime?.sessionAddress && runtime?.hasSessionPrivateKey)
       }
     });
-  } else if (lower.includes('status') || lower.includes('runtime')) {
-    const runtime = readSessionRuntime();
-    reply = `Runtime status: ${runtime?.sessionAddress ? 'ready' : 'not_ready'}.`;
-  }
 
-  return res.json({
-    ok: true,
-    reply,
-    traceId,
-    sessionId: sessionId || null,
-    suggestions
-  });
+    if (!result?.ok) {
+      return res.status(result?.statusCode || 503).json({
+        ok: false,
+        error: result?.error || 'openclaw_adapter_error',
+        reason: result?.reason || 'OpenClaw adapter failed',
+        traceId: result?.traceId || traceId
+      });
+    }
+
+    return res.json({
+      ok: true,
+      reply: result.reply || 'Received.',
+      traceId: result.traceId || traceId,
+      sessionId: sessionId || null,
+      state: result.state || 'received',
+      step: result.step || 'chat_received',
+      suggestions: Array.isArray(result.suggestions) ? result.suggestions : []
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: 'chat_agent_internal_error',
+      reason: error?.message || 'chat failed',
+      traceId
+    });
+  }
 });
 
-app.get('/api/events/stream', (req, res) => {
+app.get('/api/chat/agent/health', requireRole('viewer'), async (req, res) => {
+  try {
+    const health = await openclawAdapter.health();
+    if (!health?.ok) {
+      return res.status(503).json({
+        ok: false,
+        error: 'openclaw_unreachable',
+        mode: health?.mode || 'remote',
+        connected: false,
+        reason: health?.reason || 'OpenClaw health check failed',
+        traceId: req.traceId || ''
+      });
+    }
+    return res.json({
+      ok: true,
+      mode: health.mode || 'local-fallback',
+      connected: Boolean(health.connected),
+      reason: health.reason || 'ok',
+      traceId: req.traceId || ''
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: 'openclaw_health_error',
+      connected: false,
+      reason: error?.message || 'OpenClaw health failed',
+      traceId: req.traceId || ''
+    });
+  }
+});
+
+app.get('/api/events/stream', requireRole('viewer'), (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
@@ -1018,7 +1182,7 @@ app.get('/api/events/stream', (req, res) => {
   });
 });
 
-app.post('/api/workflow/stop-order/run', async (req, res) => {
+app.post('/api/workflow/stop-order/run', requireRole('agent'), async (req, res) => {
   const symbol = String(req.body?.symbol || 'BTC-USDT').trim().toUpperCase();
   const takeProfit = Number(req.body?.takeProfit);
   const stopLoss = Number(req.body?.stopLoss);
@@ -1088,9 +1252,14 @@ app.post('/api/workflow/stop-order/run', async (req, res) => {
     workflow.updatedAt = new Date().toISOString();
     upsertWorkflow(workflow);
 
+    const internalApiKey = getInternalAgentApiKey();
+    const payHeaders = { 'Content-Type': 'application/json' };
+    if (internalApiKey) {
+      payHeaders['x-api-key'] = internalApiKey;
+    }
     const payResp = await fetch(`http://127.0.0.1:${PORT}/api/session/pay`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: payHeaders,
       body: JSON.stringify({
         tokenAddress: accept.tokenAddress,
         recipient: accept.recipient,
@@ -1182,7 +1351,7 @@ app.post('/api/workflow/stop-order/run', async (req, res) => {
   }
 });
 
-app.get('/api/workflow/:traceId', (req, res) => {
+app.get('/api/workflow/:traceId', requireRole('viewer'), (req, res) => {
   const traceId = String(req.params.traceId || '').trim();
   if (!traceId) {
     return res.status(400).json({ ok: false, error: 'traceId_required' });
@@ -1195,7 +1364,7 @@ app.get('/api/workflow/:traceId', (req, res) => {
   return res.json({ ok: true, traceId, workflow });
 });
 
-app.get('/api/evidence/export', (req, res) => {
+app.get('/api/evidence/export', requireRole('viewer'), (req, res) => {
   const traceId = String(req.query.traceId || '').trim();
   if (!traceId) {
     return res.status(400).json({ ok: false, error: 'traceId_required' });
@@ -1443,7 +1612,7 @@ async function handleA2AStopOrders(body = {}) {
   };
 }
 
-app.post('/api/a2a/tasks/stop-orders', async (req, res) => {
+app.post('/api/a2a/tasks/stop-orders', requireRole('agent'), async (req, res) => {
   const result = await handleA2AStopOrders(req.body);
   return res.status(result.status).json(result.body);
 });
@@ -1485,7 +1654,7 @@ app.get('/api/skill/openclaw/manifest', (req, res) => {
   });
 });
 
-app.post('/api/skill/openclaw/invoke', async (req, res) => {
+app.post('/api/skill/openclaw/invoke', requireRole('agent'), async (req, res) => {
   const result = await handleA2AStopOrders(req.body);
   return res.status(result.status).json({
     ok: result.status >= 200 && result.status < 300,
@@ -1494,7 +1663,7 @@ app.post('/api/skill/openclaw/invoke', async (req, res) => {
   });
 });
 
-app.get('/api/skill/openclaw/status/:requestId', (req, res) => {
+app.get('/api/skill/openclaw/status/:requestId', requireRole('agent'), (req, res) => {
   const requestId = String(req.params.requestId || '').trim();
   if (!requestId) {
     return res.status(400).json({ ok: false, error: 'requestId is required' });
@@ -1518,7 +1687,7 @@ app.get('/api/skill/openclaw/status/:requestId', (req, res) => {
   });
 });
 
-app.get('/api/skill/openclaw/evidence/:requestId', (req, res) => {
+app.get('/api/skill/openclaw/evidence/:requestId', requireRole('agent'), (req, res) => {
   const requestId = String(req.params.requestId || '').trim();
   if (!requestId) {
     return res.status(400).json({ ok: false, error: 'requestId is required' });
@@ -1547,7 +1716,7 @@ app.get('/api/skill/openclaw/evidence/:requestId', (req, res) => {
   });
 });
 
-app.post('/api/signer/sign-userop-hash', async (req, res) => {
+app.post('/api/signer/sign-userop-hash', requireRole('agent'), async (req, res) => {
   if (!assertBackendSigner(res)) return;
   const userOpHash = String(req.body?.userOpHash || '').trim();
   if (!/^0x[0-9a-fA-F]{64}$/.test(userOpHash)) {
@@ -1561,7 +1730,7 @@ app.post('/api/signer/sign-userop-hash', async (req, res) => {
   }
 });
 
-app.post('/api/x402/kol-score', async (req, res) => {
+app.post('/api/x402/kol-score', requireRole('agent'), async (req, res) => {
   const body = req.body || {};
   const query = String(body.query || '').trim();
   const payer = String(body.payer || '').trim();
@@ -1753,7 +1922,7 @@ app.post('/api/x402/kol-score', async (req, res) => {
   });
 });
 
-app.post('/api/x402/transfer-intent', async (req, res) => {
+app.post('/api/x402/transfer-intent', requireRole('agent'), async (req, res) => {
   const body = req.body || {};
   const payer = String(body.payer || '').trim();
   const requestId = String(body.requestId || '').trim();
@@ -1898,11 +2067,21 @@ app.post('/api/x402/transfer-intent', async (req, res) => {
   });
 });
 
-app.get('/api/x402/policy', (req, res) => {
-  res.json({ ok: true, policy: buildPolicySnapshot() });
+app.get('/api/x402/policy', requireRole('viewer'), (req, res) => {
+  res.json({ ok: true, traceId: req.traceId, policy: buildPolicySnapshot() });
 });
 
-app.post('/api/x402/policy', (req, res) => {
+app.get('/api/auth/info', requireRole('viewer'), (req, res) => {
+  res.json({
+    ok: true,
+    traceId: req.traceId,
+    authConfigured: authConfigured(),
+    acceptedHeaders: ['x-api-key', 'Authorization: Bearer <key>'],
+    roles: ['viewer', 'agent', 'admin']
+  });
+});
+
+app.post('/api/x402/policy', requireRole('admin'), (req, res) => {
   const body = req.body || {};
   const nextPolicy = writePolicyConfig({
     maxPerTx: body.maxPerTx,
@@ -1910,10 +2089,21 @@ app.post('/api/x402/policy', (req, res) => {
     allowedRecipients: body.allowedRecipients,
     revokedPayers: body.revokedPayers
   });
-  res.json({ ok: true, policy: nextPolicy });
+  res.json({ ok: true, traceId: req.traceId, policy: nextPolicy });
 });
 
-app.post('/api/x402/policy/revoke', (req, res) => {
+app.post('/api/policy/update', requireRole('admin'), (req, res) => {
+  const body = req.body || {};
+  const nextPolicy = writePolicyConfig({
+    maxPerTx: body.maxPerTx,
+    dailyLimit: body.dailyLimit,
+    allowedRecipients: body.allowedRecipients,
+    revokedPayers: body.revokedPayers
+  });
+  res.json({ ok: true, traceId: req.traceId, policy: nextPolicy });
+});
+
+app.post('/api/x402/policy/revoke', requireRole('admin'), (req, res) => {
   const payer = normalizeAddress(req.body?.payer || '');
   if (!payer || !ethers.isAddress(payer)) {
     return res.status(400).json({ error: 'invalid_payer' });
@@ -1929,11 +2119,27 @@ app.post('/api/x402/policy/revoke', (req, res) => {
     ok: true,
     action: 'revoked',
     payer,
+    traceId: req.traceId,
     policy: next
   });
 });
 
-app.post('/api/x402/policy/unrevoke', (req, res) => {
+app.post('/api/policy/revoke', requireRole('admin'), (req, res) => {
+  const payer = normalizeAddress(req.body?.payer || '');
+  if (!payer || !ethers.isAddress(payer)) {
+    return res.status(400).json({ error: 'invalid_payer' });
+  }
+  const current = buildPolicySnapshot();
+  const revoked = new Set(current.revokedPayers || []);
+  revoked.add(payer);
+  const next = writePolicyConfig({
+    ...current,
+    revokedPayers: Array.from(revoked)
+  });
+  return res.json({ ok: true, action: 'revoked', payer, traceId: req.traceId, policy: next });
+});
+
+app.post('/api/x402/policy/unrevoke', requireRole('admin'), (req, res) => {
   const payer = normalizeAddress(req.body?.payer || '');
   if (!payer || !ethers.isAddress(payer)) {
     return res.status(400).json({ error: 'invalid_payer' });
@@ -1948,11 +2154,26 @@ app.post('/api/x402/policy/unrevoke', (req, res) => {
     ok: true,
     action: 'unrevoked',
     payer,
+    traceId: req.traceId,
     policy: next
   });
 });
 
-app.get('/api/x402/policy-failures', (req, res) => {
+app.post('/api/policy/unrevoke', requireRole('admin'), (req, res) => {
+  const payer = normalizeAddress(req.body?.payer || '');
+  if (!payer || !ethers.isAddress(payer)) {
+    return res.status(400).json({ error: 'invalid_payer' });
+  }
+  const current = buildPolicySnapshot();
+  const revoked = new Set((current.revokedPayers || []).filter((addr) => addr !== payer));
+  const next = writePolicyConfig({
+    ...current,
+    revokedPayers: Array.from(revoked)
+  });
+  return res.json({ ok: true, action: 'unrevoked', payer, traceId: req.traceId, policy: next });
+});
+
+app.get('/api/x402/policy-failures', requireRole('viewer'), (req, res) => {
   const limit = Math.max(1, Math.min(Number(req.query.limit || 50), 200));
   const code = String(req.query.code || '').trim().toLowerCase();
   const action = String(req.query.action || '').trim().toLowerCase();
@@ -1966,7 +2187,7 @@ app.get('/api/x402/policy-failures', (req, res) => {
   res.json({ ok: true, total: rows.length, items: rows.slice(0, limit) });
 });
 
-app.get('/api/x402/requests', (req, res) => {
+app.get('/api/x402/requests', requireRole('viewer'), (req, res) => {
   const requestId = String(req.query.requestId || '').trim().toLowerCase();
   const txHash = String(req.query.txHash || '').trim().toLowerCase();
   const status = String(req.query.status || '').trim().toLowerCase();
@@ -1986,7 +2207,7 @@ app.get('/api/x402/requests', (req, res) => {
 });
 
 // AA Session Payment Endpoint
-app.post('/api/session/pay', async (req, res) => {
+app.post('/api/session/pay', requireRole('agent'), async (req, res) => {
   try {
     const runtime = readSessionRuntime();
 

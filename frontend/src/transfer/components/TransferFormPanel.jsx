@@ -31,7 +31,7 @@
           Action:
           <select value={actionType} onChange={(e) => onActionChange(e.target.value)} disabled={loading}>
             <option value="kol-score">KOL Score Report (x402)</option>
-            <option value="reactive-stop-orders">Reactive Contracts - Stop Orders (agent2)</option>
+            <option value="reactive-stop-orders">Reactive Stop Orders (demo action, agent2)</option>
           </select>
         </label>
       </div>

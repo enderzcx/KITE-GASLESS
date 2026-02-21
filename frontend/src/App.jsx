@@ -1,14 +1,12 @@
-import { useState } from 'react';
-import { ethers } from 'ethers';
-import Transfer from './Transfer';
-import DashboardPage from './DashboardPage';
-import LoginPage from './LoginPage';
-import VaultPage from './VaultPage';
-import AgentSettingsPage from './AgentSettingsPage';
-import RecordsPage from './RecordsPage';
-import OnChainPage from './OnChainPage';
-import AbuseCasesPage from './AbuseCasesPage';
-import { GokiteAASDK } from './gokite-aa-sdk';
+import { Suspense, lazy, useState } from 'react';
+const Transfer = lazy(() => import('./Transfer'));
+const DashboardPage = lazy(() => import('./DashboardPage'));
+const LoginPage = lazy(() => import('./LoginPage'));
+const VaultPage = lazy(() => import('./VaultPage'));
+const AgentSettingsPage = lazy(() => import('./AgentSettingsPage'));
+const RecordsPage = lazy(() => import('./RecordsPage'));
+const OnChainPage = lazy(() => import('./OnChainPage'));
+const AbuseCasesPage = lazy(() => import('./AbuseCasesPage'));
 import './App.css';
 
 function App() {
@@ -28,6 +26,11 @@ function App() {
     'https://bundler-service.staging.gokite.ai/rpc/';
 
   const connectWalletAndEnter = async () => {
+    const [{ ethers }, { GokiteAASDK }] = await Promise.all([
+      import('ethers'),
+      import('./gokite-aa-sdk')
+    ]);
+
     if (typeof window.ethereum === 'undefined') {
       throw new Error('Please install MetaMask or a compatible wallet first');
     }
@@ -49,38 +52,40 @@ function App() {
 
   return (
     <div className="app">
-      {view === 'login' && <LoginPage onLogin={connectWalletAndEnter} />}
-      {view === 'transfer' && (
-        <Transfer
-          walletState={walletState}
-          onBack={() => setView('login')}
-          onOpenVault={() => setView('vault')}
-          onOpenAgentSettings={() => setView('dashboard')}
-          onOpenRecords={() => setView('records')}
-          onOpenOnChain={() => setView('on-chain')}
-          onOpenAbuseCases={() => setView('abuse-cases')}
-        />
-      )}
-      {view === 'dashboard' && (
-        <DashboardPage
-          walletState={walletState}
-          onBack={() => setView('login')}
-          onOpenTransfer={() => setView('transfer')}
-          onOpenVault={() => setView('vault')}
-          onOpenRecords={() => setView('records')}
-          onOpenOnChain={() => setView('on-chain')}
-          onOpenAbuseCases={() => setView('abuse-cases')}
-        />
-      )}
-      {view === 'vault' && <VaultPage walletState={walletState} onBack={() => setView('transfer')} />}
-      {view === 'agent-settings' && (
-        <AgentSettingsPage walletState={walletState} onBack={() => setView('transfer')} />
-      )}
-      {view === 'records' && <RecordsPage onBack={() => setView('transfer')} />}
-      {view === 'on-chain' && <OnChainPage walletState={walletState} onBack={() => setView('transfer')} />}
-      {view === 'abuse-cases' && (
-        <AbuseCasesPage walletState={walletState} onBack={() => setView('transfer')} />
-      )}
+      <Suspense fallback={<div className="login-page">Loading...</div>}>
+        {view === 'login' && <LoginPage onLogin={connectWalletAndEnter} />}
+        {view === 'transfer' && (
+          <Transfer
+            walletState={walletState}
+            onBack={() => setView('login')}
+            onOpenVault={() => setView('vault')}
+            onOpenAgentSettings={() => setView('dashboard')}
+            onOpenRecords={() => setView('records')}
+            onOpenOnChain={() => setView('on-chain')}
+            onOpenAbuseCases={() => setView('abuse-cases')}
+          />
+        )}
+        {view === 'dashboard' && (
+          <DashboardPage
+            walletState={walletState}
+            onBack={() => setView('login')}
+            onOpenTransfer={() => setView('transfer')}
+            onOpenVault={() => setView('vault')}
+            onOpenRecords={() => setView('records')}
+            onOpenOnChain={() => setView('on-chain')}
+            onOpenAbuseCases={() => setView('abuse-cases')}
+          />
+        )}
+        {view === 'vault' && <VaultPage walletState={walletState} onBack={() => setView('transfer')} />}
+        {view === 'agent-settings' && (
+          <AgentSettingsPage walletState={walletState} onBack={() => setView('transfer')} />
+        )}
+        {view === 'records' && <RecordsPage onBack={() => setView('transfer')} />}
+        {view === 'on-chain' && <OnChainPage walletState={walletState} onBack={() => setView('transfer')} />}
+        {view === 'abuse-cases' && (
+          <AbuseCasesPage walletState={walletState} onBack={() => setView('transfer')} />
+        )}
+      </Suspense>
     </div>
   );
 }

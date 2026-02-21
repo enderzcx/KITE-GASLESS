@@ -21,7 +21,7 @@ function OnChainPage({ onBack }) {
   const loadTransfers = async () => {
     try {
       setLoading(true);
-      setStatus('Loading on-chain confirmations...');
+      setStatus('Loading Goldsky audit evidence...');
       const normalizedFilter = txHashFilter.trim().toLowerCase();
       const isTxHashFilter = normalizedFilter.startsWith('0x') && normalizedFilter.length === 66;
       const query = isTxHashFilter
@@ -78,7 +78,7 @@ function OnChainPage({ onBack }) {
         setTransfers([]);
       }
     } catch (err) {
-      setStatus(`Failed to load Goldsky data: ${err.message}`);
+      setStatus(`Failed to load Goldsky audit data: ${err.message}`);
     } finally {
       setLoading(false);
     }
@@ -235,14 +235,14 @@ function OnChainPage({ onBack }) {
           </button>
         )}
         <button className="link-btn" onClick={loadTransfers} disabled={loading}>
-          {loading ? 'Refreshing...' : 'Refresh On-chain Data'}
+          {loading ? 'Refreshing...' : 'Refresh Goldsky Audit'}
         </button>
         <button className="link-btn" onClick={refreshAll} disabled={loading}>
           {loading ? 'Refreshing...' : 'Refresh All'}
         </button>
       </div>
 
-      <h1>On-chain Confirmation</h1>
+      <h1>Audit Evidence (Goldsky)</h1>
 
       <div className="vault-card">
         <div className="result-row">
@@ -310,7 +310,7 @@ function OnChainPage({ onBack }) {
       )}
 
       <div className="vault-card">
-        <h2>x402 Payment Mapping</h2>
+        <h2>x402 Settlement Mapping</h2>
         <div className="x402-table-wrap">
           <div className="records-head x402-head">
             <span>Flow Mode</span>
