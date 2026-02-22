@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import './App.css';
+import AgentSettingsPage from './AgentSettingsPage';
 
 const API_BASE_URL = String(import.meta.env.VITE_API_BASE_URL || '')
   .trim()
@@ -221,6 +222,15 @@ function statusText(mode) {
   return 'Disconnected';
 }
 
+function readViewFromUrl() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('view') === 'setup' ? 'setup' : 'monitor';
+  } catch {
+    return 'monitor';
+  }
+}
+
 async function fetchJson(path, params) {
   const headers = {};
   if (VIEWER_API_KEY) {
@@ -236,6 +246,11 @@ async function fetchJson(path, params) {
 }
 
 function App() {
+  const [view, setView] = useState(() => readViewFromUrl());
+  const [walletState, setWalletState] = useState({
+    ownerAddress: '',
+    aaAddress: ''
+  });
   const [records, setRecords] = useState([]);
   const [kpi, setKpi] = useState({ pending: 0, paid: 0, failed: 0, todaySpend: 0 });
   const [traces, setTraces] = useState([]);
@@ -251,6 +266,49 @@ function App() {
   const [errorText, setErrorText] = useState('');
   const [refreshing, setRefreshing] = useState(false);
   const [streamToken, setStreamToken] = useState(0);
+  const isSetupView = view === 'setup';
+
+  const switchView = useCallback((nextView) => {
+    setView(nextView);
+    try {
+      const url = new URL(window.location.href);
+      if (nextView === 'setup') url.searchParams.set('view', 'setup');
+      else url.searchParams.delete('view');
+      window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
+    } catch {
+      // ignore URL sync errors
+    }
+  }, []);
+
+  const connectWallet = useCallback(async () => {
+    if (typeof window.ethereum === 'undefined') {
+      setErrorText('Wallet extension not found. Install MetaMask first.');
+      return;
+    }
+    try {
+      const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+      const ownerAddress = String(accounts?.[0] || '').trim();
+      if (!ownerAddress) throw new Error('No wallet account selected.');
+      setWalletState((prev) => ({ ...prev, ownerAddress }));
+      setErrorText('');
+    } catch (error) {
+      setErrorText(error?.message || 'Wallet connect failed.');
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window.ethereum === 'undefined' || !window.ethereum.on) return undefined;
+    const onAccountsChanged = (accounts) => {
+      const ownerAddress = String(accounts?.[0] || '').trim();
+      setWalletState((prev) => ({ ...prev, ownerAddress }));
+    };
+    window.ethereum.on('accountsChanged', onAccountsChanged);
+    return () => {
+      if (window.ethereum?.removeListener) {
+        window.ethereum.removeListener('accountsChanged', onAccountsChanged);
+      }
+    };
+  }, []);
 
   const loadSnapshot = useCallback(async ({ manual = false } = {}) => {
     if (manual) setRefreshing(true);
@@ -281,14 +339,16 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (isSetupView) return undefined;
     void loadSnapshot();
     const timer = setInterval(() => {
       void loadSnapshot();
     }, POLL_INTERVAL_MS);
     return () => clearInterval(timer);
-  }, [loadSnapshot]);
+  }, [isSetupView, loadSnapshot]);
 
   useEffect(() => {
+    if (isSetupView) return undefined;
     if (VIEWER_API_KEY) {
       setStreamMode('polling');
       return undefined;
@@ -348,7 +408,7 @@ function App() {
       }
       source.close();
     };
-  }, [loadSnapshot, streamToken]);
+  }, [isSetupView, loadSnapshot, streamToken]);
 
   const summary = useMemo(() => {
     let running = 0;
@@ -361,6 +421,36 @@ function App() {
     }
     return { running, success, failed };
   }, [traces]);
+
+  if (isSetupView) {
+    return (
+      <div className="monitor-root">
+        <div className="monitor-glow monitor-glow-left" />
+        <div className="monitor-glow monitor-glow-right" />
+        <header className="monitor-header">
+          <div>
+            <p className="header-kicker">Kite Testnet</p>
+            <h1>Session Setup</h1>
+            <p className="header-subtitle">
+              Connect owner wallet, create session, then sync runtime for autonomous x402 payments.
+            </p>
+          </div>
+          <div className="header-meta">
+            <span className="sync-time">
+              Owner: {walletState.ownerAddress ? shortenMiddle(walletState.ownerAddress, 10, 8) : 'not connected'}
+            </span>
+            <button type="button" className="ghost-btn" onClick={connectWallet}>
+              Connect wallet
+            </button>
+            <button type="button" className="ghost-btn" onClick={() => switchView('monitor')}>
+              Back to Monitor
+            </button>
+          </div>
+        </header>
+        <AgentSettingsPage onBack={() => switchView('monitor')} walletState={walletState} />
+      </div>
+    );
+  }
 
   return (
     <div className="monitor-root">
@@ -378,6 +468,9 @@ function App() {
         <div className="header-meta">
           <span className={`connection-pill ${streamMode}`}>{statusText(streamMode)}</span>
           <span className="sync-time">Last sync: {formatTime(lastSyncAt)}</span>
+          <button type="button" className="ghost-btn" onClick={() => switchView('setup')}>
+            Session Setup
+          </button>
           {!VIEWER_API_KEY && streamMode !== 'live' ? (
             <button
               type="button"
