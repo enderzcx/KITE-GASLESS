@@ -577,6 +577,13 @@ function App() {
   const currentWorkflow = traceData?.workflow || null;
   const currentRequest = traceData?.request || null;
   const quote = traceData?.workflow?.result?.quote || traceData?.request?.result?.quote || null;
+  const currentAction = String(currentRequest?.action || '').trim().toLowerCase();
+  const flowLabel =
+    currentAction === 'btc-price-feed'
+      ? 'ATAPI+x402'
+      : currentRequest?.a2a
+        ? 'a2a+x402'
+        : 'agent-to-api+x402';
 
   const chartSeries = useMemo(() => normalizeSeriesPoints(series).slice(-CHART_POINT_LIMIT), [series]);
   const chartModel = useMemo(() => buildChartModel(chartSeries), [chartSeries]);
@@ -884,7 +891,7 @@ function App() {
               <p>state: {currentWorkflow?.state || '-'}</p>
               <p>updated: {formatTime(currentWorkflow?.updatedAt || '')}</p>
               <p>payer: {fullText(currentWorkflow?.payer || '-')}</p>
-              <p>flow: {currentRequest?.a2a ? 'a2a+x402' : 'agent-to-api+x402'}</p>
+              <p>flow: {flowLabel}</p>
             </article>
           </div>
         </section>
