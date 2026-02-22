@@ -27,6 +27,7 @@ const X402_PRICE = process.env.X402_PRICE || '0.05';
 const KITE_AGENT2_AA_ADDRESS =
   process.env.KITE_AGENT2_AA_ADDRESS || '0xEd335560178B85f0524FfFf3372e9Bf45aB42aC8';
 const X402_REACTIVE_PRICE = process.env.X402_REACTIVE_PRICE || '0.03';
+const X402_BTC_PRICE = process.env.X402_BTC_PRICE || '0.00001';
 const X402_TTL_MS = 10 * 60 * 1000;
 const KITE_AGENT1_ID = process.env.KITE_AGENT1_ID || '1';
 const KITE_AGENT2_ID = process.env.KITE_AGENT2_ID || '2';
@@ -72,6 +73,13 @@ const RATE_LIMIT_MAX = Number(process.env.KITECLAW_RATE_LIMIT_MAX || 240);
 const IDENTITY_CHALLENGE_TTL_MS = Number(process.env.IDENTITY_CHALLENGE_TTL_MS || 120_000);
 const IDENTITY_CHALLENGE_MAX_ROWS = Number(process.env.IDENTITY_CHALLENGE_MAX_ROWS || 500);
 const IDENTITY_VERIFY_MODE = String(process.env.IDENTITY_VERIFY_MODE || 'signature').trim().toLowerCase();
+const AUTO_BTC_PRICE_ENABLED = /^(1|true|yes|on)$/i.test(String(process.env.AUTO_BTC_PRICE_ENABLED || '').trim());
+const AUTO_BTC_PRICE_INTERVAL_MS = Math.max(15_000, Number(process.env.AUTO_BTC_PRICE_INTERVAL_MS || 60_000));
+const AUTO_BTC_PRICE_SOURCE_AGENT_ID = String(process.env.AUTO_BTC_PRICE_SOURCE_AGENT_ID || KITE_AGENT1_ID).trim();
+const AUTO_BTC_PRICE_TARGET_AGENT_ID = String(process.env.AUTO_BTC_PRICE_TARGET_AGENT_ID || KITE_AGENT2_ID).trim();
+const AUTO_BTC_PRICE_PAIR = String(process.env.AUTO_BTC_PRICE_PAIR || 'BTCUSDT').trim().toUpperCase();
+const AUTO_BTC_PRICE_SOURCE = String(process.env.AUTO_BTC_PRICE_SOURCE || 'auto').trim().toLowerCase();
+const AUTO_BTC_PRICE_PAYER = String(process.env.AUTO_BTC_PRICE_PAYER || '').trim();
 
 const ROLE_RANK = {
   viewer: 1,
@@ -106,6 +114,22 @@ const PERSIST_OBJECT_PATHS = [policyConfigPath, sessionRuntimePath];
 const persistArrayCache = new Map();
 const persistObjectCache = new Map();
 let persistenceInitDone = false;
+let autoBtcPriceTimer = null;
+let autoBtcPriceBusy = false;
+const autoBtcPriceState = {
+  enabled: false,
+  intervalMs: AUTO_BTC_PRICE_INTERVAL_MS,
+  sourceAgentId: AUTO_BTC_PRICE_SOURCE_AGENT_ID,
+  targetAgentId: AUTO_BTC_PRICE_TARGET_AGENT_ID,
+  pair: AUTO_BTC_PRICE_PAIR,
+  source: AUTO_BTC_PRICE_SOURCE,
+  payer: AUTO_BTC_PRICE_PAYER,
+  startedAt: '',
+  lastTickAt: '',
+  lastTraceId: '',
+  lastStatus: '',
+  lastError: ''
+};
 
 function authConfigured() {
   return Boolean(API_KEY_ADMIN || API_KEY_AGENT || API_KEY_VIEWER);
@@ -160,6 +184,92 @@ function requireRole(requiredRole = 'viewer') {
 
 function getInternalAgentApiKey() {
   return API_KEY_AGENT || API_KEY_ADMIN || '';
+}
+
+function getAutoBtcPriceStatus() {
+  return {
+    ...autoBtcPriceState,
+    running: Boolean(autoBtcPriceTimer),
+    busy: autoBtcPriceBusy
+  };
+}
+
+async function runAutoBtcPriceTick(reason = 'timer') {
+  if (autoBtcPriceBusy) return;
+  autoBtcPriceBusy = true;
+  autoBtcPriceState.lastTickAt = new Date().toISOString();
+  autoBtcPriceState.lastError = '';
+  autoBtcPriceState.lastStatus = 'running';
+
+  try {
+    const runtime = readSessionRuntime();
+    const payer = normalizeAddress(autoBtcPriceState.payer || runtime.aaWallet || '');
+    const traceId = createTraceId('auto_btc');
+    const internalApiKey = getInternalAgentApiKey();
+    const headers = { 'Content-Type': 'application/json' };
+    if (internalApiKey) headers['x-api-key'] = internalApiKey;
+
+    const resp = await fetch(`http://127.0.0.1:${PORT}/api/workflow/btc-price/run`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        traceId,
+        sourceAgentId: autoBtcPriceState.sourceAgentId || KITE_AGENT1_ID,
+        targetAgentId: autoBtcPriceState.targetAgentId || KITE_AGENT2_ID,
+        pair: autoBtcPriceState.pair || 'BTCUSDT',
+        source: autoBtcPriceState.source || 'auto',
+        payer
+      })
+    });
+    const body = await resp.json().catch(() => ({}));
+    autoBtcPriceState.lastTraceId = String(body?.traceId || traceId).trim();
+    if (!resp.ok || !body?.ok) {
+      autoBtcPriceState.lastStatus = 'failed';
+      autoBtcPriceState.lastError = String(body?.reason || body?.error || `HTTP ${resp.status}`).trim();
+      return;
+    }
+
+    autoBtcPriceState.lastStatus = String(body?.state || 'success').trim().toLowerCase();
+    autoBtcPriceState.lastError = '';
+  } catch (error) {
+    autoBtcPriceState.lastStatus = 'failed';
+    autoBtcPriceState.lastError = String(error?.message || 'auto tick failed').trim();
+  } finally {
+    autoBtcPriceBusy = false;
+    if (reason === 'startup' || reason === 'manual') {
+      console.log(`[auto-btc] tick ${autoBtcPriceState.lastStatus} trace=${autoBtcPriceState.lastTraceId || '-'}`);
+    }
+  }
+}
+
+function stopAutoBtcPriceLoop() {
+  if (autoBtcPriceTimer) {
+    clearInterval(autoBtcPriceTimer);
+    autoBtcPriceTimer = null;
+  }
+  autoBtcPriceState.enabled = false;
+}
+
+function startAutoBtcPriceLoop(options = {}) {
+  const intervalMs = Math.max(15_000, Number(options.intervalMs || autoBtcPriceState.intervalMs || 60_000));
+  autoBtcPriceState.intervalMs = intervalMs;
+  autoBtcPriceState.sourceAgentId = String(options.sourceAgentId || autoBtcPriceState.sourceAgentId || KITE_AGENT1_ID).trim();
+  autoBtcPriceState.targetAgentId = String(options.targetAgentId || autoBtcPriceState.targetAgentId || KITE_AGENT2_ID).trim();
+  autoBtcPriceState.pair = String(options.pair || autoBtcPriceState.pair || 'BTCUSDT').trim().toUpperCase();
+  autoBtcPriceState.source = String(options.source || autoBtcPriceState.source || 'auto').trim().toLowerCase();
+  autoBtcPriceState.payer = String(options.payer || autoBtcPriceState.payer || '').trim();
+  autoBtcPriceState.enabled = true;
+  autoBtcPriceState.startedAt = new Date().toISOString();
+  autoBtcPriceState.lastError = '';
+
+  if (autoBtcPriceTimer) clearInterval(autoBtcPriceTimer);
+  autoBtcPriceTimer = setInterval(() => {
+    runAutoBtcPriceTick('timer').catch(() => {});
+  }, intervalMs);
+
+  if (options.immediate !== false) {
+    runAutoBtcPriceTick(options.reason || 'manual').catch(() => {});
+  }
 }
 
 const rateLimitStore = new Map();
@@ -553,6 +663,9 @@ function getServiceProviderBytes32(action) {
   const normalized = String(action || '').trim().toLowerCase();
   if (normalized === 'reactive-stop-orders') {
     return ethers.encodeBytes32String('reactive-stop-orders');
+  }
+  if (normalized === 'btc-price-feed') {
+    return ethers.encodeBytes32String('btc-price-feed');
   }
   return ethers.encodeBytes32String('kol-score');
 }
@@ -1007,6 +1120,14 @@ function getActionConfig(actionRaw = '') {
       summary: 'Reactive contracts stop-orders signal unlocked by x402 payment'
     };
   }
+  if (action === 'btc-price-feed') {
+    return {
+      action: 'btc-price-feed',
+      amount: X402_BTC_PRICE,
+      recipient: KITE_AGENT2_AA_ADDRESS,
+      summary: 'BTC price quote unlocked by x402 payment'
+    };
+  }
   return null;
 }
 
@@ -1037,6 +1158,73 @@ function normalizeReactiveParams(actionParams = {}) {
   };
 }
 
+function normalizeBtcPriceParams(input = {}) {
+  const pair = String(input.pair || 'BTCUSDT').trim().toUpperCase();
+  const source = String(input.source || 'auto').trim().toLowerCase();
+  if (!/^[A-Z0-9]{6,16}$/.test(pair)) {
+    throw new Error('BTC price task requires a valid pair (e.g. BTCUSDT).');
+  }
+  if (!['auto', 'binance', 'coingecko'].includes(source)) {
+    throw new Error('BTC price task source must be one of auto/binance/coingecko.');
+  }
+  return { pair, source };
+}
+
+async function fetchJsonWithTimeout(url, timeoutMs = 8000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch(url, { signal: controller.signal });
+    if (!resp.ok) {
+      throw new Error(`HTTP ${resp.status}`);
+    }
+    return await resp.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchBtcPriceQuote(params = {}) {
+  const { pair, source } = normalizeBtcPriceParams(params);
+  const providers = source === 'auto' ? ['binance', 'coingecko'] : [source];
+  const failures = [];
+
+  for (const provider of providers) {
+    try {
+      if (provider === 'binance') {
+        const body = await fetchJsonWithTimeout(`https://api.binance.com/api/v3/ticker/price?symbol=${pair}`, 8000);
+        const price = Number(body?.price);
+        if (!Number.isFinite(price) || price <= 0) throw new Error('invalid price');
+        return {
+          provider: 'binance',
+          pair,
+          priceUsd: Number(price.toFixed(6)),
+          fetchedAt: new Date().toISOString()
+        };
+      }
+
+      if (provider === 'coingecko') {
+        const body = await fetchJsonWithTimeout(
+          'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd',
+          8000
+        );
+        const price = Number(body?.bitcoin?.usd);
+        if (!Number.isFinite(price) || price <= 0) throw new Error('invalid price');
+        return {
+          provider: 'coingecko',
+          pair,
+          priceUsd: Number(price.toFixed(6)),
+          fetchedAt: new Date().toISOString()
+        };
+      }
+    } catch (error) {
+      failures.push(`${provider}:${error?.message || 'failed'}`);
+    }
+  }
+
+  throw new Error(`price_source_unavailable (${failures.join(', ') || 'no provider'})`);
+}
+
 function computeReactiveStopOrderAmount(actionParams = {}) {
   const baseAmount = Number(X402_REACTIVE_PRICE || '0.03');
   const base = Number.isFinite(baseAmount) && baseAmount > 0 ? baseAmount : 0.03;
@@ -1065,6 +1253,15 @@ function buildA2ACapabilities() {
     },
     lifecycle: ['discover', 'quote', 'pay', 'execute', 'prove', 'settle'],
     actions: [
+      {
+        id: 'btc-price-feed',
+        input: {
+          pair: 'string (default BTCUSDT)',
+          source: 'auto | binance | coingecko'
+        },
+        price: X402_BTC_PRICE,
+        recipient: KITE_AGENT2_AA_ADDRESS
+      },
       {
         id: 'reactive-stop-orders',
         input: {
@@ -2510,6 +2707,227 @@ app.post('/api/workflow/stop-order/run', requireRole('agent'), async (req, res) 
   }
 });
 
+app.post('/api/workflow/btc-price/run', requireRole('agent'), async (req, res) => {
+  const pair = String(req.body?.pair || 'BTCUSDT').trim().toUpperCase();
+  const source = String(req.body?.source || 'auto').trim().toLowerCase();
+  const sourceAgentId = String(req.body?.sourceAgentId || KITE_AGENT1_ID).trim();
+  const targetAgentId = String(req.body?.targetAgentId || KITE_AGENT2_ID).trim();
+  const traceId = resolveWorkflowTraceId(req.body?.traceId);
+  const runtime = readSessionRuntime();
+  const payer = normalizeAddress(req.body?.payer || runtime.aaWallet || '');
+  const workflow = {
+    traceId,
+    type: 'btc-price',
+    state: 'running',
+    sourceAgentId,
+    targetAgentId,
+    payer,
+    input: { pair, source },
+    requestId: '',
+    txHash: '',
+    userOpHash: '',
+    steps: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  upsertWorkflow(workflow);
+  broadcastEvent('workflow_started', { traceId, state: workflow.state, input: workflow.input });
+
+  try {
+    const challengeResult = await handleA2ABtcPrice({
+      payer,
+      sourceAgentId,
+      targetAgentId,
+      traceId,
+      task: { pair, source }
+    });
+    if (challengeResult.status !== 402) {
+      throw new Error(
+        challengeResult?.body?.reason ||
+          challengeResult?.body?.error ||
+          `Expected 402 challenge, got ${challengeResult.status}`
+      );
+    }
+    const challenge = challengeResult.body?.x402;
+    const requestId = String(challenge?.requestId || '').trim();
+    const accept = Array.isArray(challenge?.accepts) ? challenge.accepts[0] : null;
+    if (!requestId || !accept?.tokenAddress || !accept?.recipient || !accept?.amount) {
+      throw new Error('Malformed x402 challenge payload.');
+    }
+    workflow.requestId = requestId;
+    appendWorkflowStep(workflow, 'challenge_issued', 'ok', {
+      requestId,
+      amount: accept.amount,
+      recipient: accept.recipient
+    });
+    broadcastEvent('challenge_issued', {
+      traceId,
+      requestId,
+      amount: accept.amount,
+      recipient: accept.recipient,
+      pair,
+      source
+    });
+    workflow.updatedAt = new Date().toISOString();
+    upsertWorkflow(workflow);
+
+    const internalApiKey = getInternalAgentApiKey();
+    const payHeaders = { 'Content-Type': 'application/json' };
+    if (internalApiKey) {
+      payHeaders['x-api-key'] = internalApiKey;
+    }
+    const payResp = await fetch(`http://127.0.0.1:${PORT}/api/session/pay`, {
+      method: 'POST',
+      headers: payHeaders,
+      body: JSON.stringify({
+        tokenAddress: accept.tokenAddress,
+        recipient: accept.recipient,
+        amount: accept.amount,
+        requestId,
+        action: 'btc-price-feed',
+        query: `A2A BTC price ${pair} source=${source}`
+      })
+    });
+    const payBody = await payResp.json().catch(() => ({}));
+    if (!payResp.ok || !payBody?.ok) {
+      const payError = String(payBody?.error || '').trim().toLowerCase();
+      if (payError === 'insufficient_funds') {
+        const required = String(payBody?.details?.required || accept.amount || '').trim();
+        const balance = String(payBody?.details?.balance || '').trim();
+        const err = new Error(
+          `Insufficient balance: requires ${required || accept.amount} USDT, current balance ${balance || 'unknown'}.`
+        );
+        err.code = 'insufficient_funds';
+        err.required = required || String(accept.amount || '');
+        err.balance = balance || '';
+        throw err;
+      }
+      if (payError === 'insufficient_kite_gas') {
+        const requiredGas = String(payBody?.details?.required || '0.0001').trim();
+        const gasBalance = String(payBody?.details?.balance || '').trim();
+        const err = new Error(
+          `Insufficient KITE gas: requires >= ${requiredGas} KITE, current balance ${gasBalance || 'unknown'}.`
+        );
+        err.code = 'insufficient_kite_gas';
+        err.requiredGas = requiredGas;
+        err.balance = gasBalance || '';
+        throw err;
+      }
+      throw new Error(payBody?.reason || payBody?.error || `session pay failed: HTTP ${payResp.status}`);
+    }
+    const txHash = String(payBody?.payment?.txHash || '').trim();
+    const userOpHash = String(payBody?.payment?.userOpHash || '').trim();
+    if (!txHash) throw new Error('session pay returned empty txHash.');
+    workflow.txHash = txHash;
+    workflow.userOpHash = userOpHash;
+    appendWorkflowStep(workflow, 'payment_sent', 'ok', { txHash, userOpHash });
+    broadcastEvent('payment_sent', {
+      traceId,
+      requestId,
+      txHash,
+      userOpHash,
+      pair,
+      source
+    });
+    workflow.updatedAt = new Date().toISOString();
+    upsertWorkflow(workflow);
+
+    const proofResult = await handleA2ABtcPrice({
+      payer,
+      sourceAgentId,
+      targetAgentId,
+      traceId,
+      requestId,
+      paymentProof: {
+        requestId,
+        txHash,
+        payer,
+        tokenAddress: accept.tokenAddress,
+        recipient: accept.recipient,
+        amount: accept.amount
+      },
+      task: { pair, source }
+    });
+    if (proofResult.status !== 200) {
+      throw new Error(
+        proofResult?.body?.reason || proofResult?.body?.error || `proof submit failed: ${proofResult.status}`
+      );
+    }
+    appendWorkflowStep(workflow, 'proof_submitted', 'ok', { verified: true });
+    broadcastEvent('proof_submitted', { traceId, requestId, verified: true });
+    appendWorkflowStep(workflow, 'unlocked', 'ok', {
+      result: proofResult?.body?.result?.summary || ''
+    });
+    broadcastEvent('unlocked', {
+      traceId,
+      requestId,
+      txHash,
+      summary: proofResult?.body?.result?.summary || '',
+      pair,
+      source
+    });
+    workflow.state = 'unlocked';
+    workflow.result = proofResult?.body?.result || null;
+    workflow.updatedAt = new Date().toISOString();
+    upsertWorkflow(workflow);
+
+    return res.json({
+      ok: true,
+      traceId,
+      requestId,
+      txHash,
+      userOpHash,
+      state: workflow.state,
+      workflow,
+      receipt: proofResult?.body?.receipt || null
+    });
+  } catch (error) {
+    appendWorkflowStep(workflow, 'failed', 'error', { reason: error.message });
+    broadcastEvent('failed', {
+      traceId,
+      state: 'failed',
+      reason: error.message,
+      code: error?.code || 'workflow_failed'
+    });
+    workflow.state = 'failed';
+    workflow.error = error.message;
+    workflow.updatedAt = new Date().toISOString();
+    upsertWorkflow(workflow);
+    return res.status(500).json({
+      ok: false,
+      traceId,
+      state: workflow.state,
+      error: 'workflow_failed',
+      reason: error.message,
+      workflow,
+      receipt:
+        workflow.requestId && workflow.sourceAgentId && workflow.targetAgentId
+          ? buildA2AReceipt(
+              {
+                requestId: workflow.requestId,
+                status: 'pending',
+                action: 'btc-price-feed',
+                query: `A2A BTC price ${workflow?.input?.pair || 'BTCUSDT'}`.trim(),
+                payer: workflow.payer || '',
+                amount: String(X402_BTC_PRICE || ''),
+                tokenAddress: SETTLEMENT_TOKEN,
+                recipient: KITE_AGENT2_AA_ADDRESS,
+                paymentTxHash: workflow.txHash || '',
+                a2a: {
+                  sourceAgentId: workflow.sourceAgentId,
+                  targetAgentId: workflow.targetAgentId,
+                  taskType: 'btc-price-feed',
+                  traceId
+                }
+              },
+              workflow,
+              { state: 'failed', phase: 'failed', error: error.message, traceId }
+            )
+          : null
+    });
+  }
+});
+
 app.get('/api/workflow/:traceId', requireRole('viewer'), (req, res) => {
   const traceId = String(req.params.traceId || '').trim();
   if (!traceId) {
@@ -2621,6 +3039,238 @@ app.get('/api/a2a/network/graph', requireRole('viewer'), (req, res) => {
     recent: items.slice(0, recent)
   });
 });
+
+async function handleA2ABtcPrice(body = {}) {
+  const payer = String(body.payer || '').trim();
+  const sourceAgentId = String(body.sourceAgentId || KITE_AGENT1_ID).trim();
+  const targetAgentId = String(body.targetAgentId || KITE_AGENT2_ID).trim();
+  const traceId = String(body.traceId || '').trim();
+  const requestId = String(body.requestId || '').trim();
+  const paymentProof = body.paymentProof;
+  const taskInput = body.task || {};
+
+  let task = null;
+  try {
+    task = normalizeBtcPriceParams({
+      pair: body.pair || taskInput.pair,
+      source: body.source || taskInput.source
+    });
+  } catch (error) {
+    return {
+      status: 400,
+      body: {
+        error: 'invalid_task',
+        reason: error.message
+      }
+    };
+  }
+
+  const actionCfg = getActionConfig('btc-price-feed');
+  const actionAmount = String(actionCfg?.amount || X402_BTC_PRICE || '0.00001');
+  const requests = readX402Requests();
+  const a2aQuery = `A2A BTC price ${task.pair} source=${task.source}`;
+
+  if (!requestId || !paymentProof) {
+    const policyResult = evaluateTransferPolicy({
+      payer,
+      recipient: actionCfg.recipient,
+      amount: actionAmount,
+      requests
+    });
+    if (!policyResult.ok) {
+      logPolicyFailure({
+        action: 'a2a-btc-price-feed',
+        payer,
+        recipient: actionCfg.recipient,
+        amount: actionAmount,
+        code: policyResult.code,
+        message: policyResult.message,
+        evidence: policyResult.evidence
+      });
+      return {
+        status: 403,
+        body: {
+          error: policyResult.code,
+          reason: policyResult.message,
+          evidence: policyResult.evidence
+        }
+      };
+    }
+
+    const reqItem = createX402Request(a2aQuery, payer, actionCfg.action, {
+      amount: actionAmount,
+      recipient: actionCfg.recipient,
+      policy: {
+        decision: 'allowed',
+        snapshot: buildPolicySnapshot(),
+        evidence: policyResult.evidence
+      }
+    });
+    reqItem.actionParams = task;
+    reqItem.a2a = {
+      sourceAgentId,
+      targetAgentId,
+      taskType: 'btc-price-feed',
+      traceId
+    };
+    requests.unshift(reqItem);
+    writeX402Requests(requests);
+    const receipt = buildA2AReceipt(reqItem, null, {
+      traceId,
+      phase: 'payment_required',
+      state: 'running'
+    });
+
+    return {
+      status: 402,
+      body: {
+        ...buildPaymentRequiredResponse(reqItem),
+        a2a: {
+          protocol: 'x402-a2a-v1',
+          sourceAgentId,
+          targetAgentId,
+          taskType: 'btc-price-feed',
+          task
+        },
+        receipt
+      }
+    };
+  }
+
+  const reqItem = requests.find((item) => item.requestId === requestId);
+  if (!reqItem) {
+    return {
+      status: 402,
+      body: {
+        error: 'payment_required',
+        reason: 'request not found'
+      }
+    };
+  }
+
+  if (Date.now() > reqItem.expiresAt) {
+    reqItem.status = 'expired';
+    writeX402Requests(requests);
+    return {
+      status: 402,
+      body: buildPaymentRequiredResponse(reqItem, 'request expired')
+    };
+  }
+
+  if (reqItem.status === 'paid') {
+    let quote = reqItem?.result?.quote || null;
+    if (!quote) {
+      try {
+        quote = await fetchBtcPriceQuote(reqItem.actionParams || task);
+      } catch {
+        quote = null;
+      }
+    }
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        mode: 'x402',
+        requestId: reqItem.requestId,
+        reused: true,
+        result: {
+          summary: reqItem?.result?.summary || 'A2A BTC price quote already unlocked',
+          quote
+        },
+        a2a: reqItem.a2a || null,
+        receipt: buildA2AReceipt(reqItem, null, {
+          traceId,
+          sourceAgentId,
+          targetAgentId,
+          capability: 'btc-price-feed',
+          phase: 'settled',
+          state: 'success',
+          summary: reqItem?.result?.summary || 'A2A BTC price quote already unlocked'
+        })
+      }
+    };
+  }
+
+  const validationError = validatePaymentProof(reqItem, paymentProof);
+  if (validationError) {
+    return {
+      status: 402,
+      body: buildPaymentRequiredResponse(reqItem, validationError)
+    };
+  }
+
+  const verification = await verifyProofOnChain(reqItem, paymentProof);
+  if (!verification.ok) {
+    return {
+      status: 402,
+      body: buildPaymentRequiredResponse(reqItem, `on-chain proof verification failed: ${verification.reason}`)
+    };
+  }
+
+  const quote = await fetchBtcPriceQuote(reqItem.actionParams || task);
+  const quoteSummary = `BTC ${quote.pair} = $${quote.priceUsd} (${quote.provider})`;
+
+  reqItem.status = 'paid';
+  reqItem.paidAt = Date.now();
+  reqItem.paymentTxHash = paymentProof.txHash;
+  reqItem.paymentProof = {
+    requestId: paymentProof.requestId,
+    txHash: paymentProof.txHash,
+    payer: paymentProof.payer || '',
+    tokenAddress: paymentProof.tokenAddress,
+    recipient: paymentProof.recipient,
+    amount: paymentProof.amount
+  };
+  reqItem.proofVerification = {
+    mode: 'onchain_transfer_log',
+    verifiedAt: Date.now(),
+    details: verification.details || null
+  };
+  reqItem.a2a = {
+    ...(reqItem.a2a || {}),
+    sourceAgentId: String(reqItem?.a2a?.sourceAgentId || sourceAgentId).trim(),
+    targetAgentId: String(reqItem?.a2a?.targetAgentId || targetAgentId).trim(),
+    taskType: String(reqItem?.a2a?.taskType || 'btc-price-feed').trim(),
+    traceId: String(reqItem?.a2a?.traceId || traceId).trim()
+  };
+  reqItem.result = {
+    summary: `A2A BTC price quote unlocked by x402 payment: ${quoteSummary}`,
+    quote
+  };
+  writeX402Requests(requests);
+
+  const receipt = buildA2AReceipt(reqItem, null, {
+    traceId: reqItem?.a2a?.traceId || traceId,
+    sourceAgentId,
+    targetAgentId,
+    capability: 'btc-price-feed',
+    phase: 'settled',
+    state: 'success',
+    summary: reqItem?.result?.summary || quoteSummary
+  });
+
+  return {
+    status: 200,
+    body: {
+      ok: true,
+      mode: 'x402',
+      requestId: reqItem.requestId,
+      payment: {
+        txHash: paymentProof.txHash,
+        amount: reqItem.amount,
+        tokenAddress: reqItem.tokenAddress,
+        recipient: reqItem.recipient
+      },
+      result: reqItem.result,
+      a2a: reqItem.a2a || {
+        sourceAgentId,
+        targetAgentId,
+        taskType: 'btc-price-feed'
+      },
+      receipt
+    }
+  };
+}
 
 async function handleA2AStopOrders(body = {}) {
   const payer = String(body.payer || '').trim();
@@ -2865,6 +3515,19 @@ app.post('/api/a2a/tasks/stop-orders', requireRole('agent'), async (req, res) =>
   }
 });
 
+app.post('/api/a2a/tasks/btc-price', requireRole('agent'), async (req, res) => {
+  try {
+    const result = await handleA2ABtcPrice(req.body);
+    return res.status(result.status).json(result.body);
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: 'a2a_btc_price_handler_failed',
+      reason: error.message || 'Unknown error'
+    });
+  }
+});
+
 app.get('/api/skill/openclaw/manifest', (req, res) => {
   return res.json({
     ok: true,
@@ -3024,6 +3687,16 @@ app.post('/api/x402/kol-score', requireRole('agent'), async (req, res) => {
       });
     }
   }
+  if (actionCfg.action === 'btc-price-feed') {
+    try {
+      normalizedActionParams = normalizeBtcPriceParams(actionParamsInput || {});
+    } catch (error) {
+      return res.status(400).json({
+        error: 'invalid_btc_price_params',
+        reason: error.message
+      });
+    }
+  }
   const amountToCharge =
     actionCfg.action === 'reactive-stop-orders'
       ? computeReactiveStopOrderAmount(normalizedActionParams || {})
@@ -3096,26 +3769,40 @@ app.post('/api/x402/kol-score', requireRole('agent'), async (req, res) => {
   }
 
   if (reqItem.status === 'paid') {
-    const paidResult =
-      reqItem.action === 'reactive-stop-orders'
-        ? {
-            summary: 'Reactive contracts stop-orders signal already unlocked',
-            orderPlan: {
-              symbol: reqItem?.actionParams?.symbol || '-',
-              takeProfit: reqItem?.actionParams?.takeProfit ?? '-',
-              stopLoss: reqItem?.actionParams?.stopLoss ?? '-',
-              quantity: reqItem?.actionParams?.quantity ?? '-',
-              provider: 'Reactive Contracts'
-            }
-          }
-        : {
-            summary: 'KOL score report already unlocked',
-            topKOLs: [
-              { handle: '@alpha_kol', score: 91 },
-              { handle: '@beta_growth', score: 88 },
-              { handle: '@gamma_builder', score: 84 }
-            ]
-          };
+    let paidResult = {
+      summary: 'KOL score report already unlocked',
+      topKOLs: [
+        { handle: '@alpha_kol', score: 91 },
+        { handle: '@beta_growth', score: 88 },
+        { handle: '@gamma_builder', score: 84 }
+      ]
+    };
+    if (reqItem.action === 'reactive-stop-orders') {
+      paidResult = {
+        summary: 'Reactive contracts stop-orders signal already unlocked',
+        orderPlan: {
+          symbol: reqItem?.actionParams?.symbol || '-',
+          takeProfit: reqItem?.actionParams?.takeProfit ?? '-',
+          stopLoss: reqItem?.actionParams?.stopLoss ?? '-',
+          quantity: reqItem?.actionParams?.quantity ?? '-',
+          provider: 'Reactive Contracts'
+        }
+      };
+    }
+    if (reqItem.action === 'btc-price-feed') {
+      let quote = reqItem?.result?.quote || null;
+      if (!quote) {
+        try {
+          quote = await fetchBtcPriceQuote(reqItem.actionParams || {});
+        } catch {
+          quote = null;
+        }
+      }
+      paidResult = {
+        summary: reqItem?.result?.summary || 'BTC price quote already unlocked',
+        quote
+      };
+    }
     return res.json({
       ok: true,
       mode: 'x402',
@@ -3151,6 +3838,34 @@ app.post('/api/x402/kol-score', requireRole('agent'), async (req, res) => {
     verifiedAt: Date.now(),
     details: verification.details || null
   };
+  let finalResult = {
+    summary: 'KOL score report unlocked by x402 payment',
+    topKOLs: [
+      { handle: '@alpha_kol', score: 91 },
+      { handle: '@beta_growth', score: 88 },
+      { handle: '@gamma_builder', score: 84 }
+    ]
+  };
+  if (reqItem.action === 'reactive-stop-orders') {
+    finalResult = {
+      summary: 'Reactive contracts stop-orders signal unlocked by x402 payment',
+      orderPlan: {
+        symbol: reqItem?.actionParams?.symbol || '-',
+        takeProfit: reqItem?.actionParams?.takeProfit ?? '-',
+        stopLoss: reqItem?.actionParams?.stopLoss ?? '-',
+        quantity: reqItem?.actionParams?.quantity ?? '-',
+        provider: 'Reactive Contracts'
+      }
+    };
+  }
+  if (reqItem.action === 'btc-price-feed') {
+    const quote = await fetchBtcPriceQuote(reqItem.actionParams || {});
+    finalResult = {
+      summary: `BTC ${quote.pair} = $${quote.priceUsd} (${quote.provider})`,
+      quote
+    };
+  }
+  reqItem.result = finalResult;
   writeX402Requests(requests);
 
   return res.json({
@@ -3163,26 +3878,7 @@ app.post('/api/x402/kol-score', requireRole('agent'), async (req, res) => {
       tokenAddress: reqItem.tokenAddress,
       recipient: reqItem.recipient
     },
-    result:
-      reqItem.action === 'reactive-stop-orders'
-        ? {
-            summary: 'Reactive contracts stop-orders signal unlocked by x402 payment',
-            orderPlan: {
-              symbol: reqItem?.actionParams?.symbol || '-',
-              takeProfit: reqItem?.actionParams?.takeProfit ?? '-',
-              stopLoss: reqItem?.actionParams?.stopLoss ?? '-',
-              quantity: reqItem?.actionParams?.quantity ?? '-',
-              provider: 'Reactive Contracts'
-            }
-          }
-        : {
-            summary: 'KOL score report unlocked by x402 payment',
-            topKOLs: [
-              { handle: '@alpha_kol', score: 91 },
-              { handle: '@beta_growth', score: 88 },
-              { handle: '@gamma_builder', score: 84 }
-            ]
-          }
+    result: finalResult
   });
 });
 
@@ -3351,6 +4047,51 @@ app.get('/api/system/persistence', requireRole('viewer'), (req, res) => {
     ok: true,
     traceId: req.traceId || '',
     persistence: persistenceStore.info()
+  });
+});
+
+app.get('/api/automation/btc-price/status', requireRole('viewer'), (req, res) => {
+  return res.json({
+    ok: true,
+    traceId: req.traceId || '',
+    automation: {
+      type: 'a2a-btc-price',
+      ...getAutoBtcPriceStatus()
+    }
+  });
+});
+
+app.post('/api/automation/btc-price/start', requireRole('admin'), (req, res) => {
+  const body = req.body || {};
+  startAutoBtcPriceLoop({
+    intervalMs: body.intervalMs,
+    sourceAgentId: body.sourceAgentId,
+    targetAgentId: body.targetAgentId,
+    pair: body.pair,
+    source: body.source,
+    payer: body.payer,
+    immediate: body.immediate !== false,
+    reason: 'manual'
+  });
+  return res.json({
+    ok: true,
+    traceId: req.traceId || '',
+    automation: {
+      type: 'a2a-btc-price',
+      ...getAutoBtcPriceStatus()
+    }
+  });
+});
+
+app.post('/api/automation/btc-price/stop', requireRole('admin'), (req, res) => {
+  stopAutoBtcPriceLoop();
+  return res.json({
+    ok: true,
+    traceId: req.traceId || '',
+    automation: {
+      type: 'a2a-btc-price',
+      ...getAutoBtcPriceStatus()
+    }
   });
 });
 
@@ -3748,10 +4489,26 @@ async function startServer() {
   await initializePersistence();
   httpServer = app.listen(PORT, () => {
     console.log(`Backend listening on http://localhost:${PORT}`);
+    if (AUTO_BTC_PRICE_ENABLED) {
+      startAutoBtcPriceLoop({
+        intervalMs: AUTO_BTC_PRICE_INTERVAL_MS,
+        sourceAgentId: AUTO_BTC_PRICE_SOURCE_AGENT_ID,
+        targetAgentId: AUTO_BTC_PRICE_TARGET_AGENT_ID,
+        pair: AUTO_BTC_PRICE_PAIR,
+        source: AUTO_BTC_PRICE_SOURCE,
+        payer: AUTO_BTC_PRICE_PAYER,
+        immediate: true,
+        reason: 'startup'
+      });
+      console.log(
+        `[auto-btc] enabled intervalMs=${AUTO_BTC_PRICE_INTERVAL_MS} pair=${AUTO_BTC_PRICE_PAIR} source=${AUTO_BTC_PRICE_SOURCE}`
+      );
+    }
   });
 }
 
 async function shutdownServer() {
+  stopAutoBtcPriceLoop();
   try {
     if (httpServer) {
       await new Promise((resolve) => httpServer.close(resolve));
