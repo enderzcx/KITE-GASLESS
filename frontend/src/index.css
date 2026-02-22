@@ -1,5 +1,4 @@
-﻿:root {
-  font-family: 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
+:root {
   line-height: 1.5;
   font-weight: 400;
   font-synthesis: none;
@@ -8,8 +7,8 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
-a {
-  color: inherit;
-  text-decoration: none;
+html,
+body,
+#root {
+  min-height: 100%;
 }
-

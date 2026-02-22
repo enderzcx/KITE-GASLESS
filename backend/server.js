@@ -7,6 +7,7 @@ import crypto from 'crypto';
 import { ethers } from 'ethers';
 import { GokiteAASDK } from '../frontend/src/gokite-aa-sdk.js';
 import { createOpenClawAdapter } from './services/openclawAdapter.js';
+import { createPersistenceStore } from './services/persistenceStore.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -88,6 +89,23 @@ const openclawAdapter = createOpenClawAdapter({
   model: OPENCLAW_MODEL,
   systemPrompt: OPENCLAW_SYSTEM_PROMPT
 });
+
+const persistenceStore = createPersistenceStore({
+  mode: process.env.KITE_PERSISTENCE_MODE || '',
+  databaseUrl: process.env.DATABASE_URL || ''
+});
+
+const PERSIST_ARRAY_PATHS = [
+  dataPath,
+  x402Path,
+  policyFailurePath,
+  workflowPath,
+  identityChallengePath
+];
+const PERSIST_OBJECT_PATHS = [policyConfigPath, sessionRuntimePath];
+const persistArrayCache = new Map();
+const persistObjectCache = new Map();
+let persistenceInitDone = false;
 
 function authConfigured() {
   return Boolean(API_KEY_ADMIN || API_KEY_AGENT || API_KEY_VIEWER);
@@ -273,6 +291,16 @@ function broadcastEvent(eventName, payload = {}) {
   }
 }
 
+function cloneValue(value) {
+  if (value === null || value === undefined) return value;
+  return JSON.parse(JSON.stringify(value));
+}
+
+function persistenceKeyForPath(targetPath) {
+  const base = String(path.basename(targetPath || '') || '').trim().toLowerCase();
+  return `doc:${base}`;
+}
+
 function ensureJsonFile(targetPath) {
   if (!fs.existsSync(targetPath)) {
     fs.mkdirSync(path.dirname(targetPath), { recursive: true });
@@ -280,15 +308,21 @@ function ensureJsonFile(targetPath) {
   }
 }
 
-function readJsonArray(targetPath) {
+function loadJsonArrayFromFile(targetPath) {
   ensureJsonFile(targetPath);
-  const raw = fs.readFileSync(targetPath, 'utf8');
-  const cleaned = raw.replace(/^\uFEFF/, '');
-  return JSON.parse(cleaned || '[]');
+  try {
+    const raw = fs.readFileSync(targetPath, 'utf8');
+    const cleaned = raw.replace(/^\uFEFF/, '');
+    const parsed = JSON.parse(cleaned || '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 }
 
-function writeJsonArray(targetPath, records) {
-  fs.writeFileSync(targetPath, JSON.stringify(records, null, 2), 'utf8');
+function writeJsonArrayToFile(targetPath, records) {
+  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+  fs.writeFileSync(targetPath, JSON.stringify(Array.isArray(records) ? records : [], null, 2), 'utf8');
 }
 
 function ensureJsonObjectFile(targetPath) {
@@ -298,17 +332,118 @@ function ensureJsonObjectFile(targetPath) {
   }
 }
 
-function readJsonObject(targetPath) {
+function loadJsonObjectFromFile(targetPath) {
   ensureJsonObjectFile(targetPath);
-  const raw = fs.readFileSync(targetPath, 'utf8');
-  const cleaned = raw.replace(/^\uFEFF/, '');
-  const parsed = JSON.parse(cleaned || '{}');
-  return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  try {
+    const raw = fs.readFileSync(targetPath, 'utf8');
+    const cleaned = raw.replace(/^\uFEFF/, '');
+    const parsed = JSON.parse(cleaned || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeJsonObjectToFile(targetPath, payload) {
+  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+  fs.writeFileSync(targetPath, JSON.stringify(payload || {}, null, 2), 'utf8');
+}
+
+function queuePersistWrite(stateKey, payload) {
+  if (!persistenceStore.isConnected()) return;
+  persistenceStore.setDocument(stateKey, payload).catch((error) => {
+    console.error(`[persistence] failed writing ${stateKey}: ${error?.message || error}`);
+  });
+}
+
+function readJsonArray(targetPath) {
+  const stateKey = persistenceKeyForPath(targetPath);
+  if (persistArrayCache.has(stateKey)) {
+    return cloneValue(persistArrayCache.get(stateKey) || []);
+  }
+  const rows = loadJsonArrayFromFile(targetPath);
+  persistArrayCache.set(stateKey, rows);
+  queuePersistWrite(stateKey, rows);
+  return cloneValue(rows);
+}
+
+function writeJsonArray(targetPath, records) {
+  const stateKey = persistenceKeyForPath(targetPath);
+  const rows = Array.isArray(records) ? records : [];
+  persistArrayCache.set(stateKey, cloneValue(rows));
+  writeJsonArrayToFile(targetPath, rows);
+  queuePersistWrite(stateKey, rows);
+}
+
+function readJsonObject(targetPath) {
+  const stateKey = persistenceKeyForPath(targetPath);
+  if (persistObjectCache.has(stateKey)) {
+    return cloneValue(persistObjectCache.get(stateKey) || {});
+  }
+  const payload = loadJsonObjectFromFile(targetPath);
+  persistObjectCache.set(stateKey, payload);
+  queuePersistWrite(stateKey, payload);
+  return cloneValue(payload);
 }
 
 function writeJsonObject(targetPath, payload) {
-  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-  fs.writeFileSync(targetPath, JSON.stringify(payload || {}, null, 2), 'utf8');
+  const stateKey = persistenceKeyForPath(targetPath);
+  const normalized = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
+  persistObjectCache.set(stateKey, cloneValue(normalized));
+  writeJsonObjectToFile(targetPath, normalized);
+  queuePersistWrite(stateKey, normalized);
+}
+
+async function hydratePersistenceCachesFromDatabase() {
+  if (!persistenceStore.isConnected()) return;
+  for (const targetPath of PERSIST_ARRAY_PATHS) {
+    const stateKey = persistenceKeyForPath(targetPath);
+    const payload = await persistenceStore.getDocument(stateKey);
+    if (!Array.isArray(payload)) continue;
+    persistArrayCache.set(stateKey, payload);
+    writeJsonArrayToFile(targetPath, payload);
+  }
+  for (const targetPath of PERSIST_OBJECT_PATHS) {
+    const stateKey = persistenceKeyForPath(targetPath);
+    const payload = await persistenceStore.getDocument(stateKey);
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) continue;
+    persistObjectCache.set(stateKey, payload);
+    writeJsonObjectToFile(targetPath, payload);
+  }
+}
+
+async function seedPersistenceFromFilesIfMissing() {
+  if (!persistenceStore.isConnected()) return;
+  for (const targetPath of PERSIST_ARRAY_PATHS) {
+    const stateKey = persistenceKeyForPath(targetPath);
+    const exists = await persistenceStore.hasDocument(stateKey);
+    if (exists) continue;
+    const rows = loadJsonArrayFromFile(targetPath);
+    await persistenceStore.setDocument(stateKey, rows);
+  }
+  for (const targetPath of PERSIST_OBJECT_PATHS) {
+    const stateKey = persistenceKeyForPath(targetPath);
+    const exists = await persistenceStore.hasDocument(stateKey);
+    if (exists) continue;
+    const payload = loadJsonObjectFromFile(targetPath);
+    await persistenceStore.setDocument(stateKey, payload);
+  }
+}
+
+async function initializePersistence() {
+  if (persistenceInitDone) return;
+  persistenceInitDone = true;
+  try {
+    await persistenceStore.init();
+  } catch (error) {
+    console.error(`[persistence] init failed, fallback to file mode: ${error?.message || error}`);
+    return;
+  }
+  if (!persistenceStore.isConnected()) return;
+  await seedPersistenceFromFilesIfMissing();
+  await hydratePersistenceCachesFromDatabase();
+  const info = persistenceStore.info();
+  console.log(`[persistence] mode=${info.mode} connected=${info.connected}`);
 }
 
 function readRecords() {
@@ -502,7 +637,7 @@ function normalizeAddress(address = '') {
   return String(address).trim().toLowerCase();
 }
 
-function mapX402Item(item = {}) {
+function mapX402Item(item = {}, workflow = null) {
   const paidAt = Number(item.paidAt || 0);
   const createdAt = Number(item.createdAt || 0);
   return {
@@ -521,8 +656,229 @@ function mapX402Item(item = {}) {
     query: item.query || '',
     tokenAddress: item.tokenAddress || '',
     recipient: item.recipient || '',
+    workflowState: workflow?.state || '',
+    workflowTraceId: workflow?.traceId || '',
+    workflowUpdatedAt: workflow?.updatedAt || workflow?.createdAt || '',
+    workflowError: workflow?.error || '',
     policyDecision: item?.policy?.decision || '',
     identity: item.identity || null
+  };
+}
+
+function buildLatestWorkflowByRequestId(workflows = []) {
+  const index = new Map();
+  for (const item of workflows) {
+    const requestId = String(item?.requestId || '').trim();
+    if (!requestId) continue;
+    const prev = index.get(requestId);
+    const prevTs = new Date(prev?.updatedAt || prev?.createdAt || 0).getTime();
+    const currTs = new Date(item?.updatedAt || item?.createdAt || 0).getTime();
+    if (!prev || currTs >= prevTs) {
+      index.set(requestId, item);
+    }
+  }
+  return index;
+}
+
+function toIsoFromMs(value) {
+  const ms = Number(value || 0);
+  return ms > 0 ? new Date(ms).toISOString() : '';
+}
+
+function normalizeExecutionState(value = '', fallback = 'running') {
+  const raw = String(value || '').trim().toLowerCase();
+  if (['unlocked', 'success', 'ok', 'completed', 'paid'].includes(raw)) return 'success';
+  if (['failed', 'error', 'expired', 'rejected'].includes(raw)) return 'failed';
+  if (['running', 'pending', 'processing'].includes(raw)) return 'running';
+  return fallback;
+}
+
+function buildA2AReceipt(requestItem = {}, workflow = null, overrides = {}) {
+  const requestId = String(requestItem.requestId || '').trim();
+  const workflowTraceId = String(workflow?.traceId || '').trim();
+  const linkedTraceId = String(requestItem?.a2a?.traceId || '').trim();
+  const traceId = String(overrides.traceId || workflowTraceId || linkedTraceId).trim();
+  const sourceAgentId = String(overrides.sourceAgentId || requestItem?.a2a?.sourceAgentId || '').trim();
+  const targetAgentId = String(overrides.targetAgentId || requestItem?.a2a?.targetAgentId || '').trim();
+  const capability = String(overrides.capability || requestItem?.a2a?.taskType || requestItem.action || '').trim();
+  const requestStatus = String(requestItem.status || '').trim().toLowerCase();
+  const state = normalizeExecutionState(
+    overrides.state || workflow?.state || requestStatus || 'running',
+    'running'
+  );
+  const paymentTxHash = String(requestItem.paymentTxHash || requestItem?.paymentProof?.txHash || '').trim();
+  const createdAt = toIsoFromMs(requestItem.createdAt);
+  const paidAt = toIsoFromMs(requestItem.paidAt);
+  const updatedAt = String(
+    overrides.updatedAt || workflow?.updatedAt || workflow?.createdAt || paidAt || createdAt || new Date().toISOString()
+  ).trim();
+  const phase = String(
+    overrides.phase ||
+      (state === 'failed'
+        ? 'failed'
+        : requestStatus === 'paid'
+          ? state === 'success'
+            ? 'settled'
+            : 'paid'
+          : 'payment_required')
+  ).trim();
+
+  const links = {
+    workflow: traceId ? `/api/workflow/${traceId}` : '',
+    evidence: traceId ? `/api/evidence/export?traceId=${encodeURIComponent(traceId)}` : ''
+  };
+
+  return {
+    protocol: 'x402-a2a-v1',
+    interactionId: requestId,
+    traceId,
+    sourceAgentId,
+    targetAgentId,
+    capability,
+    state,
+    phase,
+    query: String(requestItem.query || '').trim(),
+    payment: {
+      requestId,
+      status: requestStatus || '',
+      payer: String(requestItem.payer || '').trim(),
+      amount: String(requestItem.amount || '').trim(),
+      tokenAddress: String(requestItem.tokenAddress || '').trim(),
+      recipient: String(requestItem.recipient || '').trim(),
+      txHash: paymentTxHash
+    },
+    timing: {
+      createdAt,
+      paidAt,
+      updatedAt
+    },
+    result: {
+      summary: String(workflow?.result?.summary || overrides.summary || '').trim(),
+      error: String(workflow?.error || overrides.error || '').trim()
+    },
+    links
+  };
+}
+
+function listA2AReceipts(input = {}) {
+  const sourceFilter = String(input.sourceAgentId || '').trim().toLowerCase();
+  const targetFilter = String(input.targetAgentId || '').trim().toLowerCase();
+  const capabilityFilter = String(input.capability || '').trim().toLowerCase();
+  const stateFilter = String(input.state || '').trim().toLowerCase();
+  const limit = Math.max(1, Math.min(Number(input.limit || 50), 500));
+
+  const workflows = readWorkflows();
+  const workflowByRequestId = buildLatestWorkflowByRequestId(workflows);
+  const receipts = readX402Requests()
+    .filter((item) => item?.a2a && (item?.a2a?.sourceAgentId || item?.a2a?.targetAgentId))
+    .map((item) =>
+      buildA2AReceipt(item, workflowByRequestId.get(String(item?.requestId || '').trim()) || null, {
+        traceId: item?.a2a?.traceId || ''
+      })
+    )
+    .filter((row) => {
+      const sourceOk = !sourceFilter || String(row.sourceAgentId || '').toLowerCase() === sourceFilter;
+      const targetOk = !targetFilter || String(row.targetAgentId || '').toLowerCase() === targetFilter;
+      const capabilityOk = !capabilityFilter || String(row.capability || '').toLowerCase() === capabilityFilter;
+      const stateOk = !stateFilter || String(row.state || '').toLowerCase() === stateFilter;
+      return sourceOk && targetOk && capabilityOk && stateOk;
+    });
+  return receipts.slice(0, limit);
+}
+
+function buildA2ANetworkGraph(receipts = []) {
+  const edges = new Map();
+  const nodes = new Map();
+
+  function ensureNode(agentId = '') {
+    const key = String(agentId || '').trim();
+    if (!key) return null;
+    if (!nodes.has(key)) {
+      nodes.set(key, {
+        agentId: key,
+        outCount: 0,
+        inCount: 0,
+        successCount: 0,
+        failedCount: 0,
+        runningCount: 0,
+        outAmount: 0,
+        inAmount: 0
+      });
+    }
+    return nodes.get(key);
+  }
+
+  for (const receipt of receipts) {
+    const source = String(receipt.sourceAgentId || '').trim();
+    const target = String(receipt.targetAgentId || '').trim();
+    const capability = String(receipt.capability || 'unknown').trim();
+    if (!source || !target) continue;
+    const amount = Number(receipt?.payment?.amount || 0);
+    const safeAmount = Number.isFinite(amount) ? amount : 0;
+    const state = normalizeExecutionState(receipt.state, 'running');
+
+    const edgeKey = `${source}->${target}::${capability}`;
+    if (!edges.has(edgeKey)) {
+      edges.set(edgeKey, {
+        edgeId: edgeKey,
+        sourceAgentId: source,
+        targetAgentId: target,
+        capability,
+        totalCount: 0,
+        successCount: 0,
+        failedCount: 0,
+        runningCount: 0,
+        totalAmount: 0,
+        latestAt: '',
+        lastState: '',
+        lastTxHash: ''
+      });
+    }
+    const edge = edges.get(edgeKey);
+    edge.totalCount += 1;
+    edge.totalAmount = Number((edge.totalAmount + safeAmount).toFixed(6));
+    if (state === 'success') edge.successCount += 1;
+    else if (state === 'failed') edge.failedCount += 1;
+    else edge.runningCount += 1;
+    const updatedAt = String(receipt?.timing?.updatedAt || '').trim();
+    if (!edge.latestAt || new Date(updatedAt).getTime() >= new Date(edge.latestAt).getTime()) {
+      edge.latestAt = updatedAt;
+      edge.lastState = state;
+      edge.lastTxHash = String(receipt?.payment?.txHash || '').trim();
+    }
+
+    const sourceNode = ensureNode(source);
+    const targetNode = ensureNode(target);
+    if (sourceNode) {
+      sourceNode.outCount += 1;
+      sourceNode.outAmount = Number((sourceNode.outAmount + safeAmount).toFixed(6));
+      if (state === 'success') sourceNode.successCount += 1;
+      else if (state === 'failed') sourceNode.failedCount += 1;
+      else sourceNode.runningCount += 1;
+    }
+    if (targetNode) {
+      targetNode.inCount += 1;
+      targetNode.inAmount = Number((targetNode.inAmount + safeAmount).toFixed(6));
+      if (state === 'success') targetNode.successCount += 1;
+      else if (state === 'failed') targetNode.failedCount += 1;
+      else targetNode.runningCount += 1;
+    }
+  }
+
+  const edgeRows = Array.from(edges.values()).sort((a, b) => {
+    const atA = Number.isFinite(Date.parse(a.latestAt || '')) ? Date.parse(a.latestAt || '') : 0;
+    const atB = Number.isFinite(Date.parse(b.latestAt || '')) ? Date.parse(b.latestAt || '') : 0;
+    return atB - atA;
+  });
+  const nodeRows = Array.from(nodes.values()).sort((a, b) => (b.outCount + b.inCount) - (a.outCount + a.inCount));
+
+  return {
+    protocol: 'x402-a2a-v1',
+    generatedAt: new Date().toISOString(),
+    nodeCount: nodeRows.length,
+    edgeCount: edgeRows.length,
+    nodes: nodeRows,
+    edges: edgeRows
   };
 }
 
@@ -695,7 +1051,7 @@ function computeReactiveStopOrderAmount(actionParams = {}) {
 
 function buildA2ACapabilities() {
   return {
-    protocol: 'a2a-mvp-v0',
+    protocol: 'x402-a2a-v1',
     targetAgent: {
       agentId: KITE_AGENT2_ID,
       wallet: KITE_AGENT2_AA_ADDRESS,
@@ -707,6 +1063,7 @@ function buildA2ACapabilities() {
       settlementToken: SETTLEMENT_TOKEN,
       network: 'kite_testnet'
     },
+    lifecycle: ['discover', 'quote', 'pay', 'execute', 'prove', 'settle'],
     actions: [
       {
         id: 'reactive-stop-orders',
@@ -1546,7 +1903,11 @@ app.post('/api/identity/verify', requireRole('viewer'), async (req, res) => {
 
 app.get('/api/x402/mapping/latest', requireRole('viewer'), (req, res) => {
   const limit = Math.max(1, Math.min(Number(req.query.limit || 20), 200));
-  const rows = readX402Requests().map(mapX402Item).slice(0, limit);
+  const workflows = readWorkflows();
+  const workflowByRequestId = buildLatestWorkflowByRequestId(workflows);
+  const rows = readX402Requests()
+    .map((item) => mapX402Item(item, workflowByRequestId.get(String(item?.requestId || '').trim()) || null))
+    .slice(0, limit);
   const kpi = computeDashboardKpi(readX402Requests());
   return res.json({ ok: true, total: rows.length, kpi, items: rows });
 });
@@ -1934,6 +2295,7 @@ app.post('/api/workflow/stop-order/run', requireRole('agent'), async (req, res) 
       payer,
       sourceAgentId,
       targetAgentId,
+      traceId,
       task: taskPayload
     });
     if (challengeResult.status !== 402) {
@@ -2050,6 +2412,7 @@ app.post('/api/workflow/stop-order/run', requireRole('agent'), async (req, res) 
       payer,
       sourceAgentId,
       targetAgentId,
+      traceId,
       requestId,
       paymentProof: {
         requestId,
@@ -2095,7 +2458,8 @@ app.post('/api/workflow/stop-order/run', requireRole('agent'), async (req, res) 
       txHash,
       userOpHash,
       state: workflow.state,
-      workflow
+      workflow,
+      receipt: proofResult?.body?.receipt || null
     });
   } catch (error) {
     appendWorkflowStep(workflow, 'failed', 'error', { reason: error.message });
@@ -2117,7 +2481,31 @@ app.post('/api/workflow/stop-order/run', requireRole('agent'), async (req, res) 
       state: workflow.state,
       error: 'workflow_failed',
       reason: error.message,
-      workflow
+      workflow,
+      receipt:
+        workflow.requestId && workflow.sourceAgentId && workflow.targetAgentId
+          ? buildA2AReceipt(
+              {
+                requestId: workflow.requestId,
+                status: 'pending',
+                action: 'reactive-stop-orders',
+                query: `A2A stop-order ${workflow?.input?.symbol || ''}`.trim(),
+                payer: workflow.payer || '',
+                amount: '',
+                tokenAddress: SETTLEMENT_TOKEN,
+                recipient: KITE_AGENT2_AA_ADDRESS,
+                paymentTxHash: workflow.txHash || '',
+                a2a: {
+                  sourceAgentId: workflow.sourceAgentId,
+                  targetAgentId: workflow.targetAgentId,
+                  taskType: 'reactive-stop-orders',
+                  traceId
+                }
+              },
+              workflow,
+              { state: 'failed', phase: 'failed', error: error.message, traceId }
+            )
+          : null
     });
   }
 });
@@ -2132,7 +2520,13 @@ app.get('/api/workflow/:traceId', requireRole('viewer'), (req, res) => {
   if (!workflow) {
     return res.status(404).json({ ok: false, error: 'workflow_not_found', traceId });
   }
-  return res.json({ ok: true, traceId, workflow });
+  const reqItem = readX402Requests().find((item) => String(item.requestId || '') === String(workflow.requestId || ''));
+  return res.json({
+    ok: true,
+    traceId,
+    workflow,
+    receipt: reqItem?.a2a ? buildA2AReceipt(reqItem, workflow, { traceId }) : null
+  });
 });
 
 app.get('/api/evidence/export', requireRole('viewer'), (req, res) => {
@@ -2157,6 +2551,7 @@ app.get('/api/evidence/export', requireRole('viewer'), (req, res) => {
     traceId,
     exportedAt: new Date().toISOString(),
     workflow: workflow || null,
+    a2aReceipt: reqItem?.a2a ? buildA2AReceipt(reqItem, workflow, { traceId }) : null,
     x402: reqItem
       ? {
           requestId: reqItem.requestId || '',
@@ -2192,10 +2587,46 @@ app.get('/api/a2a/capabilities', (req, res) => {
   res.json({ ok: true, capabilities: buildA2ACapabilities() });
 });
 
+app.get('/api/a2a/receipts', requireRole('viewer'), (req, res) => {
+  const limit = Math.max(1, Math.min(Number(req.query.limit || 50), 500));
+  const items = listA2AReceipts({
+    sourceAgentId: req.query.sourceAgentId,
+    targetAgentId: req.query.targetAgentId,
+    capability: req.query.capability,
+    state: req.query.state,
+    limit
+  });
+  return res.json({
+    ok: true,
+    total: items.length,
+    items
+  });
+});
+
+app.get('/api/a2a/network/graph', requireRole('viewer'), (req, res) => {
+  const limit = Math.max(1, Math.min(Number(req.query.limit || 200), 1000));
+  const recent = Math.max(1, Math.min(Number(req.query.recent || 20), 200));
+  const items = listA2AReceipts({
+    sourceAgentId: req.query.sourceAgentId,
+    targetAgentId: req.query.targetAgentId,
+    capability: req.query.capability,
+    state: req.query.state,
+    limit
+  });
+  const graph = buildA2ANetworkGraph(items);
+  return res.json({
+    ok: true,
+    total: items.length,
+    graph,
+    recent: items.slice(0, recent)
+  });
+});
+
 async function handleA2AStopOrders(body = {}) {
   const payer = String(body.payer || '').trim();
   const sourceAgentId = String(body.sourceAgentId || KITE_AGENT1_ID).trim();
   const targetAgentId = String(body.targetAgentId || KITE_AGENT2_ID).trim();
+  const traceId = String(body.traceId || '').trim();
   const requestId = String(body.requestId || '').trim();
   const paymentProof = body.paymentProof;
   const task = body.task || {};
@@ -2260,22 +2691,29 @@ async function handleA2AStopOrders(body = {}) {
     reqItem.a2a = {
       sourceAgentId,
       targetAgentId,
-      taskType: 'reactive-stop-orders'
+      taskType: 'reactive-stop-orders',
+      traceId
     };
     requests.unshift(reqItem);
     writeX402Requests(requests);
+    const receipt = buildA2AReceipt(reqItem, null, {
+      traceId,
+      phase: 'payment_required',
+      state: 'running'
+    });
 
     return {
       status: 402,
       body: {
         ...buildPaymentRequiredResponse(reqItem),
         a2a: {
-          protocol: 'a2a-mvp-v0',
+          protocol: 'x402-a2a-v1',
           sourceAgentId,
           targetAgentId,
           taskType: 'reactive-stop-orders',
           task: actionParams
-        }
+        },
+        receipt
       }
     };
   }
@@ -2318,7 +2756,16 @@ async function handleA2AStopOrders(body = {}) {
             provider: 'Reactive Contracts'
           }
         },
-        a2a: reqItem.a2a || null
+        a2a: reqItem.a2a || null,
+        receipt: buildA2AReceipt(reqItem, null, {
+          traceId,
+          sourceAgentId,
+          targetAgentId,
+          capability: 'reactive-stop-orders',
+          phase: 'settled',
+          state: 'success',
+          summary: 'A2A reactive stop-order task already unlocked'
+        })
       }
     };
   }
@@ -2355,7 +2802,23 @@ async function handleA2AStopOrders(body = {}) {
     verifiedAt: Date.now(),
     details: verification.details || null
   };
+  reqItem.a2a = {
+    ...(reqItem.a2a || {}),
+    sourceAgentId: String(reqItem?.a2a?.sourceAgentId || sourceAgentId).trim(),
+    targetAgentId: String(reqItem?.a2a?.targetAgentId || targetAgentId).trim(),
+    taskType: String(reqItem?.a2a?.taskType || 'reactive-stop-orders').trim(),
+    traceId: String(reqItem?.a2a?.traceId || traceId).trim()
+  };
   writeX402Requests(requests);
+  const receipt = buildA2AReceipt(reqItem, null, {
+    traceId: reqItem?.a2a?.traceId || traceId,
+    sourceAgentId,
+    targetAgentId,
+    capability: 'reactive-stop-orders',
+    phase: 'settled',
+    state: 'success',
+    summary: 'A2A reactive stop-order task unlocked by x402 payment'
+  });
 
   return {
     status: 200,
@@ -2383,7 +2846,8 @@ async function handleA2AStopOrders(body = {}) {
         sourceAgentId,
         targetAgentId,
         taskType: 'reactive-stop-orders'
-      }
+      },
+      receipt
     }
   };
 }
@@ -2877,7 +3341,16 @@ app.get('/api/auth/info', requireRole('viewer'), (req, res) => {
     traceId: req.traceId,
     authConfigured: authConfigured(),
     acceptedHeaders: ['x-api-key', 'Authorization: Bearer <key>'],
-    roles: ['viewer', 'agent', 'admin']
+    roles: ['viewer', 'agent', 'admin'],
+    persistence: persistenceStore.info()
+  });
+});
+
+app.get('/api/system/persistence', requireRole('viewer'), (req, res) => {
+  res.json({
+    ok: true,
+    traceId: req.traceId || '',
+    persistence: persistenceStore.info()
   });
 });
 
@@ -3269,6 +3742,36 @@ app.post('/api/session/pay', requireRole('agent'), async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Backend listening on http://localhost:${PORT}`);
+let httpServer = null;
+
+async function startServer() {
+  await initializePersistence();
+  httpServer = app.listen(PORT, () => {
+    console.log(`Backend listening on http://localhost:${PORT}`);
+  });
+}
+
+async function shutdownServer() {
+  try {
+    if (httpServer) {
+      await new Promise((resolve) => httpServer.close(resolve));
+      httpServer = null;
+    }
+  } catch {
+    // ignore server close errors
+  }
+  await persistenceStore.close();
+}
+
+startServer().catch((error) => {
+  console.error(`Backend startup failed: ${error?.message || error}`);
+  process.exit(1);
+});
+
+process.on('SIGINT', () => {
+  shutdownServer().finally(() => process.exit(0));
+});
+
+process.on('SIGTERM', () => {
+  shutdownServer().finally(() => process.exit(0));
 });
