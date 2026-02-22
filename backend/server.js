@@ -401,6 +401,40 @@ function broadcastEvent(eventName, payload = {}) {
   }
 }
 
+function openSseStream(req, res) {
+  const traceIdFilter = String(req.query?.traceId || '').trim();
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+
+  const client = {
+    res,
+    traceId: traceIdFilter
+  };
+  sseClients.add(client);
+  res.write(
+    `event: connected\ndata: ${JSON.stringify({
+      ok: true,
+      at: new Date().toISOString(),
+      traceId: traceIdFilter || ''
+    })}\n\n`
+  );
+
+  const keepalive = setInterval(() => {
+    try {
+      res.write(`event: ping\ndata: ${JSON.stringify({ t: Date.now() })}\n\n`);
+    } catch {
+      // handled by close
+    }
+  }, 15000);
+
+  req.on('close', () => {
+    clearInterval(keepalive);
+    sseClients.delete(client);
+  });
+}
+
 function cloneValue(value) {
   if (value === null || value === undefined) return value;
   return JSON.parse(JSON.stringify(value));
@@ -1684,6 +1718,31 @@ function normalizeIdentityChallengeRows(rows = []) {
   return freshRows.slice(0, limit);
 }
 
+function getLatestIdentityChallengeSnapshot() {
+  const rows = normalizeIdentityChallengeRows(readIdentityChallenges());
+  if (!rows.length) return null;
+  const latest = [...rows].sort((a, b) => {
+    const ta = Number(a?.verifiedAt || a?.usedAt || a?.issuedAt || 0);
+    const tb = Number(b?.verifiedAt || b?.usedAt || b?.issuedAt || 0);
+    return tb - ta;
+  })[0];
+  if (!latest) return null;
+  return {
+    challengeId: String(latest.challengeId || ''),
+    traceId: String(latest.traceId || ''),
+    status: String(latest.status || ''),
+    issuedAt: Number(latest.issuedAt || 0) > 0 ? new Date(Number(latest.issuedAt)).toISOString() : '',
+    expiresAt: Number(latest.expiresAt || 0) > 0 ? new Date(Number(latest.expiresAt)).toISOString() : '',
+    verifiedAt: Number(latest.verifiedAt || 0) > 0 ? new Date(Number(latest.verifiedAt)).toISOString() : '',
+    recoveredAddress: String(latest.recoveredAddress || ''),
+    identity: {
+      registry: String(latest?.identity?.registry || ''),
+      agentId: String(latest?.identity?.agentId || ''),
+      agentWallet: String(latest?.identity?.agentWallet || '')
+    }
+  };
+}
+
 async function readIdentityProfile(input = {}) {
   const requestedRegistry = String(input.registry || '').trim();
   const requestedAgentId = parseAgentId(input.agentId);
@@ -2134,6 +2193,16 @@ app.post('/api/identity/verify', requireRole('viewer'), async (req, res) => {
   }
 });
 
+app.get('/api/demo/identity/latest', requireRole('viewer'), (req, res) => {
+  const latest = getLatestIdentityChallengeSnapshot();
+  return res.json({
+    ok: true,
+    traceId: req.traceId || '',
+    verifyMode: IDENTITY_VERIFY_MODE,
+    latest
+  });
+});
+
 app.get('/api/x402/mapping/latest', requireRole('viewer'), (req, res) => {
   const limit = Math.max(1, Math.min(Number(req.query.limit || 20), 200));
   const workflows = readWorkflows();
@@ -2447,37 +2516,11 @@ app.get('/api/chat/agent/health', requireRole('viewer'), async (req, res) => {
 });
 
 app.get('/api/events/stream', requireRole('viewer'), (req, res) => {
-  const traceIdFilter = String(req.query?.traceId || '').trim();
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache, no-transform');
-  res.setHeader('Connection', 'keep-alive');
-  res.flushHeaders?.();
+  openSseStream(req, res);
+});
 
-  const client = {
-    res,
-    traceId: traceIdFilter
-  };
-  sseClients.add(client);
-  res.write(
-    `event: connected\ndata: ${JSON.stringify({
-      ok: true,
-      at: new Date().toISOString(),
-      traceId: traceIdFilter || ''
-    })}\n\n`
-  );
-
-  const keepalive = setInterval(() => {
-    try {
-      res.write(`event: ping\ndata: ${JSON.stringify({ t: Date.now() })}\n\n`);
-    } catch {
-      // handled by close
-    }
-  }, 15000);
-
-  req.on('close', () => {
-    clearInterval(keepalive);
-    sseClients.delete(client);
-  });
+app.get('/api/demo/stream', requireRole('viewer'), (req, res) => {
+  openSseStream(req, res);
 });
 
 app.post('/api/workflow/stop-order/run', requireRole('agent'), async (req, res) => {
@@ -2980,6 +3023,122 @@ app.get('/api/workflow/:traceId', requireRole('viewer'), (req, res) => {
     traceId,
     workflow,
     receipt: reqItem?.a2a ? buildA2AReceipt(reqItem, workflow, { traceId }) : null
+  });
+});
+
+app.get('/api/demo/trace/:traceId', requireRole('viewer'), (req, res) => {
+  const traceId = String(req.params.traceId || '').trim();
+  if (!traceId) {
+    return res.status(400).json({ ok: false, error: 'traceId_required' });
+  }
+
+  const workflows = readWorkflows();
+  const workflow = workflows.find((w) => String(w.traceId || '') === traceId);
+  if (!workflow) {
+    return res.status(404).json({ ok: false, error: 'workflow_not_found', traceId });
+  }
+
+  const reqItem = readX402Requests().find((item) => String(item.requestId || '') === String(workflow.requestId || ''));
+  const mapped = reqItem ? mapX402Item(reqItem, workflow) : null;
+  const receipt = reqItem?.a2a ? buildA2AReceipt(reqItem, workflow, { traceId }) : null;
+  const identityLatest = getLatestIdentityChallengeSnapshot();
+
+  const hasIdentity = Boolean(reqItem?.identity?.registry || reqItem?.identity?.agentId);
+  const hasChallenge = Boolean(
+    workflow?.requestId ||
+      (Array.isArray(workflow?.steps) && workflow.steps.some((step) => String(step?.name || '') === 'challenge_issued'))
+  );
+  const hasPayment = Boolean(
+    workflow?.txHash ||
+      reqItem?.paymentTxHash ||
+      reqItem?.paymentProof?.txHash ||
+      (Array.isArray(workflow?.steps) && workflow.steps.some((step) => String(step?.name || '') === 'payment_sent'))
+  );
+  const hasProof = Boolean(
+    reqItem?.proofVerification ||
+      (Array.isArray(workflow?.steps) && workflow.steps.some((step) => String(step?.name || '') === 'proof_submitted'))
+  );
+  const hasApiResult = Boolean(
+    workflow?.result ||
+      String(workflow?.state || '').trim().toLowerCase() === 'unlocked' ||
+      (Array.isArray(workflow?.steps) && workflow.steps.some((step) => String(step?.name || '') === 'unlocked'))
+  );
+  const hasOnchain = Boolean(reqItem?.paymentTxHash || reqItem?.paymentProof?.txHash || workflow?.txHash);
+  const workflowState = normalizeExecutionState(workflow?.state || '', 'running');
+
+  const order = ['identity', 'challenge', 'payment', 'proof', 'api_result', 'onchain'];
+  const stepState = {
+    identity: hasIdentity ? 'success' : 'waiting',
+    challenge: hasChallenge ? 'success' : 'waiting',
+    payment: hasPayment ? 'success' : 'waiting',
+    proof: hasProof ? 'success' : 'waiting',
+    api_result: hasApiResult ? 'success' : 'waiting',
+    onchain: hasOnchain ? 'success' : 'waiting'
+  };
+
+  if (workflowState === 'failed') {
+    const failedStep =
+      order.find((id) => stepState[id] !== 'success') ||
+      'api_result';
+    stepState[failedStep] = 'failed';
+  } else {
+    const runningStep = order.find((id) => stepState[id] !== 'success');
+    if (runningStep) {
+      stepState[runningStep] = 'running';
+    }
+  }
+
+  const timeline = [
+    {
+      id: 'identity',
+      label: 'ERC8004 Identity',
+      state: stepState.identity,
+      detail: hasIdentity
+        ? `agentId ${String(reqItem?.identity?.agentId || '-')}`
+        : 'waiting for identity metadata'
+    },
+    {
+      id: 'challenge',
+      label: 'x402 Challenge',
+      state: stepState.challenge,
+      detail: hasChallenge ? `requestId ${String(workflow?.requestId || reqItem?.requestId || '-')}` : 'waiting for challenge'
+    },
+    {
+      id: 'payment',
+      label: 'Payment Sent',
+      state: stepState.payment,
+      detail: hasPayment ? `tx ${String(workflow?.txHash || reqItem?.paymentTxHash || reqItem?.paymentProof?.txHash || '-')}` : 'waiting for payment'
+    },
+    {
+      id: 'proof',
+      label: 'Proof Verified',
+      state: stepState.proof,
+      detail: hasProof ? 'on-chain transfer log matched' : 'waiting for proof verification'
+    },
+    {
+      id: 'api_result',
+      label: 'API Result',
+      state: stepState.api_result,
+      detail: hasApiResult ? String(workflow?.result?.summary || reqItem?.result?.summary || 'result unlocked') : 'waiting for result unlock'
+    },
+    {
+      id: 'onchain',
+      label: 'On-chain Evidence',
+      state: stepState.onchain,
+      detail: hasOnchain ? String(workflow?.txHash || reqItem?.paymentTxHash || reqItem?.paymentProof?.txHash || '-') : 'waiting for tx evidence'
+    }
+  ];
+
+  return res.json({
+    ok: true,
+    traceId,
+    state: workflowState,
+    workflow,
+    request: reqItem || null,
+    mapped,
+    receipt,
+    identityLatest,
+    timeline
   });
 });
 

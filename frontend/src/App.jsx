@@ -6,20 +6,29 @@ const API_BASE_URL = String(import.meta.env.VITE_API_BASE_URL || '')
   .trim()
   .replace(/\/+$/, '');
 const VIEWER_API_KEY = String(import.meta.env.VITE_API_KEY_VIEWER || import.meta.env.VITE_API_KEY || '').trim();
+const AGENT_API_KEY = String(import.meta.env.VITE_API_KEY_AGENT || import.meta.env.VITE_API_KEY || '').trim();
 
 const POLL_INTERVAL_MS = 8000;
-const RECORD_LIMIT = 60;
-const NETWORK_LIMIT = 300;
-const TRACE_LIMIT = 10;
-const EVENT_LIMIT = 18;
+const RECORD_LIMIT = 80;
+const EVENT_LIMIT = 16;
+
+const STEP_ORDER = ['identity', 'challenge', 'payment', 'proof', 'api_result', 'onchain'];
+const STEP_LABELS = {
+  identity: 'ERC8004 Identity',
+  challenge: 'x402 Challenge',
+  payment: 'Payment Sent',
+  proof: 'Proof Verified',
+  api_result: 'API Result',
+  onchain: 'On-chain Evidence'
+};
 
 const EVENT_META = {
-  workflow_started: { label: 'Workflow started', state: 'running' },
-  challenge_issued: { label: 'x402 challenge issued', state: 'running' },
-  payment_sent: { label: 'Payment sent', state: 'running' },
-  proof_submitted: { label: 'Payment proof submitted', state: 'running' },
-  unlocked: { label: 'Workflow unlocked', state: 'success' },
-  failed: { label: 'Workflow failed', state: 'failed' }
+  workflow_started: { label: 'Workflow started', state: 'running', stepId: 'identity' },
+  challenge_issued: { label: 'x402 challenge issued', state: 'running', stepId: 'challenge' },
+  payment_sent: { label: 'Payment sent', state: 'running', stepId: 'payment' },
+  proof_submitted: { label: 'Payment proof submitted', state: 'running', stepId: 'proof' },
+  unlocked: { label: 'Workflow unlocked', state: 'success', stepId: 'api_result' },
+  failed: { label: 'Workflow failed', state: 'failed', stepId: 'api_result' }
 };
 
 function resolveApiUrl(path, params) {
@@ -34,11 +43,22 @@ function resolveApiUrl(path, params) {
   return API_BASE_URL ? url.toString() : `${url.pathname}${url.search}`;
 }
 
-function toState(value) {
-  const raw = String(value || '').trim().toLowerCase();
-  if (['paid', 'success', 'ok', 'done', 'unlocked'].includes(raw)) return 'success';
-  if (['failed', 'error', 'expired', 'rejected'].includes(raw)) return 'failed';
-  return 'running';
+function buildHeaders(apiKey = VIEWER_API_KEY) {
+  const headers = {};
+  if (apiKey) {
+    headers['x-api-key'] = apiKey;
+  }
+  return headers;
+}
+
+async function fetchJson(path, params) {
+  const response = await fetch(resolveApiUrl(path, params), { headers: buildHeaders() });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload?.ok === false) {
+    const reason = payload?.reason || payload?.error || `HTTP ${response.status}`;
+    throw new Error(reason);
+  }
+  return payload;
 }
 
 function formatTime(isoText) {
@@ -62,159 +82,6 @@ function shortenMiddle(text, left = 10, right = 8) {
   return `${value.slice(0, left)}...${value.slice(-right)}`;
 }
 
-function formatAmount(value) {
-  const num = Number(value);
-  if (!Number.isFinite(num)) return String(value || '-');
-  return String(Number(num.toFixed(6)));
-}
-
-function parseEventData(event) {
-  if (!event?.data) return {};
-  try {
-    return JSON.parse(event.data);
-  } catch {
-    return {};
-  }
-}
-
-function resolveRecordState(record = {}) {
-  return toState(record.workflowState || record.status);
-}
-
-function resolveRecordStatusText(record = {}) {
-  const workflowText = String(record.workflowState || '').trim();
-  const x402Text = String(record.status || '').trim();
-  if (workflowText && x402Text && workflowText.toLowerCase() !== x402Text.toLowerCase()) {
-    return `${workflowText} / ${x402Text}`;
-  }
-  return workflowText || x402Text || '-';
-}
-
-function normalizeNetworkGraph(payload = {}) {
-  const graph = payload?.graph || {};
-  return {
-    nodeCount: Number(graph?.nodeCount || 0),
-    edgeCount: Number(graph?.edgeCount || 0),
-    nodes: Array.isArray(graph?.nodes) ? graph.nodes : [],
-    edges: Array.isArray(graph?.edges) ? graph.edges : []
-  };
-}
-
-function buildTraceFromRecord(record) {
-  const state = resolveRecordState(record);
-  const at = record.workflowUpdatedAt || record.paidAt || record.createdAt || new Date().toISOString();
-  const summary =
-    state === 'failed' && record.workflowError
-      ? record.workflowError
-      : record.query || record.action || 'x402 request';
-  return {
-    traceId: `request:${record.requestId}`,
-    requestId: record.requestId,
-    flowMode: record.flowMode,
-    state,
-    updatedAt: at,
-    summary,
-    steps: [
-      {
-        name: `x402_${record.status || 'pending'}_${record.workflowState || 'no_workflow'}`,
-        label: resolveRecordStatusText(record),
-        state,
-        at,
-        details: {
-          requestId: record.requestId,
-          amount: record.amount,
-          txHash: record.paymentTxHash || '',
-          workflowTraceId: record.workflowTraceId || ''
-        }
-      }
-    ]
-  };
-}
-
-function mergeRecordTraces(previous, records) {
-  const next = previous.map((trace) => ({ ...trace, steps: [...trace.steps] }));
-
-  for (const record of records) {
-    if (!record.requestId) continue;
-    const snapshot = buildTraceFromRecord(record);
-    const index = next.findIndex(
-      (trace) => String(trace.requestId || '') === record.requestId || trace.traceId === snapshot.traceId
-    );
-    if (index < 0) {
-      next.push(snapshot);
-      continue;
-    }
-
-    const current = next[index];
-    if (String(current.traceId || '').startsWith('request:')) {
-      next[index] = snapshot;
-      continue;
-    }
-
-    const snapshotState = resolveRecordState(record);
-    const keepTerminal = (current.state === 'success' || current.state === 'failed') && snapshotState === 'running';
-    next[index] = {
-      ...current,
-      requestId: record.requestId || current.requestId,
-      flowMode: record.flowMode || current.flowMode,
-      state: keepTerminal ? current.state : snapshotState,
-      updatedAt: snapshot.updatedAt
-    };
-  }
-
-  return next
-    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
-    .slice(0, TRACE_LIMIT);
-}
-
-function mergeEventTrace(previous, eventName, payload) {
-  const traceId = String(payload?.traceId || 'live-untracked').trim();
-  const meta = EVENT_META[eventName] || { label: eventName, state: 'running' };
-  const at = new Date().toISOString();
-
-  const traceList = previous.map((trace) => ({ ...trace, steps: [...trace.steps] }));
-  const index = traceList.findIndex((item) => item.traceId === traceId);
-
-  const nextStep = {
-    name: eventName,
-    label: meta.label,
-    state: meta.state,
-    at,
-    details: payload || {}
-  };
-
-  if (index < 0) {
-    traceList.push({
-      traceId,
-      requestId: String(payload?.requestId || '').trim(),
-      flowMode: payload?.sourceAgentId && payload?.targetAgentId ? 'a2a+x402' : 'agent-to-api+x402',
-      state: meta.state,
-      updatedAt: at,
-      summary: payload?.summary || payload?.reason || payload?.symbol || meta.label,
-      steps: [nextStep]
-    });
-  } else {
-    const current = traceList[index];
-    const nextState = meta.state === 'running' ? current.state || 'running' : meta.state;
-    traceList[index] = {
-      ...current,
-      requestId: String(payload?.requestId || current.requestId || '').trim(),
-      flowMode:
-        payload?.sourceAgentId && payload?.targetAgentId
-          ? 'a2a+x402'
-          : current.flowMode || 'agent-to-api+x402',
-      state: nextState,
-      updatedAt: at,
-      summary: payload?.summary || payload?.reason || current.summary,
-      steps: [...current.steps.slice(-10), nextStep]
-    };
-  }
-
-  return traceList
-    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
-    .slice(0, TRACE_LIMIT);
-}
-
 function statusText(mode) {
   if (mode === 'live') return 'SSE live';
   if (mode === 'polling') return 'Polling fallback';
@@ -225,47 +92,68 @@ function statusText(mode) {
 function readViewFromUrl() {
   try {
     const params = new URLSearchParams(window.location.search);
-    return params.get('view') === 'setup' ? 'setup' : 'monitor';
+    return params.get('view') === 'setup' ? 'setup' : 'demo';
   } catch {
-    return 'monitor';
+    return 'demo';
   }
 }
 
-async function fetchJson(path, params) {
-  const headers = {};
-  if (VIEWER_API_KEY) {
-    headers['x-api-key'] = VIEWER_API_KEY;
-  }
-  const response = await fetch(resolveApiUrl(path, params), { headers });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok || payload?.ok === false) {
-    const reason = payload?.reason || payload?.error || `HTTP ${response.status}`;
-    throw new Error(reason);
-  }
-  return payload;
+function normalizeStepState(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  if (raw === 'success') return 'success';
+  if (raw === 'failed') return 'failed';
+  if (raw === 'running') return 'running';
+  return 'waiting';
+}
+
+function normalizeTimeline(items = []) {
+  const index = new Map(
+    (Array.isArray(items) ? items : []).map((item) => [
+      String(item?.id || '').trim(),
+      {
+        ...item,
+        state: normalizeStepState(item?.state)
+      }
+    ])
+  );
+  return STEP_ORDER.map((id) => {
+    const existing = index.get(id);
+    return {
+      id,
+      label: STEP_LABELS[id],
+      state: normalizeStepState(existing?.state),
+      detail: String(existing?.detail || '').trim()
+    };
+  });
+}
+
+function toVisualState(record = {}) {
+  const workflow = String(record.workflowState || '').trim().toLowerCase();
+  const status = String(record.status || '').trim().toLowerCase();
+  const text = workflow || status;
+  if (['unlocked', 'success', 'ok', 'paid'].includes(text)) return 'success';
+  if (['failed', 'error', 'expired', 'rejected'].includes(text)) return 'failed';
+  return 'running';
 }
 
 function App() {
   const [view, setView] = useState(() => readViewFromUrl());
-  const [walletState, setWalletState] = useState({
-    ownerAddress: '',
-    aaAddress: ''
-  });
+  const [walletState, setWalletState] = useState({ ownerAddress: '', aaAddress: '' });
   const [records, setRecords] = useState([]);
   const [kpi, setKpi] = useState({ pending: 0, paid: 0, failed: 0, todaySpend: 0 });
-  const [traces, setTraces] = useState([]);
+  const [selectedTraceId, setSelectedTraceId] = useState('');
+  const [traceData, setTraceData] = useState(null);
+  const [identityLatest, setIdentityLatest] = useState(null);
   const [events, setEvents] = useState([]);
-  const [networkGraph, setNetworkGraph] = useState({
-    nodeCount: 0,
-    edgeCount: 0,
-    nodes: [],
-    edges: []
-  });
   const [lastSyncAt, setLastSyncAt] = useState('');
   const [streamMode, setStreamMode] = useState(VIEWER_API_KEY ? 'polling' : 'connecting');
   const [errorText, setErrorText] = useState('');
   const [refreshing, setRefreshing] = useState(false);
+  const [traceLoading, setTraceLoading] = useState(false);
+  const [stepFlash, setStepFlash] = useState('');
   const [streamToken, setStreamToken] = useState(0);
+  const [triggering, setTriggering] = useState(false);
+
   const isSetupView = view === 'setup';
 
   const switchView = useCallback((nextView) => {
@@ -304,39 +192,64 @@ function App() {
     };
     window.ethereum.on('accountsChanged', onAccountsChanged);
     return () => {
-      if (window.ethereum?.removeListener) {
-        window.ethereum.removeListener('accountsChanged', onAccountsChanged);
-      }
+      window.ethereum?.removeListener?.('accountsChanged', onAccountsChanged);
     };
   }, []);
 
-  const loadSnapshot = useCallback(async ({ manual = false } = {}) => {
-    if (manual) setRefreshing(true);
+  const loadTrace = useCallback(async (traceId) => {
+    const normalized = String(traceId || '').trim();
+    if (!normalized) {
+      setTraceData(null);
+      return;
+    }
+    setTraceLoading(true);
     try {
-      const [mappingPayload, networkPayload] = await Promise.all([
-        fetchJson('/api/x402/mapping/latest', { limit: RECORD_LIMIT }),
-        fetchJson('/api/a2a/network/graph', { limit: NETWORK_LIMIT, recent: 12 }).catch(() => null)
-      ]);
-      const items = Array.isArray(mappingPayload?.items) ? mappingPayload.items : [];
-      setRecords(items);
-      setKpi({
-        pending: Number(mappingPayload?.kpi?.pending || 0),
-        paid: Number(mappingPayload?.kpi?.paid || 0),
-        failed: Number(mappingPayload?.kpi?.failed || 0),
-        todaySpend: Number(mappingPayload?.kpi?.todaySpend || 0)
-      });
-      setTraces((previous) => mergeRecordTraces(previous, items));
-      if (networkPayload?.ok) {
-        setNetworkGraph(normalizeNetworkGraph(networkPayload));
-      }
-      setLastSyncAt(new Date().toISOString());
+      const payload = await fetchJson(`/api/demo/trace/${encodeURIComponent(normalized)}`);
+      setTraceData(payload);
       setErrorText('');
     } catch (error) {
-      setErrorText(error.message || 'Failed to fetch monitor snapshot.');
+      setErrorText(error.message || 'Failed to load demo trace.');
     } finally {
-      if (manual) setRefreshing(false);
+      setTraceLoading(false);
     }
   }, []);
+
+  const loadSnapshot = useCallback(
+    async ({ manual = false } = {}) => {
+      if (manual) setRefreshing(true);
+      try {
+        const [mappingPayload, identityPayload] = await Promise.all([
+          fetchJson('/api/x402/mapping/latest', { limit: RECORD_LIMIT }),
+          fetchJson('/api/demo/identity/latest').catch(() => null)
+        ]);
+        const items = Array.isArray(mappingPayload?.items) ? mappingPayload.items : [];
+        setRecords(items);
+        setKpi({
+          pending: Number(mappingPayload?.kpi?.pending || 0),
+          paid: Number(mappingPayload?.kpi?.paid || 0),
+          failed: Number(mappingPayload?.kpi?.failed || 0),
+          todaySpend: Number(mappingPayload?.kpi?.todaySpend || 0)
+        });
+        if (identityPayload?.ok) {
+          setIdentityLatest(identityPayload.latest || null);
+        }
+
+        const traceInRows = items.find((item) => String(item?.workflowTraceId || '').trim())?.workflowTraceId || '';
+        const nextTraceId = String(selectedTraceId || traceInRows || '').trim();
+        if (nextTraceId) {
+          setSelectedTraceId(nextTraceId);
+          await loadTrace(nextTraceId);
+        }
+        setLastSyncAt(new Date().toISOString());
+        setErrorText('');
+      } catch (error) {
+        setErrorText(error.message || 'Failed to load demo snapshot.');
+      } finally {
+        if (manual) setRefreshing(false);
+      }
+    },
+    [loadTrace, selectedTraceId]
+  );
 
   useEffect(() => {
     if (isSetupView) return undefined;
@@ -354,20 +267,14 @@ function App() {
       return undefined;
     }
 
-    const source = new EventSource(resolveApiUrl('/api/events/stream'));
+    const source = new EventSource(resolveApiUrl('/api/demo/stream'));
     const eventNames = Object.keys(EVENT_META);
 
-    const onOpen = () => {
-      setStreamMode('live');
-      setErrorText('');
-    };
-
-    // If SSE cannot stay open, keep UI data fresh with polling path.
+    const onOpen = () => setStreamMode('live');
     const onError = () => {
       source.close();
       setStreamMode('polling');
     };
-
     const onConnected = () => setStreamMode('live');
 
     source.addEventListener('connected', onConnected);
@@ -376,25 +283,44 @@ function App() {
     source.onerror = onError;
 
     const listeners = eventNames.map((eventName) => {
-      const handler = (event) => {
-        const payload = parseEventData(event);
-        setEvents((previous) => {
+      const handler = async (event) => {
+        let payload = {};
+        try {
+          payload = JSON.parse(event?.data || '{}');
+        } catch {
+          payload = {};
+        }
+        const meta = EVENT_META[eventName] || { label: eventName, state: 'running', stepId: '' };
+
+        setEvents((prev) => {
           const next = [
             {
               id: `${Date.now()}_${Math.random().toString(16).slice(2, 8)}`,
               name: eventName,
-              label: EVENT_META[eventName]?.label || eventName,
-              state: EVENT_META[eventName]?.state || 'running',
+              label: meta.label,
+              state: meta.state,
+              stepId: meta.stepId,
               traceId: String(payload?.traceId || '').trim(),
               at: new Date().toISOString()
             },
-            ...previous
+            ...prev
           ];
           return next.slice(0, EVENT_LIMIT);
         });
-        setTraces((previous) => mergeEventTrace(previous, eventName, payload));
-        if (eventName === 'challenge_issued' || eventName === 'unlocked' || eventName === 'failed') {
-          void loadSnapshot();
+
+        if (meta.stepId) {
+          setStepFlash(meta.stepId);
+          setTimeout(() => setStepFlash(''), 320);
+        }
+
+        const eventTraceId = String(payload?.traceId || '').trim();
+        if (eventTraceId) {
+          setSelectedTraceId(eventTraceId);
+          await loadTrace(eventTraceId);
+        }
+
+        if (['challenge_issued', 'payment_sent', 'proof_submitted', 'unlocked', 'failed'].includes(eventName)) {
+          await loadSnapshot();
         }
       };
       source.addEventListener(eventName, handler);
@@ -403,24 +329,47 @@ function App() {
 
     return () => {
       source.removeEventListener('connected', onConnected);
-      for (const entry of listeners) {
-        source.removeEventListener(entry.eventName, entry.handler);
+      for (const item of listeners) {
+        source.removeEventListener(item.eventName, item.handler);
       }
       source.close();
     };
-  }, [isSetupView, loadSnapshot, streamToken]);
+  }, [isSetupView, loadSnapshot, loadTrace, streamToken]);
 
-  const summary = useMemo(() => {
-    let running = 0;
-    let success = 0;
-    let failed = 0;
-    for (const trace of traces) {
-      if (trace.state === 'success') success += 1;
-      else if (trace.state === 'failed') failed += 1;
-      else running += 1;
+  const triggerDemoRun = useCallback(async () => {
+    setTriggering(true);
+    try {
+      const headers = {
+        ...buildHeaders(AGENT_API_KEY || VIEWER_API_KEY),
+        'Content-Type': 'application/json'
+      };
+      const resp = await fetch(resolveApiUrl('/api/workflow/btc-price/run'), {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ pair: 'BTCUSDT', source: 'hyperliquid' })
+      });
+      const payload = await resp.json().catch(() => ({}));
+      if (!resp.ok || payload?.ok === false) {
+        throw new Error(payload?.reason || payload?.error || `HTTP ${resp.status}`);
+      }
+      const traceId = String(payload?.traceId || '').trim();
+      if (traceId) {
+        setSelectedTraceId(traceId);
+        await loadTrace(traceId);
+      }
+      await loadSnapshot();
+    } catch (error) {
+      setErrorText(error.message || 'Trigger demo run failed.');
+    } finally {
+      setTriggering(false);
     }
-    return { running, success, failed };
-  }, [traces]);
+  }, [loadSnapshot, loadTrace]);
+
+  const timeline = useMemo(() => normalizeTimeline(traceData?.timeline), [traceData?.timeline]);
+  const traceState = String(traceData?.state || '').trim().toLowerCase() || 'running';
+  const currentWorkflow = traceData?.workflow || null;
+  const currentRequest = traceData?.request || null;
+  const quote = traceData?.workflow?.result?.quote || traceData?.request?.result?.quote || null;
 
   if (isSetupView) {
     return (
@@ -442,225 +391,210 @@ function App() {
             <button type="button" className="ghost-btn" onClick={connectWallet}>
               Connect wallet
             </button>
-            <button type="button" className="ghost-btn" onClick={() => switchView('monitor')}>
-              Back to Monitor
+            <button type="button" className="ghost-btn" onClick={() => switchView('demo')}>
+              Back to Demo
             </button>
           </div>
         </header>
-        <AgentSettingsPage onBack={() => switchView('monitor')} walletState={walletState} />
+        <AgentSettingsPage onBack={() => switchView('demo')} walletState={walletState} />
       </div>
     );
   }
 
   return (
-    <div className="monitor-root">
-      <div className="monitor-glow monitor-glow-left" />
-      <div className="monitor-glow monitor-glow-right" />
+    <div className="demo-root">
+      <div className="demo-backdrop demo-backdrop-left" />
+      <div className="demo-backdrop demo-backdrop-right" />
 
-      <header className="monitor-header">
+      <header className="demo-header">
         <div>
-          <p className="header-kicker">Kite Testnet</p>
-          <h1>Multi-Agent Collaboration Console</h1>
-          <p className="header-subtitle">
-            Real-time view for agent-to-agent and agent-to-api execution with x402 settlement.
+          <p className="header-kicker">KITE TESTNET</p>
+          <h1>Agent Payment Flow Stage</h1>
+          <p className="demo-subtitle">
+            Visual timeline for agent-to-api and agent-to-agent actions with x402 settlement and ERC8004 identity.
           </p>
         </div>
-        <div className="header-meta">
-          <span className={`connection-pill ${streamMode}`}>{statusText(streamMode)}</span>
-          <span className="sync-time">Last sync: {formatTime(lastSyncAt)}</span>
+        <div className="demo-actions">
+          <span className={`demo-pill ${streamMode}`}>{statusText(streamMode)}</span>
+          <span className="demo-sync">Last sync: {formatTime(lastSyncAt)}</span>
+          <button type="button" className="ghost-btn" onClick={() => void loadSnapshot({ manual: true })} disabled={refreshing}>
+            {refreshing ? 'Refreshing...' : 'Refresh'}
+          </button>
+          <button type="button" className="ghost-btn" onClick={triggerDemoRun} disabled={triggering}>
+            {triggering ? 'Triggering...' : 'Run Demo'}
+          </button>
           <button type="button" className="ghost-btn" onClick={() => switchView('setup')}>
             Session Setup
           </button>
           {!VIEWER_API_KEY && streamMode !== 'live' ? (
-            <button
-              type="button"
-              className="ghost-btn"
-              onClick={() => setStreamToken((token) => token + 1)}
-            >
+            <button type="button" className="ghost-btn" onClick={() => setStreamToken((x) => x + 1)}>
               Retry SSE
             </button>
           ) : null}
         </div>
       </header>
 
-      <section className="kpi-grid">
-        <article className="kpi-card">
-          <span>Active Traces</span>
-          <strong>{summary.running}</strong>
+      <section className="demo-kpi-grid">
+        <article className="demo-kpi-card">
+          <span>Pending</span>
+          <strong>{kpi.pending}</strong>
         </article>
-        <article className="kpi-card">
-          <span>Trace Success</span>
-          <strong>{summary.success}</strong>
+        <article className="demo-kpi-card">
+          <span>Paid</span>
+          <strong>{kpi.paid}</strong>
         </article>
-        <article className="kpi-card">
-          <span>Trace Failed</span>
-          <strong>{summary.failed}</strong>
+        <article className="demo-kpi-card">
+          <span>Failed</span>
+          <strong>{kpi.failed}</strong>
         </article>
-        <article className="kpi-card">
-          <span>Today x402 Spend</span>
+        <article className="demo-kpi-card">
+          <span>Today Spend</span>
           <strong>{kpi.todaySpend}</strong>
         </article>
       </section>
 
       {errorText ? <p className="error-banner">{errorText}</p> : null}
 
-      <main className="monitor-grid">
-        <section className="panel">
-          <div className="panel-header">
-            <h2>1) Agent Live Status & Steps</h2>
-            <span className="panel-note">running / success / failed</span>
+      <main className="demo-main-grid">
+        <section className="demo-panel">
+          <div className="demo-panel-head">
+            <h2>Execution Timeline</h2>
+            <span className={`demo-status ${traceState}`}>{traceState}</span>
           </div>
+          <p className="demo-trace-line">
+            Trace: {shortenMiddle(selectedTraceId || traceData?.traceId || currentWorkflow?.traceId || '-', 14, 8)}
+          </p>
+          <p className="demo-trace-line">
+            Request: {shortenMiddle(currentRequest?.requestId || currentWorkflow?.requestId || '-', 14, 8)}
+          </p>
 
-          <div className="network-panel">
-            <h3>A2A network snapshot</h3>
-            <p className="network-desc">Aggregated by source agent, target agent and capability.</p>
-            <div className="network-kpi">
-              <span>Nodes: {networkGraph.nodeCount}</span>
-              <span>Edges: {networkGraph.edgeCount}</span>
-              <span>Sample size: {networkGraph.edges.reduce((sum, edge) => sum + Number(edge.totalCount || 0), 0)}</span>
-            </div>
+          <ol className="demo-step-list">
+            {timeline.map((step, idx) => (
+              <li
+                key={step.id}
+                className={`demo-step-card ${step.state} ${stepFlash === step.id ? 'flash' : ''}`}
+              >
+                <div className="demo-step-top">
+                  <span className="demo-step-index">{idx + 1}</span>
+                  <p>{step.label}</p>
+                  <span className={`demo-mini-pill ${step.state}`}>{step.state}</span>
+                </div>
+                <p className="demo-step-detail">{step.detail || 'waiting...'}</p>
+                {idx < timeline.length - 1 ? <span className={`demo-step-link ${step.state}`} /> : null}
+              </li>
+            ))}
+          </ol>
 
-            {networkGraph.edges.length === 0 ? (
-              <p className="empty-state compact">No A2A settled edge yet.</p>
-            ) : (
-              <ul className="network-edge-list">
-                {networkGraph.edges.slice(0, 6).map((edge) => (
-                  <li key={edge.edgeId}>
-                    <div className="network-edge-head">
-                      <strong>{edge.sourceAgentId} -&gt; {edge.targetAgentId}</strong>
-                      <span className={`status-pill ${toState(edge.lastState)}`}>{edge.lastState || 'running'}</span>
-                    </div>
-                    <p>{edge.capability || 'unknown capability'}</p>
-                    <div className="network-edge-meta">
-                      <span>total {edge.totalCount}</span>
-                      <span>ok {edge.successCount}</span>
-                      <span>fail {edge.failedCount}</span>
-                      <span>amount {formatAmount(edge.totalAmount)}</span>
-                      <span>latest {formatTime(edge.latestAt)}</span>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-
-          <div className="trace-list">
-            {traces.length === 0 ? (
-              <div className="empty-state">No active trace yet. Trigger a workflow to see live steps.</div>
-            ) : (
-              traces.map((trace) => (
-                <article key={trace.traceId} className="trace-card">
-                  <div className="trace-head">
-                    <p>{shortenMiddle(trace.traceId, 12, 8)}</p>
-                    <span className={`status-pill ${trace.state}`}>{trace.state}</span>
-                  </div>
-                  <div className="trace-meta">
-                    <span>Flow: {trace.flowMode || '-'}</span>
-                    <span>Req: {shortenMiddle(trace.requestId, 10, 6)}</span>
-                    <span>Updated: {formatTime(trace.updatedAt)}</span>
-                  </div>
-                  <p className="trace-summary">{trace.summary || '-'}</p>
-                  <ul className="step-list">
-                    {trace.steps.slice(-6).reverse().map((step, index) => (
-                      <li key={`${trace.traceId}_${step.name}_${index}`}>
-                        <span className={`step-dot ${step.state}`} />
-                        <span className="step-label">{step.label}</span>
-                        <span className="step-time">{formatTime(step.at)}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </article>
-              ))
-            )}
-          </div>
-
-          <div className="event-panel">
-            <h3>Recent stream events</h3>
-            {events.length === 0 ? (
-              <p className="empty-state compact">Waiting for workflow events...</p>
-            ) : (
-              <ul>
-                {events.map((item) => (
-                  <li key={item.id}>
-                    <span className={`event-state ${item.state}`}>{item.state}</span>
-                    <span>{item.label}</span>
-                    <span>{shortenMiddle(item.traceId, 12, 8)}</span>
-                    <span>{formatTime(item.at)}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
+          <div className="demo-summary-box">
+            <p className="demo-summary-label">Summary</p>
+            <p>
+              {currentWorkflow?.error ||
+                currentWorkflow?.result?.summary ||
+                currentRequest?.result?.summary ||
+                (traceLoading ? 'Loading trace details...' : 'Waiting for workflow events...')}
+            </p>
           </div>
         </section>
 
-        <section className="panel">
-          <div className="panel-header">
-            <h2>2) x402 Transaction Records</h2>
-            <button
-              type="button"
-              className="ghost-btn"
-              onClick={() => void loadSnapshot({ manual: true })}
-              disabled={refreshing}
-            >
-              {refreshing ? 'Refreshing...' : 'Refresh now'}
-            </button>
+        <section className="demo-panel">
+          <div className="demo-panel-head">
+            <h2>Evidence Drawer</h2>
+            <span className="demo-note">x402 + ERC8004</span>
           </div>
-          <p className="panel-desc">
-            Request, amount, txHash, status and time. Includes both agent-to-agent and agent-to-api flows.
-          </p>
+          <div className="demo-evidence-grid">
+            <article className="demo-evidence-card">
+              <h3>Identity</h3>
+              <p>agentId: {currentRequest?.identity?.agentId || '-'}</p>
+              <p>registry: {shortenMiddle(currentRequest?.identity?.registry || '-', 14, 10)}</p>
+              <p>latest verify: {identityLatest?.status || '-'}</p>
+              <p>wallet: {shortenMiddle(identityLatest?.identity?.agentWallet || '-', 14, 10)}</p>
+            </article>
 
-          <div className="records-summary">
-            <span>Pending: {kpi.pending}</span>
-            <span>Paid: {kpi.paid}</span>
-            <span>Failed: {kpi.failed}</span>
-          </div>
+            <article className="demo-evidence-card">
+              <h3>x402 Payment</h3>
+              <p>amount: {currentRequest?.amount || '-'}</p>
+              <p>token: {shortenMiddle(currentRequest?.tokenAddress || '-', 12, 10)}</p>
+              <p>recipient: {shortenMiddle(currentRequest?.recipient || '-', 12, 10)}</p>
+              <p>txHash: {shortenMiddle(currentRequest?.paymentTxHash || currentWorkflow?.txHash || '-', 12, 10)}</p>
+            </article>
 
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Request</th>
-                  <th>Flow</th>
-                  <th>Amount</th>
-                  <th>txHash</th>
-                  <th>Status</th>
-                  <th>Time</th>
-                </tr>
-              </thead>
-              <tbody>
-                {records.length === 0 ? (
-                  <tr>
-                    <td colSpan="6" className="table-empty">
-                      No x402 records yet.
-                    </td>
-                  </tr>
-                ) : (
-                  records.map((record, index) => {
-                    const visual = resolveRecordState(record);
-                    const txHash = record.paymentTxHash || '';
-                    const displayTime = record.workflowUpdatedAt || record.paidAt || record.createdAt;
-                    return (
-                      <tr key={`${record.requestId || 'row'}_${index}`}>
-                        <td>
-                          <p className="request-id">{shortenMiddle(record.requestId, 13, 8)}</p>
-                          <p className="request-action">{record.action || '-'}</p>
-                        </td>
-                        <td>{record.flowMode || '-'}</td>
-                        <td>{record.amount || '-'}</td>
-                        <td className="mono">{shortenMiddle(txHash, 12, 10)}</td>
-                        <td>
-                          <span className={`status-pill ${visual}`}>{resolveRecordStatusText(record)}</span>
-                        </td>
-                        <td>{formatTime(displayTime)}</td>
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
+            <article className="demo-evidence-card">
+              <h3>API Result</h3>
+              <p>provider: {quote?.provider || '-'}</p>
+              <p>price: {quote?.priceUsd ?? '-'}</p>
+              <p>pair: {quote?.pair || '-'}</p>
+              <p>at: {formatTime(quote?.fetchedAt || '')}</p>
+            </article>
+
+            <article className="demo-evidence-card">
+              <h3>Workflow</h3>
+              <p>state: {currentWorkflow?.state || '-'}</p>
+              <p>updated: {formatTime(currentWorkflow?.updatedAt || '')}</p>
+              <p>payer: {shortenMiddle(currentWorkflow?.payer || '-', 12, 10)}</p>
+              <p>flow: {currentRequest?.a2a ? 'a2a+x402' : 'agent-to-api+x402'}</p>
+            </article>
           </div>
         </section>
       </main>
+
+      <section className="demo-bottom-grid">
+        <section className="demo-panel">
+          <div className="demo-panel-head">
+            <h2>Recent Traces</h2>
+            <span className="demo-note">click to replay</span>
+          </div>
+          <div className="demo-trace-table">
+            {records.length === 0 ? (
+              <p className="demo-empty">No x402 records yet.</p>
+            ) : (
+              records.slice(0, 12).map((item, idx) => {
+                const traceId = String(item?.workflowTraceId || '').trim();
+                const visual = toVisualState(item);
+                return (
+                  <button
+                    type="button"
+                    key={`${item.requestId || 'row'}_${idx}`}
+                    className={`demo-trace-row ${selectedTraceId === traceId ? 'active' : ''}`}
+                    onClick={() => {
+                      if (!traceId) return;
+                      setSelectedTraceId(traceId);
+                      void loadTrace(traceId);
+                    }}
+                    disabled={!traceId}
+                  >
+                    <span>{shortenMiddle(traceId || item.requestId, 14, 8)}</span>
+                    <span>{item.flowMode || '-'}</span>
+                    <span>{item.amount || '-'}</span>
+                    <span className={`demo-mini-pill ${visual}`}>{item.workflowState || item.status || '-'}</span>
+                    <span>{formatTime(item.workflowUpdatedAt || item.paidAt || item.createdAt)}</span>
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </section>
+
+        <section className="demo-panel">
+          <div className="demo-panel-head">
+            <h2>Live Event Feed</h2>
+            <span className="demo-note">SSE events</span>
+          </div>
+          <ul className="demo-event-list">
+            {events.length === 0 ? (
+              <li className="demo-empty">Waiting for workflow events...</li>
+            ) : (
+              events.map((item) => (
+                <li key={item.id} className={`demo-event-row ${item.state}`}>
+                  <span className={`demo-event-dot ${item.state}`} />
+                  <span>{item.label}</span>
+                  <span>{shortenMiddle(item.traceId, 12, 8)}</span>
+                  <span>{formatTime(item.at)}</span>
+                </li>
+              ))
+            )}
+          </ul>
+        </section>
+      </section>
     </div>
   );
 }
