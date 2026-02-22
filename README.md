@@ -37,6 +37,11 @@ Current Version: `v1.7.0`
 - BTC demo summary wording uses `ATAPI` for the paid quote path to avoid A2A naming confusion.
 - Verifiable agent identity (registry-backed)
 - Auditable settlement mapping (`requestId <-> txHash`)
+- Direct on-chain confirmation without indexer dependency:
+  - `txHash`
+  - `block`
+  - `status`
+  - `explorer link`
 - Graceful failures (insufficient funds, scope violation, expired/fake proof)
 
 ## Kite Testnet Contribution (ERC-8004 Registries)
@@ -64,20 +69,21 @@ Upgrade authority remains with each proxy owner; this project does not grant per
 
 ## Real Demo Flow (Current Implementation)
 
-1. Open `/` and click `Run Demo`.
+1. Open `/` and click `Run Demo` (success path) or `Fail Demo` (graceful failure path).
 2. Backend runs BTC paid workflow:
    - ERC8004 identity
    - x402 challenge
    - session payment
    - proof verification
    - API result unlock (quote)
-   - on-chain evidence mapping
+   - on-chain confirmation presentation (`txHash / block / status / explorer link`)
 3. Homepage chart appends only paid/unlocked BTC points.
 4. Open `/ops` for operational evidence:
    - recent traces
    - live event feed
    - evidence drawer
    - session setup panel
+   - guardrail-driven failure replay (`Fail Demo`)
 5. Optional continuous demo:
    - start automation to run BTC request every minute.
 
@@ -92,6 +98,8 @@ Upgrade authority remains with each proxy owner; this project does not grant per
 - `GET /api/automation/btc-price/status`
 - `POST /api/automation/btc-price/start`
 - `POST /api/automation/btc-price/stop`
+- `POST /api/policy/revoke`
+- `POST /api/policy/unrevoke`
 
 ## Runtime Notes (Testnet)
 
