@@ -1875,6 +1875,149 @@ function getLatestIdentityChallengeSnapshot() {
   };
 }
 
+function buildIdentityPayload(profile = {}, extras = {}) {
+  return {
+    registry: String(profile?.configured?.registry || '').trim(),
+    agentId: String(profile?.configured?.agentId || '').trim(),
+    agentWallet: normalizeAddress(profile?.agentWallet || ''),
+    ownerAddress: normalizeAddress(profile?.ownerAddress || ''),
+    tokenURI: String(profile?.tokenURI || '').trim(),
+    ...extras
+  };
+}
+
+function saveIdentityVerificationRecord({
+  traceId = '',
+  profile = {},
+  verifyMode = '',
+  status = 'verified',
+  challengeId = '',
+  nonce = '',
+  message = '',
+  signature = '',
+  issuedAt = 0,
+  expiresAt = 0,
+  verifiedAt = Date.now(),
+  recoveredAddress = ''
+} = {}) {
+  const rows = normalizeIdentityChallengeRows(readIdentityChallenges());
+  rows.unshift({
+    challengeId: String(challengeId || createTraceId('idv')).trim(),
+    traceId: String(traceId || '').trim(),
+    nonce: String(nonce || '').trim(),
+    message: String(message || '').trim(),
+    signature: String(signature || '').trim(),
+    issuedAt: Number(issuedAt || 0),
+    expiresAt: Number(expiresAt || 0),
+    usedAt: Number(verifiedAt || 0),
+    verifiedAt: Number(verifiedAt || 0),
+    recoveredAddress: normalizeAddress(recoveredAddress || ''),
+    status: String(status || 'verified').trim(),
+    verifyMode: String(verifyMode || IDENTITY_VERIFY_MODE || '').trim(),
+    identity: buildIdentityPayload(profile)
+  });
+  writeIdentityChallenges(normalizeIdentityChallengeRows(rows));
+}
+
+async function ensureWorkflowIdentityVerified({ traceId = '', identityInput = {} } = {}) {
+  const profile = await readIdentityProfile({
+    registry: identityInput?.identityRegistry || identityInput?.registry,
+    agentId: identityInput?.agentId
+  });
+  if (!profile?.available) {
+    throw new Error(profile?.reason || 'identity_unavailable');
+  }
+
+  const agentWallet = normalizeAddress(profile.agentWallet || '');
+  if (!ethers.isAddress(agentWallet)) {
+    throw new Error('identity_wallet_invalid');
+  }
+
+  const now = Date.now();
+  if (!isIdentitySignatureRequired()) {
+    saveIdentityVerificationRecord({
+      traceId,
+      profile,
+      verifyMode: 'registry',
+      status: 'verified_registry',
+      issuedAt: now,
+      expiresAt: now,
+      verifiedAt: now,
+      recoveredAddress: agentWallet
+    });
+    return {
+      verifyMode: 'registry',
+      signatureRequired: false,
+      verifiedAt: new Date(now).toISOString(),
+      identity: buildIdentityPayload(profile, {
+        verifyMode: 'registry',
+        verifiedAt: new Date(now).toISOString()
+      }),
+      profile: buildIdentitySummary(profile)
+    };
+  }
+
+  if (!backendSigner) {
+    throw new Error('identity_signature_required_but_backend_signer_unavailable');
+  }
+
+  const signerAddress = normalizeAddress(backendSigner.address || '');
+  if (!signerAddress || signerAddress !== agentWallet) {
+    throw new Error(
+      `identity_signer_mismatch: backend_signer=${signerAddress || '-'} expected_agent_wallet=${agentWallet}`
+    );
+  }
+
+  const challengeId = createTraceId('idv');
+  const nonce = `0x${crypto.randomBytes(16).toString('hex')}`;
+  const ttl = Number.isFinite(IDENTITY_CHALLENGE_TTL_MS) && IDENTITY_CHALLENGE_TTL_MS > 0
+    ? IDENTITY_CHALLENGE_TTL_MS
+    : 120_000;
+  const expiresAt = now + ttl;
+  const message = createIdentityChallengeMessage({
+    challengeId,
+    traceId,
+    nonce,
+    issuedAt: now,
+    expiresAt,
+    profile
+  });
+  const signature = await backendSigner.signMessage(message);
+  const recoveredAddress = normalizeAddress(ethers.verifyMessage(message, signature));
+  if (!recoveredAddress || recoveredAddress !== agentWallet) {
+    throw new Error(
+      `identity_signature_invalid: recovered=${recoveredAddress || '-'} expected_agent_wallet=${agentWallet}`
+    );
+  }
+
+  saveIdentityVerificationRecord({
+    traceId,
+    profile,
+    verifyMode: 'signature',
+    status: 'verified',
+    challengeId,
+    nonce,
+    message,
+    signature,
+    issuedAt: now,
+    expiresAt,
+    verifiedAt: now,
+    recoveredAddress
+  });
+
+  return {
+    verifyMode: 'signature',
+    signatureRequired: true,
+    verifiedAt: new Date(now).toISOString(),
+    identity: buildIdentityPayload(profile, {
+      verifyMode: 'signature',
+      verifiedAt: new Date(now).toISOString(),
+      challengeId
+    }),
+    profile: buildIdentitySummary(profile)
+  };
+}
+
 async function readIdentityProfile(input = {}) {
   const requestedRegistry = String(input.registry || '').trim();
   const requestedAgentId = parseAgentId(input.agentId);
@@ -3383,6 +3526,7 @@ async function handleA2ABtcPrice(body = {}) {
   const requestId = String(body.requestId || '').trim();
   const paymentProof = body.paymentProof;
   const taskInput = body.task || {};
+  const identityInput = body.identity || {};
 
   let task = null;
   try {
@@ -3406,6 +3550,22 @@ async function handleA2ABtcPrice(body = {}) {
   const a2aQuery = `ATAPI BTC price ${task.pair} source=${task.source}`;
 
   if (!requestId || !paymentProof) {
+    let identityVerification = null;
+    try {
+      identityVerification = await ensureWorkflowIdentityVerified({
+        traceId,
+        identityInput
+      });
+    } catch (error) {
+      return {
+        status: 400,
+        body: {
+          error: 'identity_verification_failed',
+          reason: error?.message || 'identity verification failed'
+        }
+      };
+    }
+
     const policyResult = evaluateTransferPolicy({
       payer,
       recipient: actionCfg.recipient,
@@ -3439,7 +3599,8 @@ async function handleA2ABtcPrice(body = {}) {
         decision: 'allowed',
         snapshot: buildPolicySnapshot(),
         evidence: policyResult.evidence
-      }
+      },
+      identity: identityVerification?.identity
     });
     reqItem.actionParams = task;
     reqItem.a2a = {
@@ -3465,7 +3626,8 @@ async function handleA2ABtcPrice(body = {}) {
           sourceAgentId,
           targetAgentId,
           taskType: 'btc-price-feed',
-          task
+          task,
+          identity: identityVerification?.identity || null
         },
         receipt
       }
@@ -3615,6 +3777,7 @@ async function handleA2AStopOrders(body = {}) {
   const requestId = String(body.requestId || '').trim();
   const paymentProof = body.paymentProof;
   const task = body.task || {};
+  const identityInput = body.identity || {};
 
   let actionParams = null;
   try {
@@ -3637,6 +3800,22 @@ async function handleA2AStopOrders(body = {}) {
   }`;
 
   if (!requestId || !paymentProof) {
+    let identityVerification = null;
+    try {
+      identityVerification = await ensureWorkflowIdentityVerified({
+        traceId,
+        identityInput
+      });
+    } catch (error) {
+      return {
+        status: 400,
+        body: {
+          error: 'identity_verification_failed',
+          reason: error?.message || 'identity verification failed'
+        }
+      };
+    }
+
     const policyResult = evaluateTransferPolicy({
       payer,
       recipient: actionCfg.recipient,
@@ -3670,7 +3849,8 @@ async function handleA2AStopOrders(body = {}) {
         decision: 'allowed',
         snapshot: buildPolicySnapshot(),
         evidence: policyResult.evidence
-      }
+      },
+      identity: identityVerification?.identity
     });
     reqItem.actionParams = actionParams;
     reqItem.a2a = {
@@ -3696,7 +3876,8 @@ async function handleA2AStopOrders(body = {}) {
           sourceAgentId,
           targetAgentId,
           taskType: 'reactive-stop-orders',
-          task: actionParams
+          task: actionParams,
+          identity: identityVerification?.identity || null
         },
         receipt
       }
