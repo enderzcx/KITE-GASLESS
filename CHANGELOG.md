@@ -6,12 +6,44 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 
 ## [Unreleased]
 
+## [v1.8.0] - 2026-02-22
+
+### Added
+- Strong identity gate before paid workflows:
+  - `ERC8004` verification is now enforced before issuing x402 challenge in BTC/stop-order flows.
+- One-click failure demo flow:
+  - `Fail Demo` button for guardrail failure replay with auto recover (`revoke -> run -> unrevoke`).
+- Branded browser identity:
+  - updated title to `KiteTrace Platform`
+  - new favicon `kite-trace.svg`.
+
 ### Changed
-- BTC workflow summary/query wording uses `ATAPI` label to avoid confusion with pure A2A task naming.
-- Demo and Ops views now present on-chain confirmation as `txHash / block / status / explorer link` without Goldsky dependency.
+- BTC demo wording and focus:
+  - home title simplified to `BTCUSD`
+  - chart title simplified to `BTCUSD`
+  - note now states `updates every minute`.
+- Demo UX layout updates:
+  - header action buttons are now horizontal on home page.
+  - summary moved under chart area to avoid right-panel scrolling.
+- On-chain confirmation display standardized:
+  - explicit `txHash / block / status / explorer link` presentation.
+- README aligned to platform positioning:
+  - `KiteTrace Platform` naming and GitHub description/about section updated.
 
 ### Removed
-- Removed Goldsky frontend module and related indexing-based confirmation flow from repository.
+- Removed Goldsky module from active frontend and repository:
+  - deleted `frontend/src/OnChainPage.jsx`
+  - deleted `frontend/src/transfer/services/confirmationService.js`
+  - deleted `goldsky/*` config and ABI files.
+- Removed Goldsky-dependent indexing confirmation path from transfer flow.
+
+### Fixed
+- Demo state reliability:
+  - failed trace now stays selected after `Fail Demo` (no auto-jump back to latest success trace).
+- Error visibility:
+  - fail-demo outcome uses persistent red error banner (no transient green notice).
+- Evidence readability:
+  - full hashes/addresses displayed without ellipsis in evidence drawer.
 
 ## [v1.7.0] - 2026-02-22
 

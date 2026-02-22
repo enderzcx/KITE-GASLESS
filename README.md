@@ -1,7 +1,7 @@
 ﻿# KiteTrace Platform
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-v1.7.0-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-v1.8.0-blue)](./CHANGELOG.md)
 
 KiteTrace Platform is agent-native payment infrastructure on Kite AI Testnet.
 
@@ -12,7 +12,7 @@ KiteTrace Platform is agent-native payment infrastructure on Kite AI Testnet.
 - Uses ERC8004 identity and direct on-chain confirmation (`requestId`, `txHash`, `block`, `status`, explorer link).
 - BTCUSD minute-level loop is a live demo scenario; platform supports broader agent services.
 
-Current Version: `v1.7.0`
+Current Version: `v1.8.0`
 
 ## Availability
 
