@@ -292,7 +292,6 @@ function App() {
   const [failTriggering, setFailTriggering] = useState(false);
   const [hoverIndex, setHoverIndex] = useState(-1);
   const [flyAnim, setFlyAnim] = useState(null);
-  const [noticeText, setNoticeText] = useState('');
 
   const flowPriceRef = useRef(null);
   const chartPriceRef = useRef(null);
@@ -443,7 +442,7 @@ function App() {
             : '');
         const nextTraceId = String(
           route === 'demo'
-            ? traceFromLatestPoint || traceInRows || selectedTraceId || ''
+            ? selectedTraceId || traceFromLatestPoint || traceInRows || ''
             : selectedTraceId || traceInRows || ''
         ).trim();
         if (nextTraceId) {
@@ -565,7 +564,6 @@ function App() {
 
   const triggerDemoRun = useCallback(async () => {
     setTriggering(true);
-    setNoticeText('');
     setErrorText('');
     try {
       const headers = {
@@ -588,7 +586,6 @@ function App() {
       }
       await loadSnapshot();
     } catch (error) {
-      setNoticeText('');
       setErrorText(error.message || 'Trigger demo run failed.');
     } finally {
       setTriggering(false);
@@ -597,7 +594,6 @@ function App() {
 
   const triggerFailDemo = useCallback(async () => {
     setFailTriggering(true);
-    setNoticeText('');
     setErrorText('');
     let payer = String(traceData?.workflow?.payer || '').trim();
     let revoked = false;
@@ -633,12 +629,11 @@ function App() {
 
       if (!runResp.ok || runPayload?.ok === false) {
         const reason = runPayload?.reason || runPayload?.error || `HTTP ${runResp.status}`;
-        setNoticeText(`Fail demo complete: guardrail blocked payment (${reason}).`);
+        setErrorText(`Fail demo complete: guardrail blocked payment (${reason}).`);
       } else {
-        setNoticeText('Fail demo did not fail. Check policy permissions and API keys.');
+        setErrorText('Fail demo did not fail. Check policy permissions and API keys.');
       }
     } catch (error) {
-      setNoticeText('');
       setErrorText(error?.message || 'Fail demo failed.');
     } finally {
       if (revoked && payer) {
@@ -736,7 +731,6 @@ function App() {
       </header>
 
       {errorText ? <p className="error-banner">{errorText}</p> : null}
-      {noticeText ? <p className="notice-banner">{noticeText}</p> : null}
 
       <main className="demo-layout">
         <section className="panel chart-panel">
@@ -901,7 +895,6 @@ function App() {
       </header>
 
       {errorText ? <p className="error-banner">{errorText}</p> : null}
-      {noticeText ? <p className="notice-banner">{noticeText}</p> : null}
 
       <section className="kpi-grid">
         <article className="kpi-card">

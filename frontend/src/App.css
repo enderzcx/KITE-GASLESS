@@ -142,15 +142,6 @@ body {
   padding: 10px 12px;
 }
 
-.notice-banner {
-  margin: 12px 0 0;
-  border: 1px solid rgba(31, 148, 79, 0.36);
-  border-radius: 12px;
-  background: rgba(31, 148, 79, 0.11);
-  color: #1a6841;
-  padding: 10px 12px;
-}
-
 .demo-layout {
   margin-top: 14px;
   display: grid;
