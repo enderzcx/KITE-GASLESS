@@ -699,7 +699,14 @@ function getServiceProviderBytes32(action) {
     return ethers.encodeBytes32String('reactive-stop-orders');
   }
   if (normalized === 'btc-price-feed') {
-    return ethers.encodeBytes32String('btc-price-feed');
+    // Compatibility alias: some deployed AA session policies only allow legacy providers.
+    const alias = String(process.env.KITE_BTC_SERVICE_PROVIDER_ALIAS || 'kol-score')
+      .trim()
+      .toLowerCase();
+    if (alias === 'reactive-stop-orders') {
+      return ethers.encodeBytes32String('reactive-stop-orders');
+    }
+    return ethers.encodeBytes32String('kol-score');
   }
   return ethers.encodeBytes32String('kol-score');
 }
