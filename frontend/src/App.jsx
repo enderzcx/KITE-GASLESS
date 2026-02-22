@@ -271,6 +271,7 @@ function App() {
 
   const flowPriceRef = useRef(null);
   const chartPriceRef = useRef(null);
+  const traceFetchRef = useRef({ token: 0, traceId: '' });
 
   const isOpsPage = route === 'ops';
 
@@ -362,18 +363,23 @@ function App() {
   const loadTrace = useCallback(async (traceId) => {
     const normalized = String(traceId || '').trim();
     if (!normalized) {
+      traceFetchRef.current = { token: traceFetchRef.current.token + 1, traceId: '' };
       setTraceData(null);
       return;
     }
+    const token = traceFetchRef.current.token + 1;
+    traceFetchRef.current = { token, traceId: normalized };
     setTraceLoading(true);
     try {
       const payload = await fetchJson(`/api/demo/trace/${encodeURIComponent(normalized)}`);
+      if (traceFetchRef.current.token !== token || traceFetchRef.current.traceId !== normalized) return;
       setTraceData(payload);
       setErrorText('');
     } catch (error) {
+      if (traceFetchRef.current.token !== token || traceFetchRef.current.traceId !== normalized) return;
       setErrorText(error.message || 'Failed to load demo trace.');
     } finally {
-      setTraceLoading(false);
+      if (traceFetchRef.current.token === token) setTraceLoading(false);
     }
   }, []);
 
@@ -402,7 +408,19 @@ function App() {
         setSeries(points);
 
         const traceInRows = items.find((item) => String(item?.workflowTraceId || '').trim())?.workflowTraceId || '';
-        const nextTraceId = String(selectedTraceId || traceInRows || '').trim();
+        const latestPoint = points.length > 0 ? points[points.length - 1] : null;
+        const latestPointTraceId = String(latestPoint?.traceId || '').trim();
+        const latestRequestId = String(latestPoint?.requestId || '').trim();
+        const traceFromLatestPoint =
+          latestPointTraceId ||
+          (latestRequestId
+            ? String(items.find((item) => String(item?.requestId || '').trim() === latestRequestId)?.workflowTraceId || '').trim()
+            : '');
+        const nextTraceId = String(
+          route === 'demo'
+            ? traceFromLatestPoint || traceInRows || selectedTraceId || ''
+            : selectedTraceId || traceInRows || ''
+        ).trim();
         if (nextTraceId) {
           setSelectedTraceId(nextTraceId);
           await loadTrace(nextTraceId);
@@ -416,7 +434,7 @@ function App() {
         if (manual) setRefreshing(false);
       }
     },
-    [loadTrace, selectedTraceId]
+    [loadTrace, route, selectedTraceId]
   );
 
   useEffect(() => {
