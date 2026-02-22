@@ -186,6 +186,66 @@ function getInternalAgentApiKey() {
   return API_KEY_AGENT || API_KEY_ADMIN || '';
 }
 
+function shouldRetrySessionPayReason(reason = '') {
+  const text = String(reason || '').trim().toLowerCase();
+  if (!text) return false;
+  return (
+    text.includes('timeout') ||
+    text.includes('fetch failed') ||
+    text.includes('econnreset') ||
+    text.includes('socket hang up') ||
+    text.includes('network')
+  );
+}
+
+async function postSessionPayWithRetry(payload = {}, options = {}) {
+  const maxAttempts = Math.max(1, Math.min(Number(options.maxAttempts || 3), 5));
+  const timeoutMs = Math.max(30_000, Math.min(Number(options.timeoutMs || 210_000), 300_000));
+  const internalApiKey = getInternalAgentApiKey();
+  const headers = { 'Content-Type': 'application/json' };
+  if (internalApiKey) headers['x-api-key'] = internalApiKey;
+
+  let lastError = null;
+  for (let i = 0; i < maxAttempts; i += 1) {
+    const attempt = i + 1;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const resp = await fetch(`http://127.0.0.1:${PORT}/api/session/pay`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload),
+        signal: controller.signal
+      });
+      const body = await resp.json().catch(() => ({}));
+      if (resp.ok && body?.ok) {
+        return { resp, body, attempts: attempt };
+      }
+      const reason = String(body?.reason || body?.error || `HTTP ${resp.status}`).trim();
+      const err = new Error(reason || 'session pay failed');
+      err.payBody = body;
+      err.status = resp.status;
+      err.attempts = attempt;
+      err.retryable = shouldRetrySessionPayReason(reason);
+      lastError = err;
+      if (!err.retryable || i >= maxAttempts - 1) throw err;
+      await waitMs(700 * attempt);
+    } catch (error) {
+      const reason = String(error?.message || '').trim();
+      const retryable = shouldRetrySessionPayReason(reason) || error?.name === 'AbortError';
+      const wrapped = error instanceof Error ? error : new Error(reason || 'session pay failed');
+      wrapped.attempts = attempt;
+      wrapped.retryable = retryable;
+      lastError = wrapped;
+      if (!retryable || i >= maxAttempts - 1) throw wrapped;
+      await waitMs(700 * attempt);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw lastError || new Error('session pay failed');
+}
+
 function getAutoBtcPriceStatus() {
   return {
     ...autoBtcPriceState,
@@ -2691,27 +2751,24 @@ app.post('/api/workflow/stop-order/run', requireRole('agent'), async (req, res) 
     workflow.updatedAt = new Date().toISOString();
     upsertWorkflow(workflow);
 
-    const internalApiKey = getInternalAgentApiKey();
-    const payHeaders = { 'Content-Type': 'application/json' };
-    if (internalApiKey) {
-      payHeaders['x-api-key'] = internalApiKey;
-    }
-    const payResp = await fetch(`http://127.0.0.1:${PORT}/api/session/pay`, {
-      method: 'POST',
-      headers: payHeaders,
-      body: JSON.stringify({
-        tokenAddress: accept.tokenAddress,
-        recipient: accept.recipient,
-        amount: accept.amount,
-        requestId,
-        action: 'reactive-stop-orders',
-        query: `A2A stop-order ${symbol} tp=${takeProfit} sl=${stopLoss}${
-          hasQuantity ? ` qty=${quantity}` : ''
-        }`
-      })
-    });
-    const payBody = await payResp.json().catch(() => ({}));
-    if (!payResp.ok || !payBody?.ok) {
+    let payBody = {};
+    try {
+      const pay = await postSessionPayWithRetry(
+        {
+          tokenAddress: accept.tokenAddress,
+          recipient: accept.recipient,
+          amount: accept.amount,
+          requestId,
+          action: 'reactive-stop-orders',
+          query: `A2A stop-order ${symbol} tp=${takeProfit} sl=${stopLoss}${
+            hasQuantity ? ` qty=${quantity}` : ''
+          }`
+        },
+        { maxAttempts: 3, timeoutMs: 210_000 }
+      );
+      payBody = pay.body || {};
+    } catch (error) {
+      payBody = error?.payBody || {};
       const payError = String(payBody?.error || '').trim().toLowerCase();
       if (payError === 'insufficient_funds') {
         const required = String(payBody?.details?.required || accept.amount || '').trim();
@@ -2745,7 +2802,7 @@ app.post('/api/workflow/stop-order/run', requireRole('agent'), async (req, res) 
         err.code = payError;
         throw err;
       }
-      throw new Error(payBody?.reason || payBody?.error || `session pay failed: HTTP ${payResp.status}`);
+      throw new Error(payBody?.reason || payBody?.error || error?.message || 'session pay failed');
     }
     const txHash = String(payBody?.payment?.txHash || '').trim();
     const userOpHash = String(payBody?.payment?.userOpHash || '').trim();
@@ -2935,25 +2992,22 @@ app.post('/api/workflow/btc-price/run', requireRole('agent'), async (req, res) =
     workflow.updatedAt = new Date().toISOString();
     upsertWorkflow(workflow);
 
-    const internalApiKey = getInternalAgentApiKey();
-    const payHeaders = { 'Content-Type': 'application/json' };
-    if (internalApiKey) {
-      payHeaders['x-api-key'] = internalApiKey;
-    }
-    const payResp = await fetch(`http://127.0.0.1:${PORT}/api/session/pay`, {
-      method: 'POST',
-      headers: payHeaders,
-      body: JSON.stringify({
-        tokenAddress: accept.tokenAddress,
-        recipient: accept.recipient,
-        amount: accept.amount,
-        requestId,
-        action: 'btc-price-feed',
-        query: `A2A BTC price ${pair} source=${source}`
-      })
-    });
-    const payBody = await payResp.json().catch(() => ({}));
-    if (!payResp.ok || !payBody?.ok) {
+    let payBody = {};
+    try {
+      const pay = await postSessionPayWithRetry(
+        {
+          tokenAddress: accept.tokenAddress,
+          recipient: accept.recipient,
+          amount: accept.amount,
+          requestId,
+          action: 'btc-price-feed',
+          query: `A2A BTC price ${pair} source=${source}`
+        },
+        { maxAttempts: 3, timeoutMs: 210_000 }
+      );
+      payBody = pay.body || {};
+    } catch (error) {
+      payBody = error?.payBody || {};
       const payError = String(payBody?.error || '').trim().toLowerCase();
       if (payError === 'insufficient_funds') {
         const required = String(payBody?.details?.required || accept.amount || '').trim();
@@ -2977,7 +3031,7 @@ app.post('/api/workflow/btc-price/run', requireRole('agent'), async (req, res) =
         err.balance = gasBalance || '';
         throw err;
       }
-      throw new Error(payBody?.reason || payBody?.error || `session pay failed: HTTP ${payResp.status}`);
+      throw new Error(payBody?.reason || payBody?.error || error?.message || 'session pay failed');
     }
     const txHash = String(payBody?.payment?.txHash || '').trim();
     const userOpHash = String(payBody?.payment?.userOpHash || '').trim();
