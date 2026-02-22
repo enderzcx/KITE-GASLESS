@@ -714,9 +714,9 @@ function App() {
       <header className="page-header">
         <div>
           <p className="header-kicker">KITE TESTNET</p>
-          <h1>BTC Agent Price Demo</h1>
+          <h1>BTCUSD</h1>
           <p className="header-subtitle">
-            Open with one glance: paid BTC price points on chart, and the ERC8004 + x402 workflow beside it.
+            Open with one glance: paid BTCUSD points on chart, and the ERC8004 + x402 workflow beside it.
           </p>
         </div>
         <div className="header-actions">
@@ -744,7 +744,7 @@ function App() {
       <main className="demo-layout">
         <section className="panel chart-panel">
           <div className="panel-head">
-            <h2>Paid BTCUSD Price Line</h2>
+            <h2>BTCUSD</h2>
             <span className="panel-note">updates every minute · last {CHART_POINT_LIMIT} unlocked points</span>
           </div>
 
@@ -754,19 +754,19 @@ function App() {
               {latestPoint ? `$${formatPrice(latestPoint.priceUsd)}` : '-'}
             </strong>
             <span className="muted-text">
-              {latestPoint ? `${latestPoint.provider}  ${formatTime(latestPoint.t)}` : 'waiting for paid BTC points'}
+              {latestPoint ? `${latestPoint.provider}  ${formatTime(latestPoint.t)}` : 'waiting for paid BTCUSD points'}
             </span>
           </div>
 
           <div className="chart-wrap">
             {chartModel.points.length === 0 ? (
-              <div className="chart-empty">No paid BTC points yet. Click `Run Demo` to generate the first point.</div>
+              <div className="chart-empty">No paid BTCUSD points yet. Click `Run Demo` to generate the first point.</div>
             ) : (
               <svg
                 className="chart-svg"
                 viewBox={`0 0 ${chartModel.width} ${chartModel.height}`}
                 role="img"
-                aria-label="BTC paid price line chart"
+                aria-label="BTCUSD paid price line chart"
               >
                 {chartModel.yTicks.map((tick, idx) => (
                   <g key={`grid_${idx}`}>
