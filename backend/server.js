@@ -78,7 +78,7 @@ const AUTO_BTC_PRICE_INTERVAL_MS = Math.max(15_000, Number(process.env.AUTO_BTC_
 const AUTO_BTC_PRICE_SOURCE_AGENT_ID = String(process.env.AUTO_BTC_PRICE_SOURCE_AGENT_ID || KITE_AGENT1_ID).trim();
 const AUTO_BTC_PRICE_TARGET_AGENT_ID = String(process.env.AUTO_BTC_PRICE_TARGET_AGENT_ID || KITE_AGENT2_ID).trim();
 const AUTO_BTC_PRICE_PAIR = String(process.env.AUTO_BTC_PRICE_PAIR || 'BTCUSDT').trim().toUpperCase();
-const AUTO_BTC_PRICE_SOURCE = String(process.env.AUTO_BTC_PRICE_SOURCE || 'auto').trim().toLowerCase();
+const AUTO_BTC_PRICE_SOURCE = String(process.env.AUTO_BTC_PRICE_SOURCE || 'hyperliquid').trim().toLowerCase();
 const AUTO_BTC_PRICE_PAYER = String(process.env.AUTO_BTC_PRICE_PAYER || '').trim();
 
 const ROLE_RANK = {
@@ -1159,22 +1159,40 @@ function normalizeReactiveParams(actionParams = {}) {
 }
 
 function normalizeBtcPriceParams(input = {}) {
-  const pair = String(input.pair || 'BTCUSDT').trim().toUpperCase();
-  const source = String(input.source || 'auto').trim().toLowerCase();
-  if (!/^[A-Z0-9]{6,16}$/.test(pair)) {
-    throw new Error('BTC price task requires a valid pair (e.g. BTCUSDT).');
+  const rawPair = String(input.pair || 'BTCUSDT').trim().toUpperCase();
+  const rawSource = String(input.source || 'hyperliquid').trim().toLowerCase();
+  const compactPair = rawPair.replace(/[-_\s]/g, '');
+
+  if (!['BTC', 'BTCUSDT', 'BTCUSD'].includes(compactPair)) {
+    throw new Error('BTC price task requires pair BTC/BTCUSDT/BTCUSD/BTC-USDT.');
   }
-  if (!['auto', 'binance', 'coingecko'].includes(source)) {
-    throw new Error('BTC price task source must be one of auto/binance/coingecko.');
+  if (!['hyperliquid', 'auto', 'binance', 'okx', 'coingecko'].includes(rawSource)) {
+    throw new Error('BTC price task source must be one of hyperliquid/auto/binance/okx/coingecko.');
   }
-  return { pair, source };
+
+  return {
+    pair: 'BTCUSDT',
+    source: 'hyperliquid',
+    sourceRequested: rawSource,
+    providers: ['hyperliquid', 'binance', 'okx']
+  };
 }
 
-async function fetchJsonWithTimeout(url, timeoutMs = 8000) {
+async function fetchJsonWithTimeout(url, timeoutMs = 8000, options = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const resp = await fetch(url, { signal: controller.signal });
+    const method = String(options?.method || 'GET').trim().toUpperCase() || 'GET';
+    const headers = options?.headers || {};
+    const reqInit = {
+      method,
+      headers,
+      signal: controller.signal
+    };
+    if (options?.body !== undefined) {
+      reqInit.body = options.body;
+    }
+    const resp = await fetch(url, reqInit);
     if (!resp.ok) {
       throw new Error(`HTTP ${resp.status}`);
     }
@@ -1184,39 +1202,57 @@ async function fetchJsonWithTimeout(url, timeoutMs = 8000) {
   }
 }
 
+async function fetchBtcFromHyperliquid() {
+  const body = await fetchJsonWithTimeout('https://api.hyperliquid.xyz/info', 8000, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type: 'allMids' })
+  });
+  const price = Number(body?.BTC);
+  if (!Number.isFinite(price) || price <= 0) throw new Error('invalid price');
+  return price;
+}
+
+async function fetchBtcFromBinance(pair = 'BTCUSDT') {
+  const body = await fetchJsonWithTimeout(`https://api.binance.com/api/v3/ticker/price?symbol=${pair}`, 8000);
+  const price = Number(body?.price);
+  if (!Number.isFinite(price) || price <= 0) throw new Error('invalid price');
+  return price;
+}
+
+async function fetchBtcFromOkx() {
+  const body = await fetchJsonWithTimeout('https://www.okx.com/api/v5/market/ticker?instId=BTC-USDT', 8000);
+  const price = Number(body?.data?.[0]?.last);
+  if (!Number.isFinite(price) || price <= 0) throw new Error('invalid price');
+  return price;
+}
+
 async function fetchBtcPriceQuote(params = {}) {
-  const { pair, source } = normalizeBtcPriceParams(params);
-  const providers = source === 'auto' ? ['binance', 'coingecko'] : [source];
+  const { pair, sourceRequested, providers } = normalizeBtcPriceParams(params);
   const failures = [];
+  const attemptedProviders = [];
 
   for (const provider of providers) {
+    attemptedProviders.push(provider);
     try {
-      if (provider === 'binance') {
-        const body = await fetchJsonWithTimeout(`https://api.binance.com/api/v3/ticker/price?symbol=${pair}`, 8000);
-        const price = Number(body?.price);
-        if (!Number.isFinite(price) || price <= 0) throw new Error('invalid price');
-        return {
-          provider: 'binance',
-          pair,
-          priceUsd: Number(price.toFixed(6)),
-          fetchedAt: new Date().toISOString()
-        };
+      let price = NaN;
+      if (provider === 'hyperliquid') {
+        price = await fetchBtcFromHyperliquid();
+      } else if (provider === 'binance') {
+        price = await fetchBtcFromBinance(pair);
+      } else if (provider === 'okx') {
+        price = await fetchBtcFromOkx();
       }
 
-      if (provider === 'coingecko') {
-        const body = await fetchJsonWithTimeout(
-          'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd',
-          8000
-        );
-        const price = Number(body?.bitcoin?.usd);
-        if (!Number.isFinite(price) || price <= 0) throw new Error('invalid price');
-        return {
-          provider: 'coingecko',
-          pair,
-          priceUsd: Number(price.toFixed(6)),
-          fetchedAt: new Date().toISOString()
-        };
-      }
+      if (!Number.isFinite(price) || price <= 0) throw new Error('invalid price');
+      return {
+        provider,
+        pair,
+        priceUsd: Number(price.toFixed(6)),
+        fetchedAt: new Date().toISOString(),
+        sourceRequested,
+        attemptedProviders
+      };
     } catch (error) {
       failures.push(`${provider}:${error?.message || 'failed'}`);
     }
@@ -1257,7 +1293,7 @@ function buildA2ACapabilities() {
         id: 'btc-price-feed',
         input: {
           pair: 'string (default BTCUSDT)',
-          source: 'auto | binance | coingecko'
+          source: 'hyperliquid (fallback: binance, okx; legacy auto/binance/coingecko accepted)'
         },
         price: X402_BTC_PRICE,
         recipient: KITE_AGENT2_AA_ADDRESS
@@ -4048,6 +4084,27 @@ app.get('/api/system/persistence', requireRole('viewer'), (req, res) => {
     traceId: req.traceId || '',
     persistence: persistenceStore.info()
   });
+});
+
+app.get('/api/market/btc/price', requireRole('viewer'), async (req, res) => {
+  try {
+    const quote = await fetchBtcPriceQuote({
+      pair: req.query.pair,
+      source: req.query.source
+    });
+    return res.json({
+      ok: true,
+      traceId: req.traceId || '',
+      quote
+    });
+  } catch (error) {
+    return res.status(502).json({
+      ok: false,
+      traceId: req.traceId || '',
+      error: 'price_source_unavailable',
+      reason: error?.message || 'price_source_unavailable'
+    });
+  }
 });
 
 app.get('/api/automation/btc-price/status', requireRole('viewer'), (req, res) => {
