@@ -720,9 +720,9 @@ function App() {
                   <div className="flow-price-row">
                     <span className="muted-label">Quote</span>
                     <strong ref={flowPriceRef} className="flow-price-tag">
-                      {quote ? `$${formatPrice(quote.priceUsd)}` : latestPoint ? `$${formatPrice(latestPoint.priceUsd)}` : '-'}
+                      {quote ? `$${formatPrice(quote.priceUsd)}` : '-'}
                     </strong>
-                    <span className="muted-text">{quote?.provider || latestPoint?.provider || '-'}</span>
+                    <span className="muted-text">{quote?.provider || '-'}</span>
                   </div>
                 ) : null}
               </li>
@@ -851,10 +851,10 @@ function App() {
             </article>
             <article className="evidence-card">
               <h3>API Result</h3>
-              <p>provider: {quote?.provider || latestPoint?.provider || '-'}</p>
-              <p>price: {quote?.priceUsd ?? latestPoint?.priceUsd ?? '-'}</p>
+              <p>provider: {quote?.provider || '-'}</p>
+              <p>price: {quote?.priceUsd ?? '-'}</p>
               <p>pair: {quote?.pair || 'BTCUSDT'}</p>
-              <p>at: {formatTime(quote?.fetchedAt || latestPoint?.t || '')}</p>
+              <p>at: {formatTime(quote?.fetchedAt || '')}</p>
             </article>
             <article className="evidence-card">
               <h3>Workflow</h3>

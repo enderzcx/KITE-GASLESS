@@ -1659,6 +1659,18 @@ function waitMs(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function isTransientTransportError(reason = '') {
+  const text = String(reason || '').trim().toLowerCase();
+  if (!text) return false;
+  return (
+    text.includes('fetch failed') ||
+    text.includes('econnreset') ||
+    text.includes('timeout') ||
+    text.includes('socket hang up') ||
+    text.includes('network')
+  );
+}
+
 async function callRpc(method, params = []) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), PROOF_RPC_TIMEOUT_MS);
@@ -4694,31 +4706,43 @@ app.post('/api/session/pay', requireRole('agent'), async (req, res) => {
     const signFunction = async (userOpHash) =>
       sessionWallet.signMessage(ethers.getBytes(userOpHash));
 
-    const result = await sdk.sendSessionTransferWithAuthorizationAndProvider(
-      {
-        sessionId,
-        auth: authPayload,
-        authSignature,
-        serviceProvider,
-        metadata
-      },
-      signFunction,
-      {
-        callGasLimit: 320000n,
-        verificationGasLimit: 450000n,
-        preVerificationGas: 120000n
-      }
-    );
+    const maxAttempts = Math.max(1, Math.min(Number(process.env.KITE_SESSION_PAY_RETRIES || 2), 3));
+    let result = null;
+    let attempts = 0;
+    for (let i = 0; i < maxAttempts; i += 1) {
+      attempts = i + 1;
+      result = await sdk.sendSessionTransferWithAuthorizationAndProvider(
+        {
+          sessionId,
+          auth: authPayload,
+          authSignature,
+          serviceProvider,
+          metadata
+        },
+        signFunction,
+        {
+          callGasLimit: 320000n,
+          verificationGasLimit: 450000n,
+          preVerificationGas: 120000n
+        }
+      );
+      if (result?.status === 'success' && result?.transactionHash) break;
+      const reason = String(result?.reason || '').trim();
+      const retriable = isTransientTransportError(reason);
+      if (!retriable || i >= maxAttempts - 1) break;
+      await waitMs(600 * (i + 1));
+    }
 
-    if (result.status !== 'success' || !result.transactionHash) {
+    if (!result || result.status !== 'success' || !result.transactionHash) {
       return res.status(500).json({
         ok: false,
         error: 'aa_session_payment_failed',
-        reason: result.reason || 'unknown',
+        reason: result?.reason || 'unknown',
         details: {
-          userOpHash: result.userOpHash || '',
+          userOpHash: result?.userOpHash || '',
           sessionId,
-          payer: runtime.aaWallet
+          payer: runtime.aaWallet,
+          attempts
         }
       });
     }
