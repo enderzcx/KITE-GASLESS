@@ -673,6 +673,11 @@ function App() {
       : currentRequest?.a2a
         ? 'a2a+x402'
         : 'agent-to-api+x402';
+  const summaryText =
+    currentWorkflow?.error ||
+    currentWorkflow?.result?.summary ||
+    currentRequest?.result?.summary ||
+    (traceLoading ? 'Loading trace details...' : 'Waiting for workflow events...');
 
   const chartSeries = useMemo(() => normalizeSeriesPoints(series).slice(-CHART_POINT_LIMIT), [series]);
   const chartModel = useMemo(() => buildChartModel(chartSeries), [chartSeries]);
@@ -819,6 +824,11 @@ function App() {
               <span>{shortenMiddle(activePoint.requestId, 10, 8)}</span>
             </div>
           ) : null}
+
+          <div className="flow-summary chart-summary">
+            <p className="muted-label">Summary</p>
+            <p>{summaryText}</p>
+          </div>
         </section>
 
         <section className="panel flow-panel">
@@ -868,15 +878,6 @@ function App() {
             ))}
           </ol>
 
-          <div className="flow-summary">
-            <p className="muted-label">Summary</p>
-            <p>
-              {currentWorkflow?.error ||
-                currentWorkflow?.result?.summary ||
-                currentRequest?.result?.summary ||
-                (traceLoading ? 'Loading trace details...' : 'Waiting for workflow events...')}
-            </p>
-          </div>
         </section>
       </main>
 
