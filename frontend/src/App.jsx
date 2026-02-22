@@ -599,7 +599,7 @@ function App() {
     setFailTriggering(true);
     setNoticeText('');
     setErrorText('');
-    let payer = String(currentWorkflow?.payer || '').trim();
+    let payer = String(traceData?.workflow?.payer || '').trim();
     let revoked = false;
     try {
       if (!payer) {
@@ -655,7 +655,7 @@ function App() {
       }
       setFailTriggering(false);
     }
-  }, [currentWorkflow?.payer, loadSnapshot, loadTrace]);
+  }, [loadSnapshot, loadTrace, traceData?.workflow?.payer]);
 
   const timeline = useMemo(() => normalizeTimeline(traceData?.timeline), [traceData?.timeline]);
   const traceState = String(traceData?.state || '').trim().toLowerCase() || 'running';
