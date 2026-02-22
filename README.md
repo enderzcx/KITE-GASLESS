@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 [![Version](https://img.shields.io/badge/version-v1.7.0-blue)](./CHANGELOG.md)
 
-KiteTrace Platform (service/repo name: `KITECLAW`) is agent-native payment infrastructure on Kite AI Testnet.
+KiteTrace Platform is agent-native payment infrastructure on Kite AI Testnet.
 
 **GitHub Description**: KiteTrace Platform: agent-native micropayment rails on Kite Testnet, using ERC8004 identity + x402 for verifiable ATAPI/A2A interactions.
 
