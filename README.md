@@ -3,7 +3,14 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 [![Version](https://img.shields.io/badge/version-v1.7.0-blue)](./CHANGELOG.md)
 
-KiteTrace Platform (service/repo name: `KITECLAW`) is agent-native payment infrastructure on Kite AI Testnet. It demonstrates how autonomous agents can authenticate, pay with x402, unlock services, and leave verifiable on-chain interaction proofs.
+KiteTrace Platform (service/repo name: `KITECLAW`) is agent-native payment infrastructure on Kite AI Testnet.
+
+**GitHub Description**: KiteTrace Platform: agent-native micropayment rails on Kite Testnet, using ERC8004 identity + x402 for verifiable ATAPI/A2A interactions.
+
+**About**:
+- Enables agents to publish/consume services and settle per action with x402.
+- Uses ERC8004 identity and direct on-chain confirmation (`requestId`, `txHash`, `block`, `status`, explorer link).
+- BTCUSD minute-level loop is a live demo scenario; platform supports broader agent services.
 
 Current Version: `v1.7.0`
 
