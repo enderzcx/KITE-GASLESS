@@ -744,8 +744,8 @@ function App() {
       <main className="demo-layout">
         <section className="panel chart-panel">
           <div className="panel-head">
-            <h2>Paid BTC Price Line</h2>
-            <span className="panel-note">last {CHART_POINT_LIMIT} unlocked points</span>
+            <h2>Paid BTCUSD Price Line</h2>
+            <span className="panel-note">updates every minute · last {CHART_POINT_LIMIT} unlocked points</span>
           </div>
 
           <div className="chart-topline">
