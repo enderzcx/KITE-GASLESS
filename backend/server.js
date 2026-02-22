@@ -3001,7 +3001,7 @@ app.post('/api/workflow/btc-price/run', requireRole('agent'), async (req, res) =
           amount: accept.amount,
           requestId,
           action: 'btc-price-feed',
-          query: `A2A BTC price ${pair} source=${source}`
+        query: `ATAPI BTC price ${pair} source=${source}`
         },
         { maxAttempts: 3, timeoutMs: 210_000 }
       );
@@ -3126,7 +3126,7 @@ app.post('/api/workflow/btc-price/run', requireRole('agent'), async (req, res) =
                 requestId: workflow.requestId,
                 status: 'pending',
                 action: 'btc-price-feed',
-                query: `A2A BTC price ${workflow?.input?.pair || 'BTCUSDT'}`.trim(),
+                query: `ATAPI BTC price ${workflow?.input?.pair || 'BTCUSDT'}`.trim(),
                 payer: workflow.payer || '',
                 amount: String(X402_BTC_PRICE || ''),
                 tokenAddress: SETTLEMENT_TOKEN,
@@ -3403,7 +3403,7 @@ async function handleA2ABtcPrice(body = {}) {
   const actionCfg = getActionConfig('btc-price-feed');
   const actionAmount = String(actionCfg?.amount || X402_BTC_PRICE || '0.00001');
   const requests = readX402Requests();
-  const a2aQuery = `A2A BTC price ${task.pair} source=${task.source}`;
+  const a2aQuery = `ATAPI BTC price ${task.pair} source=${task.source}`;
 
   if (!requestId || !paymentProof) {
     const policyResult = evaluateTransferPolicy({
@@ -3509,7 +3509,7 @@ async function handleA2ABtcPrice(body = {}) {
         requestId: reqItem.requestId,
         reused: true,
         result: {
-          summary: reqItem?.result?.summary || 'A2A BTC price quote already unlocked',
+          summary: reqItem?.result?.summary || 'ATAPI BTC price quote already unlocked',
           quote
         },
         a2a: reqItem.a2a || null,
@@ -3520,7 +3520,7 @@ async function handleA2ABtcPrice(body = {}) {
           capability: 'btc-price-feed',
           phase: 'settled',
           state: 'success',
-          summary: reqItem?.result?.summary || 'A2A BTC price quote already unlocked'
+          summary: reqItem?.result?.summary || 'ATAPI BTC price quote already unlocked'
         })
       }
     };
@@ -3569,7 +3569,7 @@ async function handleA2ABtcPrice(body = {}) {
     traceId: String(reqItem?.a2a?.traceId || traceId).trim()
   };
   reqItem.result = {
-    summary: `A2A BTC price quote unlocked by x402 payment: ${quoteSummary}`,
+    summary: `ATAPI BTC price quote unlocked by x402 payment: ${quoteSummary}`,
     quote
   };
   writeX402Requests(requests);

@@ -7,7 +7,38 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 ## [Unreleased]
 
 ### Changed
-- Pending.
+- BTC workflow summary/query wording uses `ATAPI` label to avoid confusion with pure A2A task naming.
+
+## [v1.7.0] - 2026-02-22
+
+### Added
+- New demo data API for chart playback:
+  - `GET /api/demo/price-series?limit=60`
+  - returns only paid `btc-price-feed` points for judge-facing chart evidence.
+- BTC workflow SSE payload enhancement:
+  - `unlocked` event now includes optional `quote` payload.
+- Frontend route split for clearer demo focus:
+  - `/` => BTC line chart + ERC8004/x402 flow card + `Run Demo`
+  - `/ops` => KPI, traces, event feed, evidence drawer, session setup
+- Homepage chart features:
+  - pure SVG line chart (no third-party chart lib)
+  - latest point highlight + tooltip
+  - flow-to-chart price fly-in animation.
+
+### Changed
+- BTC quote source flow aligned to production intent:
+  - `hyperliquid` as primary source with `binance`/`okx` fallback in backend quote pipeline.
+- UI scope reduced for judge-first opening experience:
+  - removed setup/ops clutter from homepage and moved operational controls to `/ops`.
+
+### Fixed
+- Session payment compatibility for `btc-price-feed`:
+  - mapped BTC service provider to session-compatible alias by default, with env override support.
+- Reliability improvements for unstable testnet links:
+  - retry logic added around session-pay workflow orchestration.
+  - prevented premature abort of long confirmation waits.
+- Frontend evidence consistency:
+  - failed trace no longer shows stale quote values from previous successful runs.
 
 ## [v1.6.1] - 2026-02-21
 

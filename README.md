@@ -1,11 +1,11 @@
 ﻿# KITECLAW
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-v1.6.1-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-v1.7.0-blue)](./CHANGELOG.md)
 
 KITECLAW is an agent-native payment app on Kite AI Testnet. It demonstrates how an autonomous agent can authenticate, pay with x402, and unlock services with verifiable on-chain proof.
 
-Current Version: `v1.6.1`
+Current Version: `v1.7.0`
 
 ## Availability
 
@@ -15,9 +15,8 @@ Current Version: `v1.6.1`
 - Status: public deployment is under active testing; some flows may still be unstable on cloud runtime.
 - Purpose: judge-facing online demo for end-to-end flow validation.
 - Expected pages:
-  - Dashboard (`/`)
-  - Transfer Records
-  - Audit / On-chain confirmation
+  - Demo Home (`/`) - paid BTC line chart + ERC8004/x402 flow card
+  - Ops Console (`/ops`) - KPI/traces/events/evidence/session setup
 
 ### Local Reproducible Version
 
@@ -33,6 +32,9 @@ Current Version: `v1.6.1`
 - ERC-4337 AA account flow on Kite testnet
 - Session-scoped delegated execution (one-time setup, repeated payments)
 - x402 lifecycle: `402 -> pay -> submit proof -> 200 unlock`
+- Paid BTC quote workflow (`btc-price-feed`) with quote provider attribution
+- Agent-to-agent and agent-to-api flow evidence in one console
+- BTC demo summary wording uses `ATAPI` for the paid quote path to avoid A2A naming confusion.
 - Verifiable agent identity (registry-backed)
 - Auditable settlement mapping (`requestId <-> txHash`)
 - Graceful failures (insufficient funds, scope violation, expired/fake proof)
@@ -62,24 +64,43 @@ Upgrade authority remains with each proxy owner; this project does not grant per
 
 ## Real Demo Flow (Current Implementation)
 
-1. Open app and connect wallet.
-2. In Dashboard, create session key and apply policy rules.
-3. Send paid request in Chat Agent:
-   - Example: `A2A stop-order BTC-USDT TP 70000 SL 62000 QTY 0.1`
-4. Backend runs workflow automatically:
-   - identity verification
-   - challenge issued
-   - payment sent
-   - proof submitted
-   - unlock returned
-5. Send second request to show no repeated payment-authorization popup.
-   - Note: if signature-based identity verification is enabled, wallet signature popup may still appear for identity proof.
-6. Send high-amount request to show failure handling:
-   - Example: `A2A stop-order BTC-USDT TP 70000 SL 62000 QTY 1000`
-   - Expected: insufficient balance path (clear error + red failed state)
-7. Verify records in:
-   - x402 settlement mapping table
-   - Goldsky on-chain audit page
+1. Open `/` and click `Run Demo`.
+2. Backend runs BTC paid workflow:
+   - ERC8004 identity
+   - x402 challenge
+   - session payment
+   - proof verification
+   - API result unlock (quote)
+   - on-chain evidence mapping
+3. Homepage chart appends only paid/unlocked BTC points.
+4. Open `/ops` for operational evidence:
+   - recent traces
+   - live event feed
+   - evidence drawer
+   - session setup panel
+5. Optional continuous demo:
+   - start automation to run BTC request every minute.
+
+## Core API Endpoints (Current)
+
+- `POST /api/workflow/btc-price/run`
+- `GET /api/demo/price-series?limit=60`
+- `GET /api/demo/trace/:traceId`
+- `GET /api/demo/stream` (SSE)
+- `GET /api/x402/mapping/latest`
+- `GET /api/market/btc/price`
+- `GET /api/automation/btc-price/status`
+- `POST /api/automation/btc-price/start`
+- `POST /api/automation/btc-price/stop`
+
+## Runtime Notes (Testnet)
+
+- Kite testnet RPC/bundler may occasionally return transient errors such as:
+  - `request timeout (code=TIMEOUT, version=6.16.0)`
+  - `read ECONNRESET`
+  - `fetch failed`
+- Workflow now includes retry logic for session-pay transient failures, but occasional failed traces are still possible on unstable network windows.
+- For judge demos, pre-run a few traces so the chart already has successful paid points.
 
 ## Architecture
 
