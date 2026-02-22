@@ -77,6 +77,19 @@ body {
   gap: 8px;
 }
 
+.demo-header {
+  grid-template-columns: 1fr;
+}
+
+.demo-header .header-actions {
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  align-items: center;
+  gap: 8px 10px;
+}
+
 .connection-pill {
   display: inline-flex;
   align-items: center;

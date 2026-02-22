@@ -716,7 +716,7 @@ function App() {
 
   const renderDemoPage = () => (
     <div className="page-shell">
-      <header className="page-header">
+      <header className="page-header demo-header">
         <div>
           <p className="header-kicker">KITE TESTNET</p>
           <h1>BTCUSD</h1>
