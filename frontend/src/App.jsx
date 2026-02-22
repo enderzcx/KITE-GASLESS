@@ -90,6 +90,11 @@ function shortenMiddle(text, left = 10, right = 8) {
   return `${value.slice(0, left)}...${value.slice(-right)}`;
 }
 
+function fullText(text) {
+  const value = String(text || '').trim();
+  return value || '-';
+}
+
 function statusText(mode) {
   if (mode === 'live') return 'SSE live';
   if (mode === 'polling') return 'Polling fallback';
@@ -856,16 +861,16 @@ function App() {
             <article className="evidence-card">
               <h3>Identity</h3>
               <p>agentId: {currentRequest?.identity?.agentId || '-'}</p>
-              <p>registry: {shortenMiddle(currentRequest?.identity?.registry || '-', 12, 10)}</p>
+              <p>registry: {fullText(currentRequest?.identity?.registry || '-')}</p>
               <p>verify: {identityLatest?.status || '-'}</p>
-              <p>wallet: {shortenMiddle(identityLatest?.identity?.agentWallet || '-', 12, 10)}</p>
+              <p>wallet: {fullText(identityLatest?.identity?.agentWallet || '-')}</p>
             </article>
             <article className="evidence-card">
               <h3>x402 Payment</h3>
               <p>amount: {currentRequest?.amount || '-'}</p>
-              <p>token: {shortenMiddle(currentRequest?.tokenAddress || '-', 12, 10)}</p>
-              <p>recipient: {shortenMiddle(currentRequest?.recipient || '-', 12, 10)}</p>
-              <p>txHash: {shortenMiddle(currentRequest?.paymentTxHash || currentWorkflow?.txHash || '-', 12, 10)}</p>
+              <p>token: {fullText(currentRequest?.tokenAddress || '-')}</p>
+              <p>recipient: {fullText(currentRequest?.recipient || '-')}</p>
+              <p>txHash: {fullText(currentRequest?.paymentTxHash || currentWorkflow?.txHash || '-')}</p>
             </article>
             <article className="evidence-card">
               <h3>API Result</h3>
@@ -878,7 +883,7 @@ function App() {
               <h3>Workflow</h3>
               <p>state: {currentWorkflow?.state || '-'}</p>
               <p>updated: {formatTime(currentWorkflow?.updatedAt || '')}</p>
-              <p>payer: {shortenMiddle(currentWorkflow?.payer || '-', 12, 10)}</p>
+              <p>payer: {fullText(currentWorkflow?.payer || '-')}</p>
               <p>flow: {currentRequest?.a2a ? 'a2a+x402' : 'agent-to-api+x402'}</p>
             </article>
           </div>
