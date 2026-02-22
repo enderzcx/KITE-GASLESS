@@ -827,6 +827,59 @@ function buildLatestWorkflowByRequestId(workflows = []) {
   return index;
 }
 
+function parsePositiveNumber(value) {
+  const num = Number(value);
+  return Number.isFinite(num) && num > 0 ? num : NaN;
+}
+
+function buildDemoPriceSeries(limitInput = 60) {
+  const limit = Math.max(10, Math.min(Number(limitInput || 60), 300));
+  const workflowByRequestId = buildLatestWorkflowByRequestId(readWorkflows());
+  const dedup = new Map();
+
+  for (const item of readX402Requests()) {
+    if (!item || typeof item !== 'object') continue;
+    const requestId = String(item.requestId || '').trim();
+    if (!requestId) continue;
+    const action = String(item.action || '').trim().toLowerCase();
+    const status = String(item.status || '').trim().toLowerCase();
+    if (action !== 'btc-price-feed' || status !== 'paid') continue;
+
+    const workflow = workflowByRequestId.get(requestId) || null;
+    const quote = item?.result?.quote || workflow?.result?.quote || null;
+    const priceUsd = parsePositiveNumber(quote?.priceUsd);
+    if (!Number.isFinite(priceUsd)) continue;
+
+    const fetchedAtRaw = String(
+      quote?.fetchedAt ||
+        workflow?.updatedAt ||
+        workflow?.createdAt ||
+        (Number(item.paidAt || 0) > 0 ? new Date(Number(item.paidAt)).toISOString() : '') ||
+        (Number(item.createdAt || 0) > 0 ? new Date(Number(item.createdAt)).toISOString() : '')
+    ).trim();
+    const fetchedMs = Date.parse(fetchedAtRaw);
+    if (!Number.isFinite(fetchedMs)) continue;
+
+    const nextRow = {
+      t: new Date(fetchedMs).toISOString(),
+      priceUsd: Number(priceUsd.toFixed(6)),
+      provider: String(quote?.provider || '').trim().toLowerCase() || 'unknown',
+      traceId: String(workflow?.traceId || item?.a2a?.traceId || '').trim(),
+      requestId
+    };
+    const prev = dedup.get(requestId);
+    if (!prev || Date.parse(prev.t) <= fetchedMs) {
+      dedup.set(requestId, nextRow);
+    }
+  }
+
+  const series = [...dedup.values()]
+    .sort((a, b) => Date.parse(a.t) - Date.parse(b.t))
+    .slice(-limit);
+
+  return { limit, series };
+}
+
 function toIsoFromMs(value) {
   const ms = Number(value || 0);
   return ms > 0 ? new Date(ms).toISOString() : '';
@@ -2214,6 +2267,19 @@ app.get('/api/x402/mapping/latest', requireRole('viewer'), (req, res) => {
   return res.json({ ok: true, total: rows.length, kpi, items: rows });
 });
 
+app.get('/api/demo/price-series', requireRole('viewer'), (req, res) => {
+  const { limit, series } = buildDemoPriceSeries(req.query.limit);
+  return res.json({
+    ok: true,
+    traceId: req.traceId || '',
+    window: {
+      limit,
+      intervalSec: 60
+    },
+    series
+  });
+});
+
 app.get('/api/onchain/latest', requireRole('viewer'), (req, res) => {
   const limit = Math.max(1, Math.min(Number(req.query.limit || 20), 200));
   const paidRows = readX402Requests()
@@ -2942,6 +3008,7 @@ app.post('/api/workflow/btc-price/run', requireRole('agent'), async (req, res) =
       requestId,
       txHash,
       summary: proofResult?.body?.result?.summary || '',
+      quote: proofResult?.body?.result?.quote || null,
       pair,
       source
     });

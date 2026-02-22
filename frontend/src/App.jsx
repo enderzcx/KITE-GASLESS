@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
 import AgentSettingsPage from './AgentSettingsPage';
 
@@ -10,7 +10,8 @@ const AGENT_API_KEY = String(import.meta.env.VITE_API_KEY_AGENT || import.meta.e
 
 const POLL_INTERVAL_MS = 8000;
 const RECORD_LIMIT = 80;
-const EVENT_LIMIT = 16;
+const EVENT_LIMIT = 18;
+const CHART_POINT_LIMIT = 60;
 
 const STEP_ORDER = ['identity', 'challenge', 'payment', 'proof', 'api_result', 'onchain'];
 const STEP_LABELS = {
@@ -45,9 +46,7 @@ function resolveApiUrl(path, params) {
 
 function buildHeaders(apiKey = VIEWER_API_KEY) {
   const headers = {};
-  if (apiKey) {
-    headers['x-api-key'] = apiKey;
-  }
+  if (apiKey) headers['x-api-key'] = apiKey;
   return headers;
 }
 
@@ -75,6 +74,15 @@ function formatTime(isoText) {
   }).format(dt);
 }
 
+function formatPrice(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '-';
+  return num.toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 6
+  });
+}
+
 function shortenMiddle(text, left = 10, right = 8) {
   const value = String(text || '').trim();
   if (!value) return '-';
@@ -87,15 +95,6 @@ function statusText(mode) {
   if (mode === 'polling') return 'Polling fallback';
   if (mode === 'connecting') return 'Connecting stream';
   return 'Disconnected';
-}
-
-function readViewFromUrl() {
-  try {
-    const params = new URLSearchParams(window.location.search);
-    return params.get('view') === 'setup' ? 'setup' : 'demo';
-  } catch {
-    return 'demo';
-  }
 }
 
 function normalizeStepState(value) {
@@ -136,11 +135,125 @@ function toVisualState(record = {}) {
   return 'running';
 }
 
+function readRouteFromPathname() {
+  const path = String(window.location.pathname || '/').trim();
+  if (path === '/ops') return 'ops';
+  return 'demo';
+}
+
+function normalizeRoutePath() {
+  const path = String(window.location.pathname || '/').trim();
+  if (path === '/' || path === '/ops') return;
+  try {
+    window.history.replaceState({}, '', `/${window.location.search}${window.location.hash}`);
+  } catch {
+    // ignore history errors
+  }
+}
+
+function normalizeSeriesPoints(input = []) {
+  const dedup = new Map();
+  for (const raw of Array.isArray(input) ? input : []) {
+    if (!raw || typeof raw !== 'object') continue;
+    const requestId = String(raw.requestId || '').trim();
+    const provider = String(raw.provider || '').trim().toLowerCase() || 'unknown';
+    const priceUsd = Number(raw.priceUsd);
+    const tRaw = String(raw.t || raw.fetchedAt || '').trim();
+    const tMs = Date.parse(tRaw);
+    if (!Number.isFinite(priceUsd) || priceUsd <= 0) continue;
+    if (!Number.isFinite(tMs)) continue;
+    const row = {
+      t: new Date(tMs).toISOString(),
+      priceUsd: Number(priceUsd.toFixed(6)),
+      provider,
+      requestId: requestId || `series_${tMs}_${provider}`,
+      traceId: String(raw.traceId || '').trim()
+    };
+    const prev = dedup.get(row.requestId);
+    if (!prev || Date.parse(prev.t) <= tMs) {
+      dedup.set(row.requestId, row);
+    }
+  }
+  return [...dedup.values()].sort((a, b) => Date.parse(a.t) - Date.parse(b.t));
+}
+
+function appendSeriesPoint(series, point, maxSize = 300) {
+  const merged = normalizeSeriesPoints([...(Array.isArray(series) ? series : []), point]);
+  return merged.slice(-maxSize);
+}
+
+function buildChartModel(series = []) {
+  const width = 920;
+  const height = 360;
+  const margin = { top: 26, right: 24, bottom: 34, left: 60 };
+  const points = Array.isArray(series) ? series : [];
+  if (points.length === 0) {
+    return {
+      width,
+      height,
+      margin,
+      points: [],
+      path: '',
+      yTicks: [],
+      range: { min: 0, max: 0 }
+    };
+  }
+
+  const innerWidth = width - margin.left - margin.right;
+  const innerHeight = height - margin.top - margin.bottom;
+  const prices = points.map((p) => Number(p.priceUsd));
+  let minPrice = Math.min(...prices);
+  let maxPrice = Math.max(...prices);
+  if (!Number.isFinite(minPrice) || !Number.isFinite(maxPrice)) {
+    minPrice = 0;
+    maxPrice = 0;
+  }
+  const spread = maxPrice - minPrice;
+  const pad = spread > 0 ? spread * 0.14 : Math.max(minPrice * 0.002, 0.8);
+  const yMin = Math.max(0, minPrice - pad);
+  const yMax = maxPrice + pad;
+
+  const mapped = points.map((row, idx) => {
+    const x = margin.left + (points.length === 1 ? innerWidth : (idx / (points.length - 1)) * innerWidth);
+    const ratio = (Number(row.priceUsd) - yMin) / Math.max(yMax - yMin, 0.000001);
+    const y = margin.top + (1 - ratio) * innerHeight;
+    return {
+      ...row,
+      x,
+      y
+    };
+  });
+
+  const path = mapped
+    .map((pt, idx) => `${idx === 0 ? 'M' : 'L'} ${pt.x.toFixed(2)} ${pt.y.toFixed(2)}`)
+    .join(' ');
+
+  const yTicks = Array.from({ length: 5 }).map((_, idx) => {
+    const ratio = idx / 4;
+    const value = yMax - ratio * (yMax - yMin);
+    const y = margin.top + ratio * innerHeight;
+    return { y, value };
+  });
+
+  return {
+    width,
+    height,
+    margin,
+    points: mapped,
+    path,
+    yTicks,
+    range: { min: yMin, max: yMax }
+  };
+}
+
 function App() {
-  const [view, setView] = useState(() => readViewFromUrl());
+  const [route, setRoute] = useState(() => readRouteFromPathname());
   const [walletState, setWalletState] = useState({ ownerAddress: '', aaAddress: '' });
+  const [showSetup, setShowSetup] = useState(false);
+
   const [records, setRecords] = useState([]);
   const [kpi, setKpi] = useState({ pending: 0, paid: 0, failed: 0, todaySpend: 0 });
+  const [series, setSeries] = useState([]);
   const [selectedTraceId, setSelectedTraceId] = useState('');
   const [traceData, setTraceData] = useState(null);
   const [identityLatest, setIdentityLatest] = useState(null);
@@ -153,19 +266,25 @@ function App() {
   const [stepFlash, setStepFlash] = useState('');
   const [streamToken, setStreamToken] = useState(0);
   const [triggering, setTriggering] = useState(false);
+  const [hoverIndex, setHoverIndex] = useState(-1);
+  const [flyAnim, setFlyAnim] = useState(null);
 
-  const isSetupView = view === 'setup';
+  const flowPriceRef = useRef(null);
+  const chartPriceRef = useRef(null);
 
-  const switchView = useCallback((nextView) => {
-    setView(nextView);
+  const isOpsPage = route === 'ops';
+
+  const navigate = useCallback((nextRoute) => {
+    const target = nextRoute === 'ops' ? '/ops' : '/';
     try {
-      const url = new URL(window.location.href);
-      if (nextView === 'setup') url.searchParams.set('view', 'setup');
-      else url.searchParams.delete('view');
-      window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
+      if (window.location.pathname !== target) {
+        window.history.pushState({}, '', `${target}${window.location.search}${window.location.hash}`);
+      }
     } catch {
-      // ignore URL sync errors
+      // ignore history errors
     }
+    setRoute(nextRoute === 'ops' ? 'ops' : 'demo');
+    if (nextRoute !== 'ops') setShowSetup(false);
   }, []);
 
   const connectWallet = useCallback(async () => {
@@ -183,6 +302,50 @@ function App() {
       setErrorText(error?.message || 'Wallet connect failed.');
     }
   }, []);
+
+  const triggerPriceFlight = useCallback((quote) => {
+    const startEl = flowPriceRef.current;
+    const endEl = chartPriceRef.current;
+    if (!startEl || !endEl) return;
+
+    const start = startEl.getBoundingClientRect();
+    const end = endEl.getBoundingClientRect();
+    const text = `$${formatPrice(quote?.priceUsd)}`;
+    const id = `${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+
+    setFlyAnim({
+      id,
+      text,
+      x1: start.left + start.width / 2,
+      y1: start.top + start.height / 2,
+      x2: end.left + end.width / 2,
+      y2: end.top + end.height / 2,
+      active: false
+    });
+  }, []);
+
+  useEffect(() => {
+    normalizeRoutePath();
+    const onPopState = () => {
+      normalizeRoutePath();
+      setRoute(readRouteFromPathname());
+      setShowSetup(false);
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
+  useEffect(() => {
+    if (!flyAnim?.id) return undefined;
+    const raf = requestAnimationFrame(() => {
+      setFlyAnim((prev) => (prev ? { ...prev, active: true } : prev));
+    });
+    const timer = setTimeout(() => setFlyAnim(null), 900);
+    return () => {
+      cancelAnimationFrame(raf);
+      clearTimeout(timer);
+    };
+  }, [flyAnim?.id]);
 
   useEffect(() => {
     if (typeof window.ethereum === 'undefined' || !window.ethereum.on) return undefined;
@@ -218,10 +381,12 @@ function App() {
     async ({ manual = false } = {}) => {
       if (manual) setRefreshing(true);
       try {
-        const [mappingPayload, identityPayload] = await Promise.all([
+        const [mappingPayload, identityPayload, seriesPayload] = await Promise.all([
           fetchJson('/api/x402/mapping/latest', { limit: RECORD_LIMIT }),
-          fetchJson('/api/demo/identity/latest').catch(() => null)
+          fetchJson('/api/demo/identity/latest').catch(() => null),
+          fetchJson('/api/demo/price-series', { limit: CHART_POINT_LIMIT }).catch(() => ({ series: [] }))
         ]);
+
         const items = Array.isArray(mappingPayload?.items) ? mappingPayload.items : [];
         setRecords(items);
         setKpi({
@@ -230,9 +395,11 @@ function App() {
           failed: Number(mappingPayload?.kpi?.failed || 0),
           todaySpend: Number(mappingPayload?.kpi?.todaySpend || 0)
         });
-        if (identityPayload?.ok) {
-          setIdentityLatest(identityPayload.latest || null);
-        }
+
+        if (identityPayload?.ok) setIdentityLatest(identityPayload.latest || null);
+
+        const points = normalizeSeriesPoints(seriesPayload?.series || []).slice(-CHART_POINT_LIMIT);
+        setSeries(points);
 
         const traceInRows = items.find((item) => String(item?.workflowTraceId || '').trim())?.workflowTraceId || '';
         const nextTraceId = String(selectedTraceId || traceInRows || '').trim();
@@ -240,6 +407,7 @@ function App() {
           setSelectedTraceId(nextTraceId);
           await loadTrace(nextTraceId);
         }
+
         setLastSyncAt(new Date().toISOString());
         setErrorText('');
       } catch (error) {
@@ -252,16 +420,14 @@ function App() {
   );
 
   useEffect(() => {
-    if (isSetupView) return undefined;
     void loadSnapshot();
     const timer = setInterval(() => {
       void loadSnapshot();
     }, POLL_INTERVAL_MS);
     return () => clearInterval(timer);
-  }, [isSetupView, loadSnapshot]);
+  }, [loadSnapshot]);
 
   useEffect(() => {
-    if (isSetupView) return undefined;
     if (VIEWER_API_KEY) {
       setStreamMode('polling');
       return undefined;
@@ -290,7 +456,9 @@ function App() {
         } catch {
           payload = {};
         }
+
         const meta = EVENT_META[eventName] || { label: eventName, state: 'running', stepId: '' };
+        const eventTraceId = String(payload?.traceId || '').trim();
 
         setEvents((prev) => {
           const next = [
@@ -300,7 +468,7 @@ function App() {
               label: meta.label,
               state: meta.state,
               stepId: meta.stepId,
-              traceId: String(payload?.traceId || '').trim(),
+              traceId: eventTraceId,
               at: new Date().toISOString()
             },
             ...prev
@@ -313,7 +481,23 @@ function App() {
           setTimeout(() => setStepFlash(''), 320);
         }
 
-        const eventTraceId = String(payload?.traceId || '').trim();
+        if (eventName === 'unlocked' && payload?.quote) {
+          const quotePayload = payload.quote;
+          const point = normalizeSeriesPoints([
+            {
+              t: quotePayload?.fetchedAt || new Date().toISOString(),
+              priceUsd: quotePayload?.priceUsd,
+              provider: quotePayload?.provider,
+              requestId: payload?.requestId || '',
+              traceId: eventTraceId
+            }
+          ])[0];
+          if (point) {
+            setSeries((prev) => appendSeriesPoint(prev, point, 300).slice(-CHART_POINT_LIMIT));
+            triggerPriceFlight(quotePayload);
+          }
+        }
+
         if (eventTraceId) {
           setSelectedTraceId(eventTraceId);
           await loadTrace(eventTraceId);
@@ -334,7 +518,7 @@ function App() {
       }
       source.close();
     };
-  }, [isSetupView, loadSnapshot, loadTrace, streamToken]);
+  }, [loadSnapshot, loadTrace, streamToken, triggerPriceFlight]);
 
   const triggerDemoRun = useCallback(async () => {
     setTriggering(true);
@@ -371,60 +555,59 @@ function App() {
   const currentRequest = traceData?.request || null;
   const quote = traceData?.workflow?.result?.quote || traceData?.request?.result?.quote || null;
 
-  if (isSetupView) {
-    return (
-      <div className="monitor-root">
-        <div className="monitor-glow monitor-glow-left" />
-        <div className="monitor-glow monitor-glow-right" />
-        <header className="monitor-header">
-          <div>
-            <p className="header-kicker">Kite Testnet</p>
-            <h1>Session Setup</h1>
-            <p className="header-subtitle">
-              Connect owner wallet, create session, then sync runtime for autonomous x402 payments.
-            </p>
-          </div>
-          <div className="header-meta">
-            <span className="sync-time">
-              Owner: {walletState.ownerAddress ? shortenMiddle(walletState.ownerAddress, 10, 8) : 'not connected'}
-            </span>
-            <button type="button" className="ghost-btn" onClick={connectWallet}>
-              Connect wallet
-            </button>
-            <button type="button" className="ghost-btn" onClick={() => switchView('demo')}>
-              Back to Demo
-            </button>
-          </div>
-        </header>
-        <AgentSettingsPage onBack={() => switchView('demo')} walletState={walletState} />
-      </div>
-    );
-  }
+  const chartSeries = useMemo(() => normalizeSeriesPoints(series).slice(-CHART_POINT_LIMIT), [series]);
+  const chartModel = useMemo(() => buildChartModel(chartSeries), [chartSeries]);
+  const latestPoint = chartSeries.length > 0 ? chartSeries[chartSeries.length - 1] : null;
+  const activePoint =
+    hoverIndex >= 0 && hoverIndex < chartModel.points.length ? chartModel.points[hoverIndex] : latestPoint;
 
-  return (
-    <div className="demo-root">
-      <div className="demo-backdrop demo-backdrop-left" />
-      <div className="demo-backdrop demo-backdrop-right" />
+  const renderTraceList = () => {
+    if (records.length === 0) {
+      return <p className="empty-text">No x402 records yet.</p>;
+    }
+    return records.slice(0, 14).map((item, idx) => {
+      const traceId = String(item?.workflowTraceId || '').trim();
+      const visual = toVisualState(item);
+      return (
+        <button
+          type="button"
+          key={`${item.requestId || 'row'}_${idx}`}
+          className={`trace-row ${selectedTraceId === traceId ? 'active' : ''}`}
+          onClick={() => {
+            if (!traceId) return;
+            setSelectedTraceId(traceId);
+            void loadTrace(traceId);
+          }}
+          disabled={!traceId}
+        >
+          <span>{shortenMiddle(traceId || item.requestId, 14, 8)}</span>
+          <span>{item.flowMode || '-'}</span>
+          <span>{item.amount || '-'}</span>
+          <span className={`status-pill ${visual}`}>{item.workflowState || item.status || '-'}</span>
+          <span>{formatTime(item.workflowUpdatedAt || item.paidAt || item.createdAt)}</span>
+        </button>
+      );
+    });
+  };
 
-      <header className="demo-header">
+  const renderDemoPage = () => (
+    <div className="page-shell">
+      <header className="page-header">
         <div>
           <p className="header-kicker">KITE TESTNET</p>
-          <h1>Agent Payment Flow Stage</h1>
-          <p className="demo-subtitle">
-            Visual timeline for agent-to-api and agent-to-agent actions with x402 settlement and ERC8004 identity.
+          <h1>BTC Agent Price Demo</h1>
+          <p className="header-subtitle">
+            Open with one glance: paid BTC price points on chart, and the ERC8004 + x402 workflow beside it.
           </p>
         </div>
-        <div className="demo-actions">
-          <span className={`demo-pill ${streamMode}`}>{statusText(streamMode)}</span>
-          <span className="demo-sync">Last sync: {formatTime(lastSyncAt)}</span>
-          <button type="button" className="ghost-btn" onClick={() => void loadSnapshot({ manual: true })} disabled={refreshing}>
-            {refreshing ? 'Refreshing...' : 'Refresh'}
-          </button>
+        <div className="header-actions">
+          <span className={`connection-pill ${streamMode}`}>{statusText(streamMode)}</span>
+          <span className="sync-text">Last sync: {formatTime(lastSyncAt)}</span>
           <button type="button" className="ghost-btn" onClick={triggerDemoRun} disabled={triggering}>
-            {triggering ? 'Triggering...' : 'Run Demo'}
+            {triggering ? 'Running...' : 'Run Demo'}
           </button>
-          <button type="button" className="ghost-btn" onClick={() => switchView('setup')}>
-            Session Setup
+          <button type="button" className="ghost-btn" onClick={() => navigate('ops')}>
+            Open Ops
           </button>
           {!VIEWER_API_KEY && streamMode !== 'live' ? (
             <button type="button" className="ghost-btn" onClick={() => setStreamToken((x) => x + 1)}>
@@ -434,59 +617,120 @@ function App() {
         </div>
       </header>
 
-      <section className="demo-kpi-grid">
-        <article className="demo-kpi-card">
-          <span>Pending</span>
-          <strong>{kpi.pending}</strong>
-        </article>
-        <article className="demo-kpi-card">
-          <span>Paid</span>
-          <strong>{kpi.paid}</strong>
-        </article>
-        <article className="demo-kpi-card">
-          <span>Failed</span>
-          <strong>{kpi.failed}</strong>
-        </article>
-        <article className="demo-kpi-card">
-          <span>Today Spend</span>
-          <strong>{kpi.todaySpend}</strong>
-        </article>
-      </section>
-
       {errorText ? <p className="error-banner">{errorText}</p> : null}
 
-      <main className="demo-main-grid">
-        <section className="demo-panel">
-          <div className="demo-panel-head">
-            <h2>Execution Timeline</h2>
-            <span className={`demo-status ${traceState}`}>{traceState}</span>
+      <main className="demo-layout">
+        <section className="panel chart-panel">
+          <div className="panel-head">
+            <h2>Paid BTC Price Line</h2>
+            <span className="panel-note">last {CHART_POINT_LIMIT} unlocked points</span>
           </div>
-          <p className="demo-trace-line">
-            Trace: {shortenMiddle(selectedTraceId || traceData?.traceId || currentWorkflow?.traceId || '-', 14, 8)}
-          </p>
-          <p className="demo-trace-line">
-            Request: {shortenMiddle(currentRequest?.requestId || currentWorkflow?.requestId || '-', 14, 8)}
-          </p>
 
-          <ol className="demo-step-list">
-            {timeline.map((step, idx) => (
-              <li
-                key={step.id}
-                className={`demo-step-card ${step.state} ${stepFlash === step.id ? 'flash' : ''}`}
+          <div className="chart-topline">
+            <span className="muted-label">Latest</span>
+            <strong ref={chartPriceRef} className="latest-price-tag">
+              {latestPoint ? `$${formatPrice(latestPoint.priceUsd)}` : '-'}
+            </strong>
+            <span className="muted-text">
+              {latestPoint ? `${latestPoint.provider}  ${formatTime(latestPoint.t)}` : 'waiting for paid BTC points'}
+            </span>
+          </div>
+
+          <div className="chart-wrap">
+            {chartModel.points.length === 0 ? (
+              <div className="chart-empty">No paid BTC points yet. Click `Run Demo` to generate the first point.</div>
+            ) : (
+              <svg
+                className="chart-svg"
+                viewBox={`0 0 ${chartModel.width} ${chartModel.height}`}
+                role="img"
+                aria-label="BTC paid price line chart"
               >
-                <div className="demo-step-top">
-                  <span className="demo-step-index">{idx + 1}</span>
-                  <p>{step.label}</p>
-                  <span className={`demo-mini-pill ${step.state}`}>{step.state}</span>
+                {chartModel.yTicks.map((tick, idx) => (
+                  <g key={`grid_${idx}`}>
+                    <line
+                      x1={chartModel.margin.left}
+                      y1={tick.y}
+                      x2={chartModel.width - chartModel.margin.right}
+                      y2={tick.y}
+                      className="chart-grid"
+                    />
+                    <text x={14} y={tick.y + 4} className="chart-axis-label">
+                      {formatPrice(tick.value)}
+                    </text>
+                  </g>
+                ))}
+
+                <path d={chartModel.path} className="chart-line" />
+
+                {chartModel.points.map((pt, idx) => {
+                  const isLatest = idx === chartModel.points.length - 1;
+                  return (
+                    <circle
+                      key={`pt_${pt.requestId}_${idx}`}
+                      cx={pt.x}
+                      cy={pt.y}
+                      r={isLatest ? 5.3 : 3.2}
+                      className={`chart-point ${isLatest ? 'latest' : ''}`}
+                      onMouseEnter={() => setHoverIndex(idx)}
+                      onMouseLeave={() => setHoverIndex(-1)}
+                    />
+                  );
+                })}
+              </svg>
+            )}
+          </div>
+
+          <div className="chart-meta">
+            <span>{chartSeries.length} points</span>
+            <span>
+              range: {formatPrice(chartModel.range.min)} - {formatPrice(chartModel.range.max)}
+            </span>
+            <span>source: x402 unlocked only</span>
+          </div>
+
+          {activePoint ? (
+            <div className="chart-tooltip">
+              <span>{formatTime(activePoint.t)}</span>
+              <strong>${formatPrice(activePoint.priceUsd)}</strong>
+              <span>{activePoint.provider}</span>
+              <span>{shortenMiddle(activePoint.requestId, 10, 8)}</span>
+            </div>
+          ) : null}
+        </section>
+
+        <section className="panel flow-panel">
+          <div className="panel-head">
+            <h2>ERC8004 + x402 Flow</h2>
+            <span className={`status-pill ${traceState}`}>{traceState}</span>
+          </div>
+          <p className="flow-meta">Trace: {shortenMiddle(selectedTraceId || traceData?.traceId || '-', 14, 8)}</p>
+          <p className="flow-meta">Request: {shortenMiddle(currentRequest?.requestId || currentWorkflow?.requestId || '-', 14, 8)}</p>
+
+          <ol className="flow-step-list">
+            {timeline.map((step, idx) => (
+              <li key={step.id} className={`flow-step-card ${step.state} ${stepFlash === step.id ? 'flash' : ''}`}>
+                <div className="flow-step-top">
+                  <span className="flow-index">{idx + 1}</span>
+                  <strong>{step.label}</strong>
+                  <span className={`status-pill mini ${step.state}`}>{step.state}</span>
                 </div>
-                <p className="demo-step-detail">{step.detail || 'waiting...'}</p>
-                {idx < timeline.length - 1 ? <span className={`demo-step-link ${step.state}`} /> : null}
+                <p className="flow-step-detail">{step.detail || 'waiting...'}</p>
+                {step.id === 'api_result' ? (
+                  <div className="flow-price-row">
+                    <span className="muted-label">Quote</span>
+                    <strong ref={flowPriceRef} className="flow-price-tag">
+                      {quote ? `$${formatPrice(quote.priceUsd)}` : latestPoint ? `$${formatPrice(latestPoint.priceUsd)}` : '-'}
+                    </strong>
+                    <span className="muted-text">{quote?.provider || latestPoint?.provider || '-'}</span>
+                  </div>
+                ) : null}
               </li>
             ))}
           </ol>
 
-          <div className="demo-summary-box">
-            <p className="demo-summary-label">Summary</p>
+          <div className="flow-summary">
+            <p className="muted-label">Summary</p>
             <p>
               {currentWorkflow?.error ||
                 currentWorkflow?.result?.summary ||
@@ -495,38 +739,124 @@ function App() {
             </p>
           </div>
         </section>
+      </main>
 
-        <section className="demo-panel">
-          <div className="demo-panel-head">
-            <h2>Evidence Drawer</h2>
-            <span className="demo-note">x402 + ERC8004</span>
+      {flyAnim ? (
+        <div
+          className={`price-fly-token ${flyAnim.active ? 'active' : ''}`}
+          style={{
+            left: `${flyAnim.active ? flyAnim.x2 : flyAnim.x1}px`,
+            top: `${flyAnim.active ? flyAnim.y2 : flyAnim.y1}px`
+          }}
+        >
+          {flyAnim.text}
+        </div>
+      ) : null}
+    </div>
+  );
+
+  const renderOpsPage = () => (
+    <div className="page-shell">
+      <header className="page-header">
+        <div>
+          <p className="header-kicker">KITE TESTNET / OPS</p>
+          <h1>Operations Console</h1>
+          <p className="header-subtitle">KPI, traces, live stream events and session setup live here.</p>
+        </div>
+        <div className="header-actions">
+          <span className={`connection-pill ${streamMode}`}>{statusText(streamMode)}</span>
+          <span className="sync-text">Last sync: {formatTime(lastSyncAt)}</span>
+          <button type="button" className="ghost-btn" onClick={() => void loadSnapshot({ manual: true })} disabled={refreshing}>
+            {refreshing ? 'Refreshing...' : 'Refresh'}
+          </button>
+          <button type="button" className="ghost-btn" onClick={triggerDemoRun} disabled={triggering}>
+            {triggering ? 'Running...' : 'Run Demo'}
+          </button>
+          <button type="button" className="ghost-btn" onClick={() => navigate('demo')}>
+            Back to Demo
+          </button>
+        </div>
+      </header>
+
+      {errorText ? <p className="error-banner">{errorText}</p> : null}
+
+      <section className="kpi-grid">
+        <article className="kpi-card">
+          <span>Pending</span>
+          <strong>{kpi.pending}</strong>
+        </article>
+        <article className="kpi-card">
+          <span>Paid</span>
+          <strong>{kpi.paid}</strong>
+        </article>
+        <article className="kpi-card">
+          <span>Failed</span>
+          <strong>{kpi.failed}</strong>
+        </article>
+        <article className="kpi-card">
+          <span>Today Spend</span>
+          <strong>{kpi.todaySpend}</strong>
+        </article>
+      </section>
+
+      <main className="ops-grid">
+        <section className="panel">
+          <div className="panel-head">
+            <h2>Recent Traces</h2>
+            <span className="panel-note">click to replay</span>
           </div>
-          <div className="demo-evidence-grid">
-            <article className="demo-evidence-card">
+          <div className="trace-list">{renderTraceList()}</div>
+        </section>
+
+        <section className="panel">
+          <div className="panel-head">
+            <h2>Live Event Feed</h2>
+            <span className="panel-note">SSE events</span>
+          </div>
+          <ul className="event-list">
+            {events.length === 0 ? (
+              <li className="empty-text">Waiting for workflow events...</li>
+            ) : (
+              events.map((item) => (
+                <li key={item.id} className={`event-row ${item.state}`}>
+                  <span className={`event-dot ${item.state}`} />
+                  <span>{item.label}</span>
+                  <span>{shortenMiddle(item.traceId, 12, 8)}</span>
+                  <span>{formatTime(item.at)}</span>
+                </li>
+              ))
+            )}
+          </ul>
+        </section>
+
+        <section className="panel ops-evidence">
+          <div className="panel-head">
+            <h2>Evidence Drawer</h2>
+            <span className="panel-note">x402 + ERC8004</span>
+          </div>
+          <div className="evidence-grid">
+            <article className="evidence-card">
               <h3>Identity</h3>
               <p>agentId: {currentRequest?.identity?.agentId || '-'}</p>
-              <p>registry: {shortenMiddle(currentRequest?.identity?.registry || '-', 14, 10)}</p>
-              <p>latest verify: {identityLatest?.status || '-'}</p>
-              <p>wallet: {shortenMiddle(identityLatest?.identity?.agentWallet || '-', 14, 10)}</p>
+              <p>registry: {shortenMiddle(currentRequest?.identity?.registry || '-', 12, 10)}</p>
+              <p>verify: {identityLatest?.status || '-'}</p>
+              <p>wallet: {shortenMiddle(identityLatest?.identity?.agentWallet || '-', 12, 10)}</p>
             </article>
-
-            <article className="demo-evidence-card">
+            <article className="evidence-card">
               <h3>x402 Payment</h3>
               <p>amount: {currentRequest?.amount || '-'}</p>
               <p>token: {shortenMiddle(currentRequest?.tokenAddress || '-', 12, 10)}</p>
               <p>recipient: {shortenMiddle(currentRequest?.recipient || '-', 12, 10)}</p>
               <p>txHash: {shortenMiddle(currentRequest?.paymentTxHash || currentWorkflow?.txHash || '-', 12, 10)}</p>
             </article>
-
-            <article className="demo-evidence-card">
+            <article className="evidence-card">
               <h3>API Result</h3>
-              <p>provider: {quote?.provider || '-'}</p>
-              <p>price: {quote?.priceUsd ?? '-'}</p>
-              <p>pair: {quote?.pair || '-'}</p>
-              <p>at: {formatTime(quote?.fetchedAt || '')}</p>
+              <p>provider: {quote?.provider || latestPoint?.provider || '-'}</p>
+              <p>price: {quote?.priceUsd ?? latestPoint?.priceUsd ?? '-'}</p>
+              <p>pair: {quote?.pair || 'BTCUSDT'}</p>
+              <p>at: {formatTime(quote?.fetchedAt || latestPoint?.t || '')}</p>
             </article>
-
-            <article className="demo-evidence-card">
+            <article className="evidence-card">
               <h3>Workflow</h3>
               <p>state: {currentWorkflow?.state || '-'}</p>
               <p>updated: {formatTime(currentWorkflow?.updatedAt || '')}</p>
@@ -537,66 +867,26 @@ function App() {
         </section>
       </main>
 
-      <section className="demo-bottom-grid">
-        <section className="demo-panel">
-          <div className="demo-panel-head">
-            <h2>Recent Traces</h2>
-            <span className="demo-note">click to replay</span>
-          </div>
-          <div className="demo-trace-table">
-            {records.length === 0 ? (
-              <p className="demo-empty">No x402 records yet.</p>
-            ) : (
-              records.slice(0, 12).map((item, idx) => {
-                const traceId = String(item?.workflowTraceId || '').trim();
-                const visual = toVisualState(item);
-                return (
-                  <button
-                    type="button"
-                    key={`${item.requestId || 'row'}_${idx}`}
-                    className={`demo-trace-row ${selectedTraceId === traceId ? 'active' : ''}`}
-                    onClick={() => {
-                      if (!traceId) return;
-                      setSelectedTraceId(traceId);
-                      void loadTrace(traceId);
-                    }}
-                    disabled={!traceId}
-                  >
-                    <span>{shortenMiddle(traceId || item.requestId, 14, 8)}</span>
-                    <span>{item.flowMode || '-'}</span>
-                    <span>{item.amount || '-'}</span>
-                    <span className={`demo-mini-pill ${visual}`}>{item.workflowState || item.status || '-'}</span>
-                    <span>{formatTime(item.workflowUpdatedAt || item.paidAt || item.createdAt)}</span>
-                  </button>
-                );
-              })
-            )}
-          </div>
-        </section>
-
-        <section className="demo-panel">
-          <div className="demo-panel-head">
-            <h2>Live Event Feed</h2>
-            <span className="demo-note">SSE events</span>
-          </div>
-          <ul className="demo-event-list">
-            {events.length === 0 ? (
-              <li className="demo-empty">Waiting for workflow events...</li>
-            ) : (
-              events.map((item) => (
-                <li key={item.id} className={`demo-event-row ${item.state}`}>
-                  <span className={`demo-event-dot ${item.state}`} />
-                  <span>{item.label}</span>
-                  <span>{shortenMiddle(item.traceId, 12, 8)}</span>
-                  <span>{formatTime(item.at)}</span>
-                </li>
-              ))
-            )}
-          </ul>
-        </section>
+      <section className="panel session-panel">
+        <div className="panel-head">
+          <h2>Session Setup</h2>
+          <span className="panel-note">ops only</span>
+        </div>
+        <p className="header-subtitle">Manage session key and policy here. Hidden from the home demo page.</p>
+        <div className="session-actions">
+          <button type="button" className="ghost-btn" onClick={connectWallet}>
+            {walletState.ownerAddress ? `Wallet: ${shortenMiddle(walletState.ownerAddress, 10, 8)}` : 'Connect Wallet'}
+          </button>
+          <button type="button" className="ghost-btn" onClick={() => setShowSetup((prev) => !prev)}>
+            {showSetup ? 'Hide Session Setup' : 'Open Session Setup'}
+          </button>
+        </div>
+        {showSetup ? <AgentSettingsPage onBack={() => setShowSetup(false)} walletState={walletState} /> : null}
       </section>
     </div>
   );
+
+  return isOpsPage ? renderOpsPage() : renderDemoPage();
 }
 
 export default App;
