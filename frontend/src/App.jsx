@@ -398,7 +398,6 @@ function App() {
       const payload = await fetchJson(`/api/demo/trace/${encodeURIComponent(normalized)}`);
       if (traceFetchRef.current.token !== token || traceFetchRef.current.traceId !== normalized) return;
       setTraceData(payload);
-      setErrorText('');
     } catch (error) {
       if (traceFetchRef.current.token !== token || traceFetchRef.current.traceId !== normalized) return;
       setErrorText(error.message || 'Failed to load demo trace.');
@@ -408,7 +407,7 @@ function App() {
   }, []);
 
   const loadSnapshot = useCallback(
-    async ({ manual = false } = {}) => {
+    async ({ manual = false, forceTraceId = '' } = {}) => {
       if (manual) setRefreshing(true);
       try {
         const [mappingPayload, identityPayload, seriesPayload] = await Promise.all([
@@ -440,10 +439,11 @@ function App() {
           (latestRequestId
             ? String(items.find((item) => String(item?.requestId || '').trim() === latestRequestId)?.workflowTraceId || '').trim()
             : '');
+        const pinnedTraceId = String(forceTraceId || '').trim();
         const nextTraceId = String(
           route === 'demo'
-            ? selectedTraceId || traceFromLatestPoint || traceInRows || ''
-            : selectedTraceId || traceInRows || ''
+            ? pinnedTraceId || selectedTraceId || traceFromLatestPoint || traceInRows || ''
+            : pinnedTraceId || selectedTraceId || traceInRows || ''
         ).trim();
         if (nextTraceId) {
           setSelectedTraceId(nextTraceId);
@@ -451,7 +451,6 @@ function App() {
         }
 
         setLastSyncAt(new Date().toISOString());
-        setErrorText('');
       } catch (error) {
         setErrorText(error.message || 'Failed to load demo snapshot.');
       } finally {
@@ -583,6 +582,8 @@ function App() {
       if (traceId) {
         setSelectedTraceId(traceId);
         await loadTrace(traceId);
+        await loadSnapshot({ forceTraceId: traceId });
+        return;
       }
       await loadSnapshot();
     } catch (error) {
@@ -624,8 +625,10 @@ function App() {
       if (traceId) {
         setSelectedTraceId(traceId);
         await loadTrace(traceId);
+        await loadSnapshot({ forceTraceId: traceId });
+      } else {
+        await loadSnapshot();
       }
-      await loadSnapshot();
 
       if (!runResp.ok || runPayload?.ok === false) {
         const reason = runPayload?.reason || runPayload?.error || `HTTP ${runResp.status}`;
