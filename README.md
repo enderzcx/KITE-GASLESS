@@ -1,9 +1,9 @@
-﻿# KITECLAW
+﻿# KiteTrace Platform
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 [![Version](https://img.shields.io/badge/version-v1.7.0-blue)](./CHANGELOG.md)
 
-KITECLAW is an agent-native payment app on Kite AI Testnet. It demonstrates how an autonomous agent can authenticate, pay with x402, and unlock services with verifiable on-chain proof.
+KiteTrace Platform (service/repo name: `KITECLAW`) is agent-native payment infrastructure on Kite AI Testnet. It demonstrates how autonomous agents can authenticate, pay with x402, unlock services, and leave verifiable on-chain interaction proofs.
 
 Current Version: `v1.7.0`
 
@@ -11,8 +11,8 @@ Current Version: `v1.7.0`
 
 ### Public Web Demo
 
-- Live URL (testing): `https://kiteclaw.duckdns.org`
-- Status: public deployment is under active testing; some flows may still be unstable on cloud runtime.
+- Live URL: `https://kiteclaw.duckdns.org`
+- Status: publicly available deployment on Kite Testnet.
 - Purpose: judge-facing online demo for end-to-end flow validation.
 - Expected pages:
   - Demo Home (`/`) - paid BTC line chart + ERC8004/x402 flow card
@@ -34,6 +34,7 @@ Current Version: `v1.7.0`
 - x402 lifecycle: `402 -> pay -> submit proof -> 200 unlock`
 - Paid BTC quote workflow (`btc-price-feed`) with quote provider attribution
 - Agent-to-agent and agent-to-api flow evidence in one console
+- BTC quote loop is a sample scenario; platform model supports publishing and consuming arbitrary agent services
 - BTC demo summary wording uses `ATAPI` for the paid quote path to avoid A2A naming confusion.
 - Verifiable agent identity (registry-backed)
 - Auditable settlement mapping (`requestId <-> txHash`)
@@ -292,3 +293,5 @@ All scripts target backend endpoints documented in `skills/kiteclaw-stop-orders/
 ## License
 
 MIT License. See `LICENSE`.
+
+
