@@ -7,6 +7,7 @@ const API_BASE_URL = String(import.meta.env.VITE_API_BASE_URL || '')
   .replace(/\/+$/, '');
 const VIEWER_API_KEY = String(import.meta.env.VITE_API_KEY_VIEWER || import.meta.env.VITE_API_KEY || '').trim();
 const AGENT_API_KEY = String(import.meta.env.VITE_API_KEY_AGENT || import.meta.env.VITE_API_KEY || '').trim();
+const ADMIN_API_KEY = String(import.meta.env.VITE_API_KEY_ADMIN || import.meta.env.VITE_API_KEY || '').trim();
 
 const POLL_INTERVAL_MS = 8000;
 const RECORD_LIMIT = 80;
@@ -52,6 +53,23 @@ function buildHeaders(apiKey = VIEWER_API_KEY) {
 
 async function fetchJson(path, params) {
   const response = await fetch(resolveApiUrl(path, params), { headers: buildHeaders() });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload?.ok === false) {
+    const reason = payload?.reason || payload?.error || `HTTP ${response.status}`;
+    throw new Error(reason);
+  }
+  return payload;
+}
+
+async function postJson(path, body = {}, apiKey = VIEWER_API_KEY) {
+  const response = await fetch(resolveApiUrl(path), {
+    method: 'POST',
+    headers: {
+      ...buildHeaders(apiKey),
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(body || {})
+  });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || payload?.ok === false) {
     const reason = payload?.reason || payload?.error || `HTTP ${response.status}`;
@@ -271,8 +289,10 @@ function App() {
   const [stepFlash, setStepFlash] = useState('');
   const [streamToken, setStreamToken] = useState(0);
   const [triggering, setTriggering] = useState(false);
+  const [failTriggering, setFailTriggering] = useState(false);
   const [hoverIndex, setHoverIndex] = useState(-1);
   const [flyAnim, setFlyAnim] = useState(null);
+  const [noticeText, setNoticeText] = useState('');
 
   const flowPriceRef = useRef(null);
   const chartPriceRef = useRef(null);
@@ -545,6 +565,8 @@ function App() {
 
   const triggerDemoRun = useCallback(async () => {
     setTriggering(true);
+    setNoticeText('');
+    setErrorText('');
     try {
       const headers = {
         ...buildHeaders(AGENT_API_KEY || VIEWER_API_KEY),
@@ -566,11 +588,74 @@ function App() {
       }
       await loadSnapshot();
     } catch (error) {
+      setNoticeText('');
       setErrorText(error.message || 'Trigger demo run failed.');
     } finally {
       setTriggering(false);
     }
   }, [loadSnapshot, loadTrace]);
+
+  const triggerFailDemo = useCallback(async () => {
+    setFailTriggering(true);
+    setNoticeText('');
+    setErrorText('');
+    let payer = String(currentWorkflow?.payer || '').trim();
+    let revoked = false;
+    try {
+      if (!payer) {
+        const runtimePayload = await fetchJson('/api/session/runtime');
+        payer = String(runtimePayload?.runtime?.aaWallet || '').trim();
+      }
+      if (!payer) {
+        throw new Error('No payer address found. Configure session runtime first.');
+      }
+
+      const adminKey = ADMIN_API_KEY || AGENT_API_KEY || VIEWER_API_KEY;
+      await postJson('/api/policy/revoke', { payer }, adminKey);
+      revoked = true;
+
+      const headers = {
+        ...buildHeaders(AGENT_API_KEY || adminKey),
+        'Content-Type': 'application/json'
+      };
+      const runResp = await fetch(resolveApiUrl('/api/workflow/btc-price/run'), {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ pair: 'BTCUSDT', source: 'hyperliquid', payer })
+      });
+      const runPayload = await runResp.json().catch(() => ({}));
+      const traceId = String(runPayload?.traceId || runPayload?.workflow?.traceId || '').trim();
+      if (traceId) {
+        setSelectedTraceId(traceId);
+        await loadTrace(traceId);
+      }
+      await loadSnapshot();
+
+      if (!runResp.ok || runPayload?.ok === false) {
+        const reason = runPayload?.reason || runPayload?.error || `HTTP ${runResp.status}`;
+        setNoticeText(`Fail demo complete: guardrail blocked payment (${reason}).`);
+      } else {
+        setNoticeText('Fail demo did not fail. Check policy permissions and API keys.');
+      }
+    } catch (error) {
+      setNoticeText('');
+      setErrorText(error?.message || 'Fail demo failed.');
+    } finally {
+      if (revoked && payer) {
+        const adminKey = ADMIN_API_KEY || AGENT_API_KEY || VIEWER_API_KEY;
+        try {
+          await postJson('/api/policy/unrevoke', { payer }, adminKey);
+        } catch (recoveryError) {
+          setErrorText((prev) => {
+            const base = String(prev || '').trim();
+            const reason = recoveryError?.message || 'auto-recover failed';
+            return base ? `${base} | Recovery: ${reason}` : `Recovery: ${reason}`;
+          });
+        }
+      }
+      setFailTriggering(false);
+    }
+  }, [currentWorkflow?.payer, loadSnapshot, loadTrace]);
 
   const timeline = useMemo(() => normalizeTimeline(traceData?.timeline), [traceData?.timeline]);
   const traceState = String(traceData?.state || '').trim().toLowerCase() || 'running';
@@ -633,8 +718,11 @@ function App() {
         <div className="header-actions">
           <span className={`connection-pill ${streamMode}`}>{statusText(streamMode)}</span>
           <span className="sync-text">Last sync: {formatTime(lastSyncAt)}</span>
-          <button type="button" className="ghost-btn" onClick={triggerDemoRun} disabled={triggering}>
+          <button type="button" className="ghost-btn" onClick={triggerDemoRun} disabled={triggering || failTriggering}>
             {triggering ? 'Running...' : 'Run Demo'}
+          </button>
+          <button type="button" className="ghost-btn danger" onClick={triggerFailDemo} disabled={triggering || failTriggering}>
+            {failTriggering ? 'Failing...' : 'Fail Demo'}
           </button>
           <button type="button" className="ghost-btn" onClick={() => navigate('ops')}>
             Open Ops
@@ -648,6 +736,7 @@ function App() {
       </header>
 
       {errorText ? <p className="error-banner">{errorText}</p> : null}
+      {noticeText ? <p className="notice-banner">{noticeText}</p> : null}
 
       <main className="demo-layout">
         <section className="panel chart-panel">
@@ -799,8 +888,11 @@ function App() {
           <button type="button" className="ghost-btn" onClick={() => void loadSnapshot({ manual: true })} disabled={refreshing}>
             {refreshing ? 'Refreshing...' : 'Refresh'}
           </button>
-          <button type="button" className="ghost-btn" onClick={triggerDemoRun} disabled={triggering}>
+          <button type="button" className="ghost-btn" onClick={triggerDemoRun} disabled={triggering || failTriggering}>
             {triggering ? 'Running...' : 'Run Demo'}
+          </button>
+          <button type="button" className="ghost-btn danger" onClick={triggerFailDemo} disabled={triggering || failTriggering}>
+            {failTriggering ? 'Failing...' : 'Fail Demo'}
           </button>
           <button type="button" className="ghost-btn" onClick={() => navigate('demo')}>
             Back to Demo
@@ -809,6 +901,7 @@ function App() {
       </header>
 
       {errorText ? <p className="error-banner">{errorText}</p> : null}
+      {noticeText ? <p className="notice-banner">{noticeText}</p> : null}
 
       <section className="kpi-grid">
         <article className="kpi-card">

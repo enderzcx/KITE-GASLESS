@@ -127,12 +127,27 @@ body {
   cursor: not-allowed;
 }
 
+.ghost-btn.danger {
+  border-color: rgba(212, 79, 58, 0.45);
+  background: rgba(212, 79, 58, 0.08);
+  color: #8d2d1f;
+}
+
 .error-banner {
   margin: 12px 0 0;
   border: 1px solid rgba(212, 79, 58, 0.4);
   border-radius: 12px;
   background: var(--failed-soft);
   color: #8d2d1f;
+  padding: 10px 12px;
+}
+
+.notice-banner {
+  margin: 12px 0 0;
+  border: 1px solid rgba(31, 148, 79, 0.36);
+  border-radius: 12px;
+  background: rgba(31, 148, 79, 0.11);
+  color: #1a6841;
   padding: 10px 12px;
 }
 
