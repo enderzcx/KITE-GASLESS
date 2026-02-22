@@ -23,9 +23,6 @@ const AUTH_STORAGE_PREFIX = 'kiteclaw_auth_';
 const SESSION_KEY_PRIV_STORAGE = 'kiteclaw_session_privkey';
 const SESSION_TX_STORAGE = 'kiteclaw_session_tx_hash';
 const SESSION_ID_STORAGE = 'kiteclaw_session_id';
-const GOLDSKY_ENDPOINT =
-  import.meta.env.VITE_KITECLAW_GOLDSKY_ENDPOINT ||
-  'https://api.goldsky.com/api/public/project_cmlrmfrtks90001wg8goma8pv/subgraphs/kk/1.0.1/gn';
 
 function Transfer({
   onBack,
@@ -193,7 +190,6 @@ function Transfer({
       SESSION_ID_STORAGE,
       TOKEN_DECIMALS,
       SETTLEMENT_TOKEN,
-      GOLDSKY_ENDPOINT,
       rpcUrl
     }
   });

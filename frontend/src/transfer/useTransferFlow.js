@@ -5,7 +5,6 @@ import {
   precheckSession,
   resolveSessionSigner
 } from './services/sessionService';
-import { pollOnChainConfirmation } from './services/confirmationService';
 
 export function useTransferFlow({
   sdk,
@@ -39,7 +38,6 @@ export function useTransferFlow({
     SESSION_ID_STORAGE,
     TOKEN_DECIMALS,
     SETTLEMENT_TOKEN,
-    GOLDSKY_ENDPOINT,
     rpcUrl
   } = constants;
 
@@ -341,14 +339,12 @@ export function useTransferFlow({
         });
 
         void lookupX402ByTxHash(result.transactionHash);
-        void pollOnChainConfirmation({
-          endpoint: GOLDSKY_ENDPOINT,
-          hash: result.transactionHash,
-          expectedTo: x402Challenge.recipient,
-          expectedAmount: x402Challenge.amount,
-          tokenDecimals: TOKEN_DECIMALS,
-          onState: setConfirmState
-        });
+        setConfirmState((prev) => ({
+          ...prev,
+          stage: 'confirmed',
+          message: 'On-chain confirmation recorded by tx receipt proof.',
+          txHash: result.transactionHash || prev.txHash || ''
+        }));
         setX402Challenge(null);
       } else {
         setStatus('failed');

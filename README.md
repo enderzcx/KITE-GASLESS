@@ -116,7 +116,6 @@ KITE GASLESS/
 |- backend/      # Express API + x402 + workflow + identity
 |- aa-v2/        # AA security implementation for one-time auth + constrained no-popup execution
 |- skills/       # OpenClaw skill source + packaged skill
-|- goldsky/      # Goldsky subgraph config/ABI used for audit flow
 |- deploy/       # Nginx + PM2 + deploy/backup scripts for cloud rollout
 |- README.md
 |- CHANGELOG.md

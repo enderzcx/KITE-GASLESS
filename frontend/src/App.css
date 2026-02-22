@@ -363,6 +363,19 @@ body {
   color: var(--ink-muted);
 }
 
+.flow-onchain-block {
+  margin-top: 8px;
+  border-top: 1px dashed var(--border);
+  padding-top: 8px;
+}
+
+.flow-onchain-block p {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+}
+
 .flow-price-row {
   margin-top: 8px;
   display: flex;
@@ -544,6 +557,12 @@ body {
   color: var(--ink-muted);
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+
+.evidence-card a,
+.flow-onchain-block a {
+  color: var(--run);
+  text-decoration: underline;
 }
 
 .session-panel {

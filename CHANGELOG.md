@@ -8,6 +8,10 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 
 ### Changed
 - BTC workflow summary/query wording uses `ATAPI` label to avoid confusion with pure A2A task naming.
+- Demo and Ops views now present on-chain confirmation as `txHash / block / status / explorer link` without Goldsky dependency.
+
+### Removed
+- Removed Goldsky frontend module and related indexing-based confirmation flow from repository.
 
 ## [v1.7.0] - 2026-02-22
 

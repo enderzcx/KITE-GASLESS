@@ -21,7 +21,7 @@ const STEP_LABELS = {
   payment: 'Payment Sent',
   proof: 'Proof Verified',
   api_result: 'API Result',
-  onchain: 'On-chain Evidence'
+  onchain: 'On-chain Confirmation'
 };
 
 const EVENT_META = {
@@ -660,6 +660,12 @@ function App() {
   const currentWorkflow = traceData?.workflow || null;
   const currentRequest = traceData?.request || null;
   const quote = traceData?.workflow?.result?.quote || traceData?.request?.result?.quote || null;
+  const onchainProof = currentRequest?.proofVerification || null;
+  const onchainDetails = onchainProof?.details || {};
+  const onchainTxHash = String(currentRequest?.paymentTxHash || currentRequest?.paymentProof?.txHash || currentWorkflow?.txHash || '').trim();
+  const onchainBlock = onchainDetails?.blockNumber ?? '-';
+  const onchainStatus = onchainProof ? 'success' : traceState === 'failed' ? 'failed' : 'pending';
+  const onchainExplorerLink = onchainTxHash ? `https://testnet.kitescan.ai/tx/${onchainTxHash}` : '';
   const currentAction = String(currentRequest?.action || '').trim().toLowerCase();
   const flowLabel =
     currentAction === 'btc-price-feed'
@@ -841,6 +847,23 @@ function App() {
                     <span className="muted-text">{quote?.provider || '-'}</span>
                   </div>
                 ) : null}
+                {step.id === 'onchain' ? (
+                  <div className="flow-onchain-block">
+                    <p>txHash: {onchainTxHash || '-'}</p>
+                    <p>block: {onchainBlock}</p>
+                    <p>status: {onchainStatus}</p>
+                    <p>
+                      explorer:{' '}
+                      {onchainExplorerLink ? (
+                        <a href={onchainExplorerLink} target="_blank" rel="noreferrer">
+                          {onchainExplorerLink}
+                        </a>
+                      ) : (
+                        '-'
+                      )}
+                    </p>
+                  </div>
+                ) : null}
               </li>
             ))}
           </ol>
@@ -981,6 +1004,19 @@ function App() {
               <p>updated: {formatTime(currentWorkflow?.updatedAt || '')}</p>
               <p>payer: {fullText(currentWorkflow?.payer || '-')}</p>
               <p>flow: {flowLabel}</p>
+              <p>txHash: {onchainTxHash || '-'}</p>
+              <p>block: {onchainBlock}</p>
+              <p>status: {onchainStatus}</p>
+              <p>
+                explorer:{' '}
+                {onchainExplorerLink ? (
+                  <a href={onchainExplorerLink} target="_blank" rel="noreferrer">
+                    {onchainExplorerLink}
+                  </a>
+                ) : (
+                  '-'
+                )}
+              </p>
             </article>
           </div>
         </section>
