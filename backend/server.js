@@ -18,6 +18,8 @@ const policyConfigPath = path.resolve('data', 'policy_config.json');
 const sessionRuntimePath = path.resolve('data', 'session_runtime.json');
 const workflowPath = path.resolve('data', 'workflows.json');
 const identityChallengePath = path.resolve('data', 'identity_challenges.json');
+const servicesPath = path.resolve('data', 'services.json');
+const serviceInvocationsPath = path.resolve('data', 'service_invocations.json');
 
 const SETTLEMENT_TOKEN =
   process.env.KITE_SETTLEMENT_TOKEN || '0x0fF5393387ad2f9f691FD6Fd28e07E3969e27e63';
@@ -108,7 +110,9 @@ const PERSIST_ARRAY_PATHS = [
   x402Path,
   policyFailurePath,
   workflowPath,
-  identityChallengePath
+  identityChallengePath,
+  servicesPath,
+  serviceInvocationsPath
 ];
 const PERSIST_OBJECT_PATHS = [policyConfigPath, sessionRuntimePath];
 const persistArrayCache = new Map();
@@ -692,6 +696,22 @@ function readIdentityChallenges() {
 
 function writeIdentityChallenges(records) {
   writeJsonArray(identityChallengePath, records);
+}
+
+function readPublishedServices() {
+  return readJsonArray(servicesPath);
+}
+
+function writePublishedServices(records) {
+  writeJsonArray(servicesPath, records);
+}
+
+function readServiceInvocations() {
+  return readJsonArray(serviceInvocationsPath);
+}
+
+function writeServiceInvocations(records) {
+  writeJsonArray(serviceInvocationsPath, records);
 }
 
 function upsertWorkflow(workflow) {
@@ -1417,6 +1437,155 @@ async function fetchBtcPriceQuote(params = {}) {
   }
 
   throw new Error(`price_source_unavailable (${failures.join(', ') || 'no provider'})`);
+}
+
+function createServiceId() {
+  return `svc_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+}
+
+function normalizeServiceAction(actionRaw = '') {
+  const action = String(actionRaw || 'btc-price-feed').trim().toLowerCase();
+  if (action !== 'btc-price-feed') {
+    throw new Error('Only btc-price-feed service is supported in this MVP.');
+  }
+  return action;
+}
+
+function sanitizeServiceRecord(input = {}, existing = null) {
+  const now = new Date().toISOString();
+  const action = normalizeServiceAction(input.action || existing?.action || 'btc-price-feed');
+  const normalizedTask = normalizeBtcPriceParams({
+    pair: input.pair || existing?.pair || 'BTCUSDT',
+    source: input.source || existing?.source || 'hyperliquid'
+  });
+  const recipient = normalizeAddress(input.recipient || existing?.recipient || KITE_AGENT2_AA_ADDRESS);
+  if (!recipient || !ethers.isAddress(recipient)) {
+    throw new Error('service recipient must be a valid address');
+  }
+  const tokenAddress = normalizeAddress(input.tokenAddress || existing?.tokenAddress || SETTLEMENT_TOKEN);
+  if (!tokenAddress || !ethers.isAddress(tokenAddress)) {
+    throw new Error('service tokenAddress must be a valid address');
+  }
+  const priceRaw = Number(input.price ?? existing?.price ?? X402_BTC_PRICE ?? '0.00001');
+  if (!Number.isFinite(priceRaw) || priceRaw <= 0) {
+    throw new Error('service price must be a valid positive number');
+  }
+  const name = String(input.name || existing?.name || '').trim() || 'BTCUSD Quote Service';
+  const description = String(input.description || existing?.description || '').trim() || 'Pay-per-call BTCUSD quote service.';
+  const providerAgentId = String(input.providerAgentId || existing?.providerAgentId || KITE_AGENT2_ID).trim();
+  const activeInput = input.active;
+  const active =
+    typeof activeInput === 'boolean'
+      ? activeInput
+      : existing
+        ? existing.active !== false
+        : true;
+
+  return {
+    id: String(existing?.id || input.id || createServiceId()).trim(),
+    name,
+    description,
+    action,
+    pair: normalizedTask.pair,
+    source: normalizedTask.source,
+    sourceRequested: normalizedTask.sourceRequested,
+    providerAgentId,
+    recipient,
+    tokenAddress,
+    price: String(Number(priceRaw.toFixed(6))),
+    active,
+    createdAt: String(existing?.createdAt || now).trim(),
+    updatedAt: now,
+    publishedBy: String(input.publishedBy || existing?.publishedBy || 'admin').trim()
+  };
+}
+
+function createDefaultServiceCatalog() {
+  const now = new Date().toISOString();
+  return [
+    {
+      id: 'svc_btcusd_minute',
+      name: 'BTCUSD Quote (ATAPI)',
+      description: 'Agent-to-API BTCUSD quote via ERC8004 + x402 payment.',
+      action: 'btc-price-feed',
+      pair: 'BTCUSDT',
+      source: 'hyperliquid',
+      sourceRequested: 'hyperliquid',
+      providerAgentId: String(KITE_AGENT2_ID).trim(),
+      recipient: normalizeAddress(KITE_AGENT2_AA_ADDRESS),
+      tokenAddress: normalizeAddress(SETTLEMENT_TOKEN),
+      price: String(Number(Number(X402_BTC_PRICE || '0.00001').toFixed(6))),
+      active: true,
+      createdAt: now,
+      updatedAt: now,
+      publishedBy: 'system'
+    }
+  ];
+}
+
+function ensureServiceCatalog() {
+  const rows = readPublishedServices();
+  if (Array.isArray(rows) && rows.length > 0) return rows;
+  const seed = createDefaultServiceCatalog();
+  writePublishedServices(seed);
+  return seed;
+}
+
+function upsertServiceInvocation(invocation = {}) {
+  const rows = readServiceInvocations();
+  const invocationId = String(invocation.invocationId || '').trim();
+  if (!invocationId) return;
+  const idx = rows.findIndex((item) => String(item?.invocationId || '').trim() === invocationId);
+  if (idx >= 0) rows[idx] = invocation;
+  else rows.unshift(invocation);
+  writeServiceInvocations(rows);
+}
+
+function mapServiceReceipt(invocation = {}, workflowByTraceId = new Map(), requestById = new Map()) {
+  const traceId = String(invocation.traceId || '').trim();
+  const workflow = traceId ? workflowByTraceId.get(traceId) || null : null;
+  const requestId =
+    String(invocation.requestId || '').trim() ||
+    String(workflow?.requestId || '').trim();
+  const requestItem = requestId ? requestById.get(requestId) || null : null;
+  const txHash = String(
+    invocation.txHash || requestItem?.paymentTxHash || requestItem?.paymentProof?.txHash || workflow?.txHash || ''
+  ).trim();
+  const block = requestItem?.proofVerification?.details?.blockNumber || '-';
+  const onchainStatus =
+    requestItem?.proofVerification
+      ? 'success'
+      : String(invocation.state || '').trim().toLowerCase() === 'failed'
+        ? 'failed'
+        : 'pending';
+
+  return {
+    invocationId: String(invocation.invocationId || '').trim(),
+    serviceId: String(invocation.serviceId || '').trim(),
+    traceId,
+    requestId,
+    state: String(invocation.state || '').trim().toLowerCase() || 'running',
+    createdAt: String(invocation.createdAt || '').trim(),
+    updatedAt: String(invocation.updatedAt || '').trim(),
+    payer: String(invocation.payer || '').trim(),
+    sourceAgentId: String(invocation.sourceAgentId || '').trim(),
+    targetAgentId: String(invocation.targetAgentId || '').trim(),
+    summary: String(invocation.summary || workflow?.result?.summary || '').trim(),
+    error: String(invocation.error || workflow?.error || '').trim(),
+    x402: {
+      amount: String(requestItem?.amount || invocation.amount || '').trim(),
+      tokenAddress: String(requestItem?.tokenAddress || invocation.tokenAddress || '').trim(),
+      recipient: String(requestItem?.recipient || invocation.recipient || '').trim(),
+      status: String(requestItem?.status || '').trim().toLowerCase() || (onchainStatus === 'success' ? 'paid' : 'pending'),
+      txHash
+    },
+    onchain: {
+      txHash,
+      block,
+      status: onchainStatus,
+      explorer: txHash ? `https://testnet.kitescan.ai/tx/${txHash}` : ''
+    }
+  };
 }
 
 function computeReactiveStopOrderAmount(actionParams = {}) {
@@ -4608,6 +4777,204 @@ app.get('/api/market/btc/price', requireRole('viewer'), async (req, res) => {
   }
 });
 
+app.get('/api/services', requireRole('viewer'), (req, res) => {
+  const limit = Math.max(1, Math.min(Number(req.query.limit || 100), 500));
+  const activeOnly = String(req.query.active || '').trim().toLowerCase();
+  const rows = ensureServiceCatalog()
+    .filter((item) => {
+      if (activeOnly === '1' || activeOnly === 'true') return item?.active !== false;
+      if (activeOnly === '0' || activeOnly === 'false') return item?.active === false;
+      return true;
+    })
+    .sort((a, b) => Date.parse(b?.updatedAt || 0) - Date.parse(a?.updatedAt || 0))
+    .slice(0, limit);
+  return res.json({
+    ok: true,
+    traceId: req.traceId || '',
+    total: rows.length,
+    items: rows
+  });
+});
+
+app.get('/api/services/:serviceId', requireRole('viewer'), (req, res) => {
+  const serviceId = String(req.params.serviceId || '').trim();
+  if (!serviceId) return res.status(400).json({ ok: false, error: 'serviceId_required' });
+  const service = ensureServiceCatalog().find((item) => String(item?.id || '').trim() === serviceId);
+  if (!service) return res.status(404).json({ ok: false, error: 'service_not_found', serviceId });
+  const recentInvocations = readServiceInvocations()
+    .filter((item) => String(item?.serviceId || '').trim() === serviceId)
+    .slice(0, 12);
+  return res.json({
+    ok: true,
+    traceId: req.traceId || '',
+    service,
+    recentInvocations
+  });
+});
+
+app.post('/api/services/publish', requireRole('admin'), (req, res) => {
+  try {
+    const body = req.body || {};
+    const rows = ensureServiceCatalog();
+    const requestedId = String(body.id || '').trim();
+    const existingIdx = requestedId ? rows.findIndex((item) => String(item?.id || '').trim() === requestedId) : -1;
+    const existing = existingIdx >= 0 ? rows[existingIdx] : null;
+    const record = sanitizeServiceRecord(
+      {
+        ...body,
+        publishedBy: req.authRole || 'admin'
+      },
+      existing
+    );
+    if (existingIdx >= 0) rows[existingIdx] = record;
+    else rows.unshift(record);
+    writePublishedServices(rows);
+    return res.json({
+      ok: true,
+      traceId: req.traceId || '',
+      service: record,
+      mode: existing ? 'updated' : 'created'
+    });
+  } catch (error) {
+    return res.status(400).json({
+      ok: false,
+      traceId: req.traceId || '',
+      error: 'invalid_service',
+      reason: error?.message || 'invalid service payload'
+    });
+  }
+});
+
+app.post('/api/services/:serviceId/invoke', requireRole('agent'), async (req, res) => {
+  const serviceId = String(req.params.serviceId || '').trim();
+  if (!serviceId) return res.status(400).json({ ok: false, error: 'serviceId_required' });
+  const service = ensureServiceCatalog().find((item) => String(item?.id || '').trim() === serviceId);
+  if (!service) return res.status(404).json({ ok: false, error: 'service_not_found', serviceId });
+  if (service.active === false) {
+    return res.status(409).json({ ok: false, error: 'service_inactive', reason: 'Service is not active.' });
+  }
+  if (String(service.action || '').trim().toLowerCase() !== 'btc-price-feed') {
+    return res.status(400).json({ ok: false, error: 'unsupported_service_action', reason: 'Only btc-price-feed is supported in this MVP.' });
+  }
+
+  const runtime = readSessionRuntime();
+  const body = req.body || {};
+  const traceId = resolveWorkflowTraceId(body.traceId || createTraceId('service'));
+  const payer = normalizeAddress(body.payer || runtime.aaWallet || '');
+  const sourceAgentId = String(body.sourceAgentId || KITE_AGENT1_ID).trim();
+  const targetAgentId = String(body.targetAgentId || service.providerAgentId || KITE_AGENT2_ID).trim();
+  const invocationId = createTraceId('svc_call');
+  const now = new Date().toISOString();
+
+  const invocation = {
+    invocationId,
+    serviceId,
+    action: 'btc-price-feed',
+    traceId,
+    requestId: '',
+    state: 'running',
+    payer,
+    sourceAgentId,
+    targetAgentId,
+    amount: String(service.price || X402_BTC_PRICE || ''),
+    tokenAddress: String(service.tokenAddress || SETTLEMENT_TOKEN || '').trim(),
+    recipient: String(service.recipient || KITE_AGENT2_AA_ADDRESS || '').trim(),
+    summary: '',
+    error: '',
+    txHash: '',
+    userOpHash: '',
+    createdAt: now,
+    updatedAt: now
+  };
+  upsertServiceInvocation(invocation);
+
+  try {
+    const internalApiKey = getInternalAgentApiKey();
+    const headers = { 'Content-Type': 'application/json' };
+    if (internalApiKey) headers['x-api-key'] = internalApiKey;
+
+    const resp = await fetch(`http://127.0.0.1:${PORT}/api/workflow/btc-price/run`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        traceId,
+        sourceAgentId,
+        targetAgentId,
+        pair: service.pair || 'BTCUSDT',
+        source: service.source || 'hyperliquid',
+        payer
+      })
+    });
+    const payload = await resp.json().catch(() => ({}));
+    const workflow = payload?.workflow || null;
+    const next = {
+      ...invocation,
+      traceId: String(payload?.traceId || traceId).trim(),
+      requestId: String(payload?.requestId || workflow?.requestId || '').trim(),
+      state: String(payload?.state || workflow?.state || (resp.ok ? 'success' : 'failed')).trim().toLowerCase(),
+      summary: String(workflow?.result?.summary || payload?.receipt?.result?.summary || '').trim(),
+      error: String(payload?.reason || payload?.error || '').trim(),
+      txHash: String(payload?.txHash || workflow?.txHash || '').trim(),
+      userOpHash: String(payload?.userOpHash || workflow?.userOpHash || '').trim(),
+      updatedAt: new Date().toISOString()
+    };
+    upsertServiceInvocation(next);
+
+    return res.status(resp.status).json({
+      ...payload,
+      serviceId,
+      invocationId
+    });
+  } catch (error) {
+    const failed = {
+      ...invocation,
+      state: 'failed',
+      error: String(error?.message || 'service invoke failed').trim(),
+      updatedAt: new Date().toISOString()
+    };
+    upsertServiceInvocation(failed);
+    return res.status(500).json({
+      ok: false,
+      error: 'invoke_failed',
+      reason: failed.error,
+      serviceId,
+      invocationId,
+      traceId
+    });
+  }
+});
+
+app.get('/api/services/:serviceId/receipts', requireRole('viewer'), (req, res) => {
+  const serviceId = String(req.params.serviceId || '').trim();
+  if (!serviceId) return res.status(400).json({ ok: false, error: 'serviceId_required' });
+  const service = ensureServiceCatalog().find((item) => String(item?.id || '').trim() === serviceId);
+  if (!service) return res.status(404).json({ ok: false, error: 'service_not_found', serviceId });
+
+  const limit = Math.max(1, Math.min(Number(req.query.limit || 40), 200));
+  const workflows = readWorkflows();
+  const workflowByTraceId = new Map(
+    workflows.map((item) => [String(item?.traceId || '').trim(), item])
+  );
+  const requests = readX402Requests();
+  const requestById = new Map(
+    requests.map((item) => [String(item?.requestId || '').trim(), item])
+  );
+
+  const rows = readServiceInvocations()
+    .filter((item) => String(item?.serviceId || '').trim() === serviceId)
+    .sort((a, b) => Date.parse(b?.updatedAt || b?.createdAt || 0) - Date.parse(a?.updatedAt || a?.createdAt || 0))
+    .slice(0, limit)
+    .map((item) => mapServiceReceipt(item, workflowByTraceId, requestById));
+
+  return res.json({
+    ok: true,
+    traceId: req.traceId || '',
+    service,
+    total: rows.length,
+    items: rows
+  });
+});
+
 app.get('/api/automation/btc-price/status', requireRole('viewer'), (req, res) => {
   return res.json({
     ok: true,
@@ -5057,6 +5424,7 @@ let httpServer = null;
 
 async function startServer() {
   await initializePersistence();
+  ensureServiceCatalog();
   httpServer = app.listen(PORT, () => {
     console.log(`Backend listening on http://localhost:${PORT}`);
     if (AUTO_BTC_PRICE_ENABLED) {

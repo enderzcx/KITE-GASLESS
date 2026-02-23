@@ -21,6 +21,7 @@ Current Version: `v1.8.0`
 - Purpose: judge-facing online demo for end-to-end flow validation.
 - Expected pages:
   - Demo Home (`/`) - paid BTC line chart + ERC8004/x402 flow card
+  - Service Market (`/market`) - publish/discover/invoke agent services (MVP)
   - Ops Console (`/ops`) - KPI/traces/events/evidence/session setup
 
 ### Local Reproducible Version
@@ -39,6 +40,7 @@ Current Version: `v1.8.0`
 - x402 lifecycle: `402 -> pay -> submit proof -> 200 unlock`
 - Paid BTC quote workflow (`btc-price-feed`) with quote provider attribution
 - Agent-to-agent and agent-to-api flow evidence in one console
+- Service directory MVP: publish service, discover service, invoke with per-call x402 settlement
 - BTC quote loop is a sample scenario; platform model supports publishing and consuming arbitrary agent services
 - BTC demo summary wording uses `ATAPI` for the paid quote path to avoid A2A naming confusion.
 - Verifiable agent identity (registry-backed)
@@ -98,9 +100,15 @@ Upgrade authority remains with each proxy owner; this project does not grant per
 - `POST /api/workflow/btc-price/run`
 - `GET /api/demo/price-series?limit=60`
 - `GET /api/demo/trace/:traceId`
+- `GET /api/demo/trace-by-request/:requestId`
 - `GET /api/demo/stream` (SSE)
 - `GET /api/x402/mapping/latest`
 - `GET /api/market/btc/price`
+- `GET /api/services`
+- `GET /api/services/:serviceId`
+- `POST /api/services/publish`
+- `POST /api/services/:serviceId/invoke`
+- `GET /api/services/:serviceId/receipts`
 - `GET /api/automation/btc-price/status`
 - `POST /api/automation/btc-price/start`
 - `POST /api/automation/btc-price/stop`

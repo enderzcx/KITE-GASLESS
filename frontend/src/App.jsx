@@ -161,12 +161,13 @@ function toVisualState(record = {}) {
 function readRouteFromPathname() {
   const path = String(window.location.pathname || '/').trim();
   if (path === '/ops') return 'ops';
+  if (path === '/market') return 'market';
   return 'demo';
 }
 
 function normalizeRoutePath() {
   const path = String(window.location.pathname || '/').trim();
-  if (path === '/' || path === '/ops') return;
+  if (path === '/' || path === '/ops' || path === '/market') return;
   try {
     window.history.replaceState({}, '', `/${window.location.search}${window.location.hash}`);
   } catch {
@@ -292,15 +293,32 @@ function App() {
   const [failTriggering, setFailTriggering] = useState(false);
   const [hoverIndex, setHoverIndex] = useState(-1);
   const [flyAnim, setFlyAnim] = useState(null);
+  const [services, setServices] = useState([]);
+  const [selectedServiceId, setSelectedServiceId] = useState('');
+  const [serviceReceipts, setServiceReceipts] = useState([]);
+  const [marketRefreshing, setMarketRefreshing] = useState(false);
+  const [publishingService, setPublishingService] = useState(false);
+  const [invokingService, setInvokingService] = useState(false);
+  const [invokePayer, setInvokePayer] = useState('');
+  const [serviceForm, setServiceForm] = useState({
+    id: '',
+    name: 'BTCUSD Quote Service',
+    description: 'Pay-per-call BTCUSD quote via ERC8004 + x402.',
+    pair: 'BTCUSDT',
+    source: 'hyperliquid',
+    price: '0.00001',
+    active: true
+  });
 
   const flowPriceRef = useRef(null);
   const chartPriceRef = useRef(null);
   const traceFetchRef = useRef({ token: 0, traceId: '' });
 
   const isOpsPage = route === 'ops';
+  const isMarketPage = route === 'market';
 
   const navigate = useCallback((nextRoute) => {
-    const target = nextRoute === 'ops' ? '/ops' : '/';
+    const target = nextRoute === 'ops' ? '/ops' : nextRoute === 'market' ? '/market' : '/';
     try {
       if (window.location.pathname !== target) {
         window.history.pushState({}, '', `${target}${window.location.search}${window.location.hash}`);
@@ -308,8 +326,9 @@ function App() {
     } catch {
       // ignore history errors
     }
-    setRoute(nextRoute === 'ops' ? 'ops' : 'demo');
-    if (nextRoute !== 'ops') setShowSetup(false);
+    const normalizedRoute = nextRoute === 'ops' ? 'ops' : nextRoute === 'market' ? 'market' : 'demo';
+    setRoute(normalizedRoute);
+    if (normalizedRoute !== 'ops') setShowSetup(false);
   }, []);
 
   const connectWallet = useCallback(async () => {
@@ -477,6 +496,126 @@ function App() {
     [loadTrace, route, selectedTraceId]
   );
 
+  const loadServiceReceipts = useCallback(async (serviceId, { silent = false } = {}) => {
+    const normalized = String(serviceId || '').trim();
+    if (!normalized) {
+      setServiceReceipts([]);
+      return;
+    }
+    try {
+      const payload = await fetchJson(`/api/services/${encodeURIComponent(normalized)}/receipts`, { limit: 24 });
+      setServiceReceipts(Array.isArray(payload?.items) ? payload.items : []);
+    } catch (error) {
+      if (!silent) setErrorText(error?.message || 'Failed to load service receipts.');
+    }
+  }, []);
+
+  const loadServiceCatalog = useCallback(
+    async ({ manual = false, forceServiceId = '' } = {}) => {
+      if (manual) setMarketRefreshing(true);
+      try {
+        const payload = await fetchJson('/api/services', { limit: 80 });
+        const rows = Array.isArray(payload?.items) ? payload.items : [];
+        setServices(rows);
+        const targetId = String(forceServiceId || selectedServiceId || rows[0]?.id || '').trim();
+        if (targetId) {
+          setSelectedServiceId(targetId);
+          await loadServiceReceipts(targetId, { silent: true });
+        } else {
+          setServiceReceipts([]);
+        }
+        setLastSyncAt(new Date().toISOString());
+      } catch (error) {
+        setErrorText(error?.message || 'Failed to load service catalog.');
+      } finally {
+        if (manual) setMarketRefreshing(false);
+      }
+    },
+    [loadServiceReceipts, selectedServiceId]
+  );
+
+  const fillInvokePayerFromRuntime = useCallback(async () => {
+    try {
+      const payload = await fetchJson('/api/session/runtime');
+      const payer = String(payload?.runtime?.aaWallet || '').trim();
+      if (!payer) throw new Error('No AA wallet found in runtime.');
+      setInvokePayer(payer);
+      setErrorText('');
+    } catch (error) {
+      setErrorText(error?.message || 'Failed to read runtime payer.');
+    }
+  }, []);
+
+  const publishService = useCallback(async () => {
+    setPublishingService(true);
+    setErrorText('');
+    try {
+      const adminKey = ADMIN_API_KEY || AGENT_API_KEY || VIEWER_API_KEY;
+      const payload = await postJson(
+        '/api/services/publish',
+        {
+          id: serviceForm.id || undefined,
+          name: serviceForm.name,
+          description: serviceForm.description,
+          action: 'btc-price-feed',
+          pair: serviceForm.pair || 'BTCUSDT',
+          source: serviceForm.source || 'hyperliquid',
+          price: serviceForm.price || '0.00001',
+          active: serviceForm.active !== false
+        },
+        adminKey
+      );
+      const serviceId = String(payload?.service?.id || '').trim();
+      if (serviceId) {
+        setSelectedServiceId(serviceId);
+        setServiceForm((prev) => ({ ...prev, id: serviceId }));
+      }
+      await loadServiceCatalog({ forceServiceId: serviceId });
+    } catch (error) {
+      setErrorText(error?.message || 'Publish service failed.');
+    } finally {
+      setPublishingService(false);
+    }
+  }, [loadServiceCatalog, serviceForm]);
+
+  const invokeSelectedService = useCallback(async () => {
+    const serviceId = String(selectedServiceId || '').trim();
+    if (!serviceId) {
+      setErrorText('Select a service first.');
+      return;
+    }
+    setInvokingService(true);
+    setErrorText('');
+    try {
+      const headers = {
+        ...buildHeaders(AGENT_API_KEY || ADMIN_API_KEY || VIEWER_API_KEY),
+        'Content-Type': 'application/json'
+      };
+      const resp = await fetch(resolveApiUrl(`/api/services/${encodeURIComponent(serviceId)}/invoke`), {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          payer: String(invokePayer || '').trim() || undefined
+        })
+      });
+      const payload = await resp.json().catch(() => ({}));
+      const traceId = String(payload?.traceId || payload?.workflow?.traceId || '').trim();
+      if (traceId) {
+        setSelectedTraceId(traceId);
+        await loadTrace(traceId);
+      }
+      await loadSnapshot({ forceTraceId: traceId });
+      await loadServiceReceipts(serviceId);
+      if (!resp.ok || payload?.ok === false) {
+        setErrorText(payload?.reason || payload?.error || `HTTP ${resp.status}`);
+      }
+    } catch (error) {
+      setErrorText(error?.message || 'Invoke service failed.');
+    } finally {
+      setInvokingService(false);
+    }
+  }, [invokePayer, loadServiceReceipts, loadSnapshot, loadTrace, selectedServiceId]);
+
   useEffect(() => {
     void loadSnapshot();
     const timer = setInterval(() => {
@@ -484,6 +623,15 @@ function App() {
     }, POLL_INTERVAL_MS);
     return () => clearInterval(timer);
   }, [loadSnapshot]);
+
+  useEffect(() => {
+    if (route !== 'market') return undefined;
+    void loadServiceCatalog();
+    const timer = setInterval(() => {
+      void loadServiceCatalog();
+    }, POLL_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [loadServiceCatalog, route]);
 
   useEffect(() => {
     const source = new EventSource(
@@ -673,6 +821,7 @@ function App() {
   const traceState = String(traceData?.state || '').trim().toLowerCase() || 'running';
   const currentWorkflow = traceData?.workflow || null;
   const currentRequest = traceData?.request || null;
+  const selectedService = services.find((item) => String(item?.id || '').trim() === String(selectedServiceId || '').trim()) || null;
   const quote = traceData?.workflow?.result?.quote || traceData?.request?.result?.quote || null;
   const onchainProof = currentRequest?.proofVerification || null;
   const onchainDetails = onchainProof?.details || {};
@@ -749,6 +898,9 @@ function App() {
           </button>
           <button type="button" className="ghost-btn danger" onClick={triggerFailDemo} disabled={triggering || failTriggering}>
             {failTriggering ? 'Failing...' : 'Fail Demo'}
+          </button>
+          <button type="button" className="ghost-btn" onClick={() => navigate('market')}>
+            Open Market
           </button>
           <button type="button" className="ghost-btn" onClick={() => navigate('ops')}>
             Open Ops
@@ -937,6 +1089,9 @@ function App() {
               Retry SSE
             </button>
           ) : null}
+          <button type="button" className="ghost-btn" onClick={() => navigate('market')}>
+            Open Market
+          </button>
           <button type="button" className="ghost-btn" onClick={() => navigate('demo')}>
             Back to Demo
           </button>
@@ -1068,7 +1223,201 @@ function App() {
     </div>
   );
 
-  return isOpsPage ? renderOpsPage() : renderDemoPage();
+  const renderMarketPage = () => (
+    <div className="page-shell">
+      <header className="page-header">
+        <div>
+          <p className="header-kicker">KITE TESTNET / MARKET</p>
+          <h1>Service Directory (MVP)</h1>
+          <p className="header-subtitle">Publish services, discover providers, and invoke per-call x402 settlements.</p>
+        </div>
+        <div className="header-actions">
+          <span className={`connection-pill ${streamMode}`}>{statusText(streamMode)}</span>
+          <span className="sync-text">Last sync: {formatTime(lastSyncAt)}</span>
+          <button type="button" className="ghost-btn" onClick={() => void loadServiceCatalog({ manual: true })} disabled={marketRefreshing}>
+            {marketRefreshing ? 'Refreshing...' : 'Refresh Catalog'}
+          </button>
+          <button type="button" className="ghost-btn" onClick={() => navigate('demo')}>
+            Back to Demo
+          </button>
+          <button type="button" className="ghost-btn" onClick={() => navigate('ops')}>
+            Open Ops
+          </button>
+        </div>
+      </header>
+
+      {errorText ? <p className="error-banner">{errorText}</p> : null}
+
+      <main className="market-layout">
+        <section className="panel">
+          <div className="panel-head">
+            <h2>Service Catalog</h2>
+            <span className="panel-note">{services.length} services</span>
+          </div>
+
+          <div className="market-form">
+            <div className="vault-input">
+              <label htmlFor="svc-name">Service Name</label>
+              <input
+                id="svc-name"
+                value={serviceForm.name}
+                onChange={(event) => setServiceForm((prev) => ({ ...prev, name: event.target.value }))}
+                placeholder="BTCUSD Quote Service"
+              />
+            </div>
+            <div className="vault-input">
+              <label htmlFor="svc-desc">Description</label>
+              <textarea
+                id="svc-desc"
+                rows={2}
+                value={serviceForm.description}
+                onChange={(event) => setServiceForm((prev) => ({ ...prev, description: event.target.value }))}
+                placeholder="Describe what this service provides."
+              />
+            </div>
+            <div className="market-form-row">
+              <div className="vault-input">
+                <label htmlFor="svc-pair">Pair</label>
+                <input
+                  id="svc-pair"
+                  value={serviceForm.pair}
+                  onChange={(event) => setServiceForm((prev) => ({ ...prev, pair: event.target.value.toUpperCase() }))}
+                  placeholder="BTCUSDT"
+                />
+              </div>
+              <div className="vault-input">
+                <label htmlFor="svc-source">Source</label>
+                <input
+                  id="svc-source"
+                  value={serviceForm.source}
+                  onChange={(event) => setServiceForm((prev) => ({ ...prev, source: event.target.value.toLowerCase() }))}
+                  placeholder="hyperliquid"
+                />
+              </div>
+              <div className="vault-input">
+                <label htmlFor="svc-price">Price (x402)</label>
+                <input
+                  id="svc-price"
+                  value={serviceForm.price}
+                  onChange={(event) => setServiceForm((prev) => ({ ...prev, price: event.target.value }))}
+                  placeholder="0.00001"
+                />
+              </div>
+            </div>
+            <div className="session-actions">
+              <button type="button" className="ghost-btn" onClick={publishService} disabled={publishingService}>
+                {publishingService ? 'Publishing...' : serviceForm.id ? 'Update Service' : 'Publish Service'}
+              </button>
+            </div>
+          </div>
+
+          <div className="service-list">
+            {services.length === 0 ? (
+              <p className="empty-text">No services published yet.</p>
+            ) : (
+              services.map((item, idx) => {
+                const id = String(item?.id || '').trim();
+                const active = item?.active !== false;
+                const selected = String(selectedServiceId || '').trim() === id;
+                return (
+                  <button
+                    type="button"
+                    key={id || `svc_${idx}`}
+                    className={`service-row ${selected ? 'active' : ''}`}
+                    onClick={() => {
+                      setSelectedServiceId(id);
+                      setServiceForm({
+                        id,
+                        name: String(item?.name || '').trim(),
+                        description: String(item?.description || '').trim(),
+                        pair: String(item?.pair || 'BTCUSDT').trim().toUpperCase(),
+                        source: String(item?.sourceRequested || item?.source || 'hyperliquid').trim().toLowerCase(),
+                        price: String(item?.price || '0.00001').trim(),
+                        active
+                      });
+                      void loadServiceReceipts(id);
+                    }}
+                  >
+                    <span>{item?.name || id}</span>
+                    <span>{item?.action || '-'}</span>
+                    <span>{item?.price || '-'}</span>
+                    <span className={`status-pill mini ${active ? 'success' : 'failed'}`}>{active ? 'active' : 'inactive'}</span>
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </section>
+
+        <section className="panel">
+          <div className="panel-head">
+            <h2>Invoke & Receipts</h2>
+            <span className="panel-note">{selectedService ? selectedService.id : 'no service selected'}</span>
+          </div>
+
+          {selectedService ? (
+            <>
+              <div className="evidence-grid market-detail-grid">
+                <article className="evidence-card">
+                  <h3>Service</h3>
+                  <p>name: {selectedService.name}</p>
+                  <p>action: {selectedService.action}</p>
+                  <p>pair: {selectedService.pair}</p>
+                  <p>source: {selectedService.sourceRequested || selectedService.source}</p>
+                </article>
+                <article className="evidence-card">
+                  <h3>x402 Terms</h3>
+                  <p>price: {selectedService.price}</p>
+                  <p>token: {fullText(selectedService.tokenAddress)}</p>
+                  <p>recipient: {fullText(selectedService.recipient)}</p>
+                  <p>providerAgent: {selectedService.providerAgentId || '-'}</p>
+                </article>
+              </div>
+
+              <div className="market-invoke">
+                <div className="vault-input">
+                  <label htmlFor="invoke-payer">Payer (optional override)</label>
+                  <input
+                    id="invoke-payer"
+                    value={invokePayer}
+                    onChange={(event) => setInvokePayer(event.target.value)}
+                    placeholder="0x..."
+                  />
+                </div>
+                <div className="session-actions">
+                  <button type="button" className="ghost-btn" onClick={fillInvokePayerFromRuntime}>
+                    Use Runtime Payer
+                  </button>
+                  <button type="button" className="ghost-btn" onClick={invokeSelectedService} disabled={invokingService}>
+                    {invokingService ? 'Invoking...' : 'Invoke Service'}
+                  </button>
+                </div>
+              </div>
+
+              <ul className="event-list market-receipt-list">
+                {serviceReceipts.length === 0 ? (
+                  <li className="empty-text">No receipts yet. Invoke this service once.</li>
+                ) : (
+                  serviceReceipts.map((item) => (
+                    <li key={item.invocationId} className={`event-row ${item.state === 'failed' ? 'failed' : item.state === 'success' || item.state === 'unlocked' ? 'success' : 'running'}`}>
+                      <span className={`event-dot ${item.state === 'failed' ? 'failed' : item.state === 'success' || item.state === 'unlocked' ? 'success' : 'running'}`} />
+                      <span>{shortenMiddle(item.traceId || item.requestId || item.invocationId, 14, 8)}</span>
+                      <span>{item.x402?.status || item.state || '-'}</span>
+                      <span>{formatTime(item.updatedAt || item.createdAt)}</span>
+                    </li>
+                  ))
+                )}
+              </ul>
+            </>
+          ) : (
+            <p className="empty-text">Select or publish a service first.</p>
+          )}
+        </section>
+      </main>
+    </div>
+  );
+
+  return isOpsPage ? renderOpsPage() : isMarketPage ? renderMarketPage() : renderDemoPage();
 }
 
 export default App;
