@@ -293,6 +293,7 @@ function App() {
   const [failTriggering, setFailTriggering] = useState(false);
   const [hoverIndex, setHoverIndex] = useState(-1);
   const [flyAnim, setFlyAnim] = useState(null);
+  const [readerExpanded, setReaderExpanded] = useState(false);
   const [services, setServices] = useState([]);
   const [selectedServiceId, setSelectedServiceId] = useState('');
   const [serviceReceipts, setServiceReceipts] = useState([]);
@@ -391,6 +392,10 @@ function App() {
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
   }, []);
+
+  useEffect(() => {
+    setReaderExpanded(false);
+  }, [selectedTraceId]);
 
   useEffect(() => {
     if (!flyAnim?.id) return undefined;
@@ -938,6 +943,12 @@ function App() {
   }, [agentReputationRows]);
   const quote = traceData?.workflow?.result?.quote || traceData?.request?.result?.quote || null;
   const readerResult = traceData?.workflow?.result?.reader || traceData?.request?.result?.reader || null;
+  const readerExcerpt = String(readerResult?.excerpt || '').trim();
+  const readerContentLength = Number(readerResult?.contentLength || readerExcerpt.length || 0);
+  const readerPreviewText =
+    readerExcerpt.length > 220 ? `${readerExcerpt.slice(0, 220)}...` : readerExcerpt || '-';
+  const readerQuality =
+    readerContentLength >= 800 ? 'high' : readerContentLength >= 300 ? 'medium' : readerContentLength > 0 ? 'low' : '-';
   const onchainProof = currentRequest?.proofVerification || null;
   const onchainDetails = onchainProof?.details || {};
   const onchainTxHash = String(currentRequest?.paymentTxHash || currentRequest?.paymentProof?.txHash || currentWorkflow?.txHash || '').trim();
@@ -1304,6 +1315,21 @@ function App() {
                   <p>provider: {readerResult?.provider || '-'}</p>
                   <p>url: {readerResult?.url || '-'}</p>
                   <p>title: {readerResult?.title || '-'}</p>
+                  <p>digest quality: {readerQuality}</p>
+                  <p>contentLength: {readerContentLength || '-'}</p>
+                  <p className="reader-excerpt-label">excerpt:</p>
+                  <p className="reader-excerpt-text">{readerExpanded ? readerExcerpt || '-' : readerPreviewText}</p>
+                  {readerExcerpt ? (
+                    <p>
+                      <button
+                        type="button"
+                        className="ghost-btn receipt-btn"
+                        onClick={() => setReaderExpanded((prev) => !prev)}
+                      >
+                        {readerExpanded ? 'Hide full digest' : 'Show full digest'}
+                      </button>
+                    </p>
+                  ) : null}
                   <p>at: {formatTime(readerResult?.fetchedAt || '')}</p>
                 </>
               ) : (

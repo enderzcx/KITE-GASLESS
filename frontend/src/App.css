@@ -654,6 +654,18 @@ body {
   word-break: break-word;
 }
 
+.reader-excerpt-label {
+  margin-top: 8px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.reader-excerpt-text {
+  margin-top: 4px;
+  white-space: pre-wrap;
+  line-height: 1.45;
+}
+
 .evidence-card a,
 .flow-onchain-block a {
   color: var(--run);
