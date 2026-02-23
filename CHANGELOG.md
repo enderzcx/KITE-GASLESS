@@ -14,9 +14,14 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
   - `amount/tokenAddress/payer/payee`
   - `responseHash`
   - `responseSignature` (when backend signer is available).
+- Added `x-reader-feed` service action end-to-end:
+  - `POST /api/workflow/x-reader/run`
+  - `POST /api/a2a/tasks/x-reader`
+  - market publish/invoke support with x402 settlement.
 
 ### Changed
 - Demo and Ops UI now provide `Download Receipt` action from API result panels.
+- Market form now supports x-reader fields (`url/mode/maxChars`) and service details render x-reader metadata.
 
 ## [v1.8.0] - 2026-02-22
 

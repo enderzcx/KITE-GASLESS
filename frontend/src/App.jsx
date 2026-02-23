@@ -311,6 +311,8 @@ function App() {
     description: 'Pay-per-call BTCUSD quote via ERC8004 + x402.',
     pair: 'BTCUSDT',
     source: 'hyperliquid',
+    resourceUrl: 'https://x.com/Kite_AI',
+    maxChars: '1200',
     price: '0.00001',
     tags: 'atapi,x402,btc',
     horizonMin: '60',
@@ -603,6 +605,8 @@ function App() {
           description: serviceForm.description,
           pair: serviceForm.pair || 'BTCUSDT',
           source: serviceForm.source || 'hyperliquid',
+          resourceUrl: serviceForm.resourceUrl || '',
+          maxChars: Number(serviceForm.maxChars || 1200),
           price: serviceForm.price || '0.00001',
           tags: String(serviceForm.tags || '').split(',').map((item) => item.trim()).filter(Boolean),
           horizonMin: Number(serviceForm.horizonMin || 60),
@@ -933,6 +937,7 @@ function App() {
     return map;
   }, [agentReputationRows]);
   const quote = traceData?.workflow?.result?.quote || traceData?.request?.result?.quote || null;
+  const readerResult = traceData?.workflow?.result?.reader || traceData?.request?.result?.reader || null;
   const onchainProof = currentRequest?.proofVerification || null;
   const onchainDetails = onchainProof?.details || {};
   const onchainTxHash = String(currentRequest?.paymentTxHash || currentRequest?.paymentProof?.txHash || currentWorkflow?.txHash || '').trim();
@@ -941,7 +946,7 @@ function App() {
   const onchainExplorerLink = onchainTxHash ? `https://testnet.kitescan.ai/tx/${onchainTxHash}` : '';
   const currentAction = String(currentRequest?.action || '').trim().toLowerCase();
   const flowLabel =
-    currentAction === 'btc-price-feed'
+    currentAction === 'btc-price-feed' || currentAction === 'x-reader-feed'
       ? 'ATAPI+x402'
       : currentRequest?.a2a
         ? 'a2a+x402'
@@ -1294,10 +1299,21 @@ function App() {
             </article>
             <article className="evidence-card">
               <h3>API Result</h3>
-              <p>provider: {quote?.provider || '-'}</p>
-              <p>price: {quote?.priceUsd ?? '-'}</p>
-              <p>pair: {quote?.pair || 'BTCUSDT'}</p>
-              <p>at: {formatTime(quote?.fetchedAt || '')}</p>
+              {readerResult ? (
+                <>
+                  <p>provider: {readerResult?.provider || '-'}</p>
+                  <p>url: {readerResult?.url || '-'}</p>
+                  <p>title: {readerResult?.title || '-'}</p>
+                  <p>at: {formatTime(readerResult?.fetchedAt || '')}</p>
+                </>
+              ) : (
+                <>
+                  <p>provider: {quote?.provider || '-'}</p>
+                  <p>price: {quote?.priceUsd ?? '-'}</p>
+                  <p>pair: {quote?.pair || 'BTCUSDT'}</p>
+                  <p>at: {formatTime(quote?.fetchedAt || '')}</p>
+                </>
+              )}
               <p>
                 <button
                   type="button"
@@ -1414,6 +1430,7 @@ function App() {
                 >
                   <option value="btc-price-feed">btc-price-feed (ATAPI)</option>
                   <option value="risk-score-feed">risk-score-feed (A2A)</option>
+                  <option value="x-reader-feed">x-reader-feed (ATAPI)</option>
                 </select>
               </div>
               <div className="vault-input">
@@ -1426,44 +1443,82 @@ function App() {
                 />
               </div>
               <div className="vault-input">
-                <label htmlFor="svc-horizon">horizonMin</label>
+                <label htmlFor="svc-horizon">{serviceForm.action === 'x-reader-feed' ? 'maxChars' : 'horizonMin'}</label>
                 <input
                   id="svc-horizon"
-                  value={serviceForm.horizonMin}
-                  onChange={(event) => setServiceForm((prev) => ({ ...prev, horizonMin: event.target.value }))}
-                  placeholder="60"
+                  value={serviceForm.action === 'x-reader-feed' ? serviceForm.maxChars : serviceForm.horizonMin}
+                  onChange={(event) =>
+                    setServiceForm((prev) =>
+                      serviceForm.action === 'x-reader-feed'
+                        ? { ...prev, maxChars: event.target.value }
+                        : { ...prev, horizonMin: event.target.value }
+                    )
+                  }
+                  placeholder={serviceForm.action === 'x-reader-feed' ? '1200' : '60'}
                 />
               </div>
             </div>
-            <div className="market-form-row">
-              <div className="vault-input">
-                <label htmlFor="svc-pair">Pair</label>
-                <input
-                  id="svc-pair"
-                  value={serviceForm.pair}
-                  onChange={(event) => setServiceForm((prev) => ({ ...prev, pair: event.target.value.toUpperCase() }))}
-                  placeholder="BTCUSDT"
-                />
+            {serviceForm.action === 'x-reader-feed' ? (
+              <div className="market-form-row">
+                <div className="vault-input">
+                  <label htmlFor="svc-url">URL</label>
+                  <input
+                    id="svc-url"
+                    value={serviceForm.resourceUrl}
+                    onChange={(event) => setServiceForm((prev) => ({ ...prev, resourceUrl: event.target.value }))}
+                    placeholder="https://x.com/Kite_AI"
+                  />
+                </div>
+                <div className="vault-input">
+                  <label htmlFor="svc-source">Mode</label>
+                  <input
+                    id="svc-source"
+                    value={serviceForm.source}
+                    onChange={(event) => setServiceForm((prev) => ({ ...prev, source: event.target.value.toLowerCase() }))}
+                    placeholder="auto"
+                  />
+                </div>
+                <div className="vault-input">
+                  <label htmlFor="svc-price">Price (x402)</label>
+                  <input
+                    id="svc-price"
+                    value={serviceForm.price}
+                    onChange={(event) => setServiceForm((prev) => ({ ...prev, price: event.target.value }))}
+                    placeholder="0.00001"
+                  />
+                </div>
               </div>
-              <div className="vault-input">
-                <label htmlFor="svc-source">Source</label>
-                <input
-                  id="svc-source"
-                  value={serviceForm.source}
-                  onChange={(event) => setServiceForm((prev) => ({ ...prev, source: event.target.value.toLowerCase() }))}
-                  placeholder="hyperliquid"
-                />
+            ) : (
+              <div className="market-form-row">
+                <div className="vault-input">
+                  <label htmlFor="svc-pair">Pair</label>
+                  <input
+                    id="svc-pair"
+                    value={serviceForm.pair}
+                    onChange={(event) => setServiceForm((prev) => ({ ...prev, pair: event.target.value.toUpperCase() }))}
+                    placeholder="BTCUSDT"
+                  />
+                </div>
+                <div className="vault-input">
+                  <label htmlFor="svc-source">Source</label>
+                  <input
+                    id="svc-source"
+                    value={serviceForm.source}
+                    onChange={(event) => setServiceForm((prev) => ({ ...prev, source: event.target.value.toLowerCase() }))}
+                    placeholder="hyperliquid"
+                  />
+                </div>
+                <div className="vault-input">
+                  <label htmlFor="svc-price">Price (x402)</label>
+                  <input
+                    id="svc-price"
+                    value={serviceForm.price}
+                    onChange={(event) => setServiceForm((prev) => ({ ...prev, price: event.target.value }))}
+                    placeholder="0.00001"
+                  />
+                </div>
               </div>
-              <div className="vault-input">
-                <label htmlFor="svc-price">Price (x402)</label>
-                <input
-                  id="svc-price"
-                  value={serviceForm.price}
-                  onChange={(event) => setServiceForm((prev) => ({ ...prev, price: event.target.value }))}
-                  placeholder="0.00001"
-                />
-              </div>
-            </div>
+            )}
             <div className="market-form-row">
               <div className="vault-input">
                 <label htmlFor="svc-sla">SLA ms</label>
@@ -1531,6 +1586,8 @@ function App() {
                         description: String(item?.description || '').trim(),
                         pair: String(item?.pair || 'BTCUSDT').trim().toUpperCase(),
                         source: String(item?.sourceRequested || item?.source || 'hyperliquid').trim().toLowerCase(),
+                        resourceUrl: String(item?.resourceUrl || item?.exampleInput?.url || '').trim(),
+                        maxChars: String(item?.maxChars || item?.exampleInput?.maxChars || 1200),
                         price: String(item?.price || '0.00001').trim(),
                         tags: Array.isArray(item?.tags) ? item.tags.join(',') : '',
                         horizonMin: String(item?.horizonMin || 60),
@@ -1569,8 +1626,18 @@ function App() {
                   <h3>Service</h3>
                   <p>name: {selectedService.name}</p>
                   <p>action: {selectedService.action}</p>
-                  <p>pair: {selectedService.pair}</p>
-                  <p>source: {selectedService.sourceRequested || selectedService.source}</p>
+                  {selectedService.action === 'x-reader-feed' ? (
+                    <>
+                      <p>url: {selectedService.resourceUrl || '-'}</p>
+                      <p>mode: {selectedService.sourceRequested || selectedService.source || 'auto'}</p>
+                      <p>maxChars: {selectedService.maxChars ?? '-'}</p>
+                    </>
+                  ) : (
+                    <>
+                      <p>pair: {selectedService.pair || '-'}</p>
+                      <p>source: {selectedService.sourceRequested || selectedService.source}</p>
+                    </>
+                  )}
                   <p>tags: {Array.isArray(selectedService.tags) && selectedService.tags.length > 0 ? selectedService.tags.join(', ') : '-'}</p>
                 </article>
                 <article className="evidence-card">

@@ -42,6 +42,7 @@ Current Version: `v1.8.0`
 - Agent-to-agent and agent-to-api flow evidence in one console
 - Service directory MVP: publish service, discover service, invoke with per-call x402 settlement
 - Real A2A service in market: `risk-score-feed` (agent invokes agent capability with x402 settlement)
+- Real ATAPI service in market: `x-reader-feed` (pay-per-call URL digest via x-reader)
 - BTC quote loop is a sample scenario; platform model supports publishing and consuming arbitrary agent services
 - BTC demo summary wording uses `ATAPI` for the paid quote path to avoid A2A naming confusion.
 - Verifiable agent identity (registry-backed)
@@ -109,6 +110,8 @@ Upgrade authority remains with each proxy owner; this project does not grant per
 
 - `POST /api/workflow/btc-price/run`
 - `POST /api/workflow/risk-score/run`
+- `POST /api/workflow/x-reader/run`
+- `POST /api/a2a/tasks/x-reader`
 - `GET /api/demo/price-series?limit=60`
 - `GET /api/demo/trace/:traceId`
 - `GET /api/demo/trace-by-request/:requestId`
@@ -145,8 +148,9 @@ Upgrade authority remains with each proxy owner; this project does not grant per
 1. Open `/` and click `Run Demo`.
 2. Confirm the flow reaches on-chain confirmation and chart point updates only after paid unlock.
 3. Open `/market` and invoke `BTC Risk Score (A2A)`.
-4. Check `requestId/txHash/block/status/explorer` in receipts and details.
-5. Open `/ops` to inspect recent traces and live event feed.
+4. Invoke `X Reader Digest (ATAPI)` with a target URL.
+5. Check `requestId/txHash/block/status/explorer` in receipts and details.
+6. Open `/ops` to inspect recent traces and live event feed.
 
 Reference docs:
 - `docs/JUDGE_WALKTHROUGH.md`

@@ -31,6 +31,7 @@ const KITE_AGENT2_AA_ADDRESS =
 const X402_REACTIVE_PRICE = process.env.X402_REACTIVE_PRICE || '0.03';
 const X402_BTC_PRICE = process.env.X402_BTC_PRICE || '0.00001';
 const X402_RISK_SCORE_PRICE = process.env.X402_RISK_SCORE_PRICE || '0.00002';
+const X402_X_READER_PRICE = process.env.X402_X_READER_PRICE || '0.00001';
 const X402_TTL_MS = 10 * 60 * 1000;
 const KITE_AGENT1_ID = process.env.KITE_AGENT1_ID || '1';
 const KITE_AGENT2_ID = process.env.KITE_AGENT2_ID || '2';
@@ -83,6 +84,8 @@ const AUTO_BTC_PRICE_TARGET_AGENT_ID = String(process.env.AUTO_BTC_PRICE_TARGET_
 const AUTO_BTC_PRICE_PAIR = String(process.env.AUTO_BTC_PRICE_PAIR || 'BTCUSDT').trim().toUpperCase();
 const AUTO_BTC_PRICE_SOURCE = String(process.env.AUTO_BTC_PRICE_SOURCE || 'hyperliquid').trim().toLowerCase();
 const AUTO_BTC_PRICE_PAYER = String(process.env.AUTO_BTC_PRICE_PAYER || '').trim();
+const X_READER_MAX_CHARS_DEFAULT = Math.max(200, Math.min(8000, Number(process.env.X_READER_MAX_CHARS_DEFAULT || 1200)));
+const X_READER_TIMEOUT_MS = Math.max(3000, Math.min(20000, Number(process.env.X_READER_TIMEOUT_MS || 12000)));
 
 const ROLE_RANK = {
   viewer: 1,
@@ -802,6 +805,15 @@ function getServiceProviderBytes32(action) {
     }
     return ethers.encodeBytes32String('kol-score');
   }
+  if (normalized === 'x-reader-feed') {
+    const alias = String(process.env.KITE_XREADER_SERVICE_PROVIDER_ALIAS || 'kol-score')
+      .trim()
+      .toLowerCase();
+    if (alias === 'reactive-stop-orders') {
+      return ethers.encodeBytes32String('reactive-stop-orders');
+    }
+    return ethers.encodeBytes32String('kol-score');
+  }
   return ethers.encodeBytes32String('kol-score');
 }
 
@@ -1324,6 +1336,14 @@ function getActionConfig(actionRaw = '') {
       summary: 'BTC risk score unlocked by x402 payment'
     };
   }
+  if (action === 'x-reader-feed') {
+    return {
+      action: 'x-reader-feed',
+      amount: X402_X_READER_PRICE,
+      recipient: KITE_AGENT2_AA_ADDRESS,
+      summary: 'x-reader digest unlocked by x402 payment'
+    };
+  }
   return null;
 }
 
@@ -1392,6 +1412,38 @@ function normalizeRiskScoreParams(input = {}) {
   };
 }
 
+function normalizeXReaderParams(input = {}) {
+  const rawUrl = String(input.url || input.resourceUrl || input.targetUrl || '').trim();
+  if (!rawUrl) {
+    throw new Error('x-reader task requires url.');
+  }
+  let normalizedUrl = '';
+  try {
+    const parsed = new URL(rawUrl);
+    if (!['http:', 'https:'].includes(String(parsed.protocol || '').toLowerCase())) {
+      throw new Error('invalid protocol');
+    }
+    normalizedUrl = parsed.toString();
+  } catch {
+    throw new Error('x-reader task requires a valid http/https url.');
+  }
+
+  const rawMode = String(input.mode || input.source || 'auto').trim().toLowerCase();
+  if (!['auto', 'jina', 'xreader'].includes(rawMode)) {
+    throw new Error('x-reader task mode must be one of auto/jina/xreader.');
+  }
+  const maxCharsRaw = Number(input.maxChars ?? input.maxLength ?? X_READER_MAX_CHARS_DEFAULT);
+  const maxChars = Number.isFinite(maxCharsRaw)
+    ? Math.max(200, Math.min(Math.round(maxCharsRaw), 8000))
+    : X_READER_MAX_CHARS_DEFAULT;
+
+  return {
+    url: normalizedUrl,
+    mode: rawMode === 'xreader' ? 'auto' : rawMode,
+    maxChars
+  };
+}
+
 async function fetchJsonWithTimeout(url, timeoutMs = 8000, options = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -1414,6 +1466,111 @@ async function fetchJsonWithTimeout(url, timeoutMs = 8000, options = {}) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function fetchTextWithTimeout(url, timeoutMs = 8000, options = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const method = String(options?.method || 'GET').trim().toUpperCase() || 'GET';
+    const headers = options?.headers || {};
+    const reqInit = {
+      method,
+      headers,
+      signal: controller.signal
+    };
+    if (options?.body !== undefined) {
+      reqInit.body = options.body;
+    }
+    const resp = await fetch(url, reqInit);
+    if (!resp.ok) {
+      throw new Error(`HTTP ${resp.status}`);
+    }
+    return await resp.text();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function extractXReaderDigest(rawText = '', maxChars = X_READER_MAX_CHARS_DEFAULT) {
+  const normalized = String(rawText || '').replace(/\r/g, '').trim();
+  if (!normalized) {
+    return {
+      title: '',
+      excerpt: ''
+    };
+  }
+  const lines = normalized
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const contentLines = lines.filter((line) => {
+    const lower = line.toLowerCase();
+    if (lower.startsWith('url source:')) return false;
+    if (lower.startsWith('markdown content:')) return false;
+    return true;
+  });
+  const title =
+    contentLines.find((line) => {
+      const lower = line.toLowerCase();
+      if (lower.startsWith('title:')) return false;
+      if (line.length < 6) return false;
+      return true;
+    }) || '';
+  const excerpt = contentLines.join('\n').slice(0, maxChars);
+  return {
+    title: String(title || '').replace(/^title:\s*/i, '').trim(),
+    excerpt
+  };
+}
+
+async function fetchXReaderFromJina(url = '', maxChars = X_READER_MAX_CHARS_DEFAULT) {
+  const target = String(url || '').trim().replace(/^https?:\/\//i, '');
+  const readerUrl = `https://r.jina.ai/http://${target}`;
+  const text = await fetchTextWithTimeout(readerUrl, X_READER_TIMEOUT_MS);
+  const digest = extractXReaderDigest(text, maxChars);
+  if (!digest.excerpt) {
+    throw new Error('empty x-reader response');
+  }
+  return {
+    provider: 'x-reader',
+    backend: 'jina',
+    url: String(url || '').trim(),
+    title: digest.title || '',
+    excerpt: digest.excerpt,
+    contentLength: digest.excerpt.length,
+    fetchedAt: new Date().toISOString()
+  };
+}
+
+async function fetchXReaderDigest(params = {}) {
+  const task = normalizeXReaderParams(params);
+  const attemptedProviders = [];
+  const failures = [];
+  const providers = ['jina'];
+
+  for (const provider of providers) {
+    attemptedProviders.push(provider);
+    try {
+      let reader = null;
+      if (provider === 'jina') {
+        reader = await fetchXReaderFromJina(task.url, task.maxChars);
+      }
+      if (!reader?.excerpt) {
+        throw new Error('empty excerpt');
+      }
+      return {
+        ...reader,
+        mode: task.mode,
+        maxChars: task.maxChars,
+        sourceRequested: task.mode,
+        attemptedProviders
+      };
+    } catch (error) {
+      failures.push(`${provider}:${error?.message || 'failed'}`);
+    }
+  }
+  throw new Error(`x_reader_unavailable (${failures.join(', ') || 'no provider'})`);
 }
 
 async function fetchBtcFromHyperliquid() {
@@ -1528,8 +1685,8 @@ function createServiceId() {
 
 function normalizeServiceAction(actionRaw = '') {
   const action = String(actionRaw || 'btc-price-feed').trim().toLowerCase();
-  if (!['btc-price-feed', 'risk-score-feed'].includes(action)) {
-    throw new Error('Supported service actions: btc-price-feed, risk-score-feed.');
+  if (!['btc-price-feed', 'risk-score-feed', 'x-reader-feed'].includes(action)) {
+    throw new Error('Supported service actions: btc-price-feed, risk-score-feed, x-reader-feed.');
   }
   return action;
 }
@@ -1551,13 +1708,27 @@ function normalizeStringList(input, { lower = false, dedup = true } = {}) {
 function sanitizeServiceRecord(input = {}, existing = null) {
   const now = new Date().toISOString();
   const action = normalizeServiceAction(input.action || existing?.action || 'btc-price-feed');
+  const isRisk = action === 'risk-score-feed';
+  const isXReader = action === 'x-reader-feed';
   const normalizedTask =
-    action === 'risk-score-feed'
+    isRisk
       ? normalizeRiskScoreParams({
           symbol: input.pair || input.symbol || existing?.pair || 'BTCUSDT',
           source: input.source || existing?.source || 'hyperliquid',
           horizonMin: input.horizonMin ?? existing?.horizonMin ?? 60
         })
+      : isXReader
+        ? normalizeXReaderParams({
+            url:
+              input.resourceUrl ||
+              input.url ||
+              existing?.resourceUrl ||
+              existing?.url ||
+              existing?.exampleInput?.url ||
+              '',
+            mode: input.mode || input.source || existing?.mode || existing?.source || 'auto',
+            maxChars: input.maxChars ?? existing?.maxChars ?? existing?.exampleInput?.maxChars ?? X_READER_MAX_CHARS_DEFAULT
+          })
       : normalizeBtcPriceParams({
           pair: input.pair || existing?.pair || 'BTCUSDT',
           source: input.source || existing?.source || 'hyperliquid'
@@ -1574,10 +1745,17 @@ function sanitizeServiceRecord(input = {}, existing = null) {
   if (!Number.isFinite(priceRaw) || priceRaw <= 0) {
     throw new Error('service price must be a valid positive number');
   }
-  const name = String(input.name || existing?.name || '').trim() || 'BTCUSD Quote Service';
-  const description = String(input.description || existing?.description || '').trim() || 'Pay-per-call BTCUSD quote service.';
+  const name =
+    String(input.name || existing?.name || '').trim() ||
+    (isXReader ? 'X Reader Digest Service' : 'BTCUSD Quote Service');
+  const description =
+    String(input.description || existing?.description || '').trim() ||
+    (isXReader ? 'Pay-per-call URL digest powered by x-reader + x402.' : 'Pay-per-call BTCUSD quote service.');
   const providerAgentId = String(input.providerAgentId || existing?.providerAgentId || KITE_AGENT2_ID).trim();
-  const tags = normalizeStringList(input.tags || existing?.tags || ['atapi', 'x402', action], { lower: true, dedup: true });
+  const tags = normalizeStringList(
+    input.tags || existing?.tags || (isXReader ? ['atapi', 'x402', 'x-reader'] : ['atapi', 'x402', action]),
+    { lower: true, dedup: true }
+  );
   const allowlistPayers = normalizeAddresses(input.allowlistPayers || existing?.allowlistPayers || []);
   const slaMsRaw = Number(input.slaMs ?? existing?.slaMs ?? 12000);
   const rateLimitPerMinuteRaw = Number(input.rateLimitPerMinute ?? existing?.rateLimitPerMinute ?? 12);
@@ -1585,10 +1763,12 @@ function sanitizeServiceRecord(input = {}, existing = null) {
   const exampleInput =
     input.exampleInput && typeof input.exampleInput === 'object'
       ? input.exampleInput
-      : existing?.exampleInput && typeof existing.exampleInput === 'object'
+        : existing?.exampleInput && typeof existing.exampleInput === 'object'
         ? existing.exampleInput
-        : action === 'risk-score-feed'
+        : isRisk
           ? { symbol: 'BTCUSDT', horizonMin: 60, source: 'hyperliquid' }
+          : isXReader
+            ? { url: 'https://x.com/Kite_AI', mode: 'auto', maxChars: X_READER_MAX_CHARS_DEFAULT }
           : { pair: 'BTCUSDT', source: 'hyperliquid' };
   const activeInput = input.active;
   const active =
@@ -1603,10 +1783,12 @@ function sanitizeServiceRecord(input = {}, existing = null) {
     name,
     description,
     action,
-    pair: normalizedTask.pair,
-    source: normalizedTask.source,
-    sourceRequested: normalizedTask.sourceRequested,
+    pair: normalizedTask.pair || '',
+    source: normalizedTask.source || normalizedTask.mode || 'auto',
+    sourceRequested: normalizedTask.sourceRequested || normalizedTask.mode || 'auto',
     horizonMin: normalizedTask.horizonMin || null,
+    resourceUrl: normalizedTask.url || '',
+    maxChars: normalizedTask.maxChars || null,
     providerAgentId,
     recipient,
     tokenAddress,
@@ -1676,13 +1858,60 @@ function createDefaultServiceCatalog() {
       createdAt: now,
       updatedAt: now,
       publishedBy: 'system'
+    },
+    {
+      id: 'svc_x_reader_digest',
+      name: 'X Reader Digest (ATAPI)',
+      description: 'Agent-to-API URL digest via x-reader + ERC8004 + x402 payment.',
+      action: 'x-reader-feed',
+      pair: '',
+      source: 'auto',
+      sourceRequested: 'auto',
+      resourceUrl: 'https://x.com/Kite_AI',
+      maxChars: X_READER_MAX_CHARS_DEFAULT,
+      providerAgentId: String(KITE_AGENT2_ID).trim(),
+      recipient: normalizeAddress(KITE_AGENT2_AA_ADDRESS),
+      tokenAddress: normalizeAddress(SETTLEMENT_TOKEN),
+      price: String(Number(Number(X402_X_READER_PRICE || '0.00001').toFixed(6))),
+      tags: ['atapi', 'x402', 'x-reader', 'digest'],
+      slaMs: 15000,
+      rateLimitPerMinute: 8,
+      budgetPerDay: 0.05,
+      allowlistPayers: [],
+      exampleInput: { url: 'https://x.com/Kite_AI', mode: 'auto', maxChars: X_READER_MAX_CHARS_DEFAULT },
+      active: true,
+      createdAt: now,
+      updatedAt: now,
+      publishedBy: 'system'
     }
   ];
 }
 
+function mergeBuiltinServices(rows = []) {
+  const list = Array.isArray(rows) ? [...rows] : [];
+  const defaults = createDefaultServiceCatalog();
+  let changed = false;
+  for (const service of defaults) {
+    const id = String(service?.id || '').trim();
+    if (!id) continue;
+    const exists = list.some((item) => String(item?.id || '').trim() === id);
+    if (!exists) {
+      list.push(service);
+      changed = true;
+    }
+  }
+  return { rows: list, changed };
+}
+
 function ensureServiceCatalog() {
   const rows = readPublishedServices();
-  if (Array.isArray(rows) && rows.length > 0) return rows;
+  if (Array.isArray(rows) && rows.length > 0) {
+    const merged = mergeBuiltinServices(rows);
+    if (merged.changed) {
+      writePublishedServices(merged.rows);
+    }
+    return merged.rows;
+  }
   const seed = createDefaultServiceCatalog();
   writePublishedServices(seed);
   return seed;
@@ -1940,6 +2169,16 @@ function buildA2ACapabilities() {
           source: 'hyperliquid (fallback: binance, okx)'
         },
         price: X402_RISK_SCORE_PRICE,
+        recipient: KITE_AGENT2_AA_ADDRESS
+      },
+      {
+        id: 'x-reader-feed',
+        input: {
+          url: 'string (http/https)',
+          mode: 'auto/jina',
+          maxChars: 'number 200-8000'
+        },
+        price: X402_X_READER_PRICE,
         recipient: KITE_AGENT2_AA_ADDRESS
       },
       {
@@ -4041,6 +4280,212 @@ app.post('/api/workflow/risk-score/run', requireRole('agent'), async (req, res) 
   }
 });
 
+app.post('/api/workflow/x-reader/run', requireRole('agent'), async (req, res) => {
+  let normalizedTask = null;
+  try {
+    normalizedTask = normalizeXReaderParams({
+      url: req.body?.url || req.body?.resourceUrl,
+      mode: req.body?.mode || req.body?.source || 'auto',
+      maxChars: req.body?.maxChars ?? X_READER_MAX_CHARS_DEFAULT
+    });
+  } catch (error) {
+    return res.status(400).json({
+      ok: false,
+      error: 'invalid_task',
+      reason: error?.message || 'invalid task'
+    });
+  }
+
+  const sourceAgentId = String(req.body?.sourceAgentId || KITE_AGENT1_ID).trim();
+  const targetAgentId = String(req.body?.targetAgentId || KITE_AGENT2_ID).trim();
+  const traceId = resolveWorkflowTraceId(req.body?.traceId);
+  const runtime = readSessionRuntime();
+  const payer = normalizeAddress(req.body?.payer || runtime.aaWallet || '');
+  const workflow = {
+    traceId,
+    type: 'x-reader',
+    state: 'running',
+    sourceAgentId,
+    targetAgentId,
+    payer,
+    input: normalizedTask,
+    requestId: '',
+    txHash: '',
+    userOpHash: '',
+    steps: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  upsertWorkflow(workflow);
+  broadcastEvent('workflow_started', { traceId, state: workflow.state, input: workflow.input });
+
+  try {
+    const challengeResult = await handleA2AXReader({
+      payer,
+      sourceAgentId,
+      targetAgentId,
+      traceId,
+      task: normalizedTask
+    });
+    if (challengeResult.status !== 402) {
+      throw new Error(
+        challengeResult?.body?.reason ||
+          challengeResult?.body?.error ||
+          `Expected 402 challenge, got ${challengeResult.status}`
+      );
+    }
+    const challenge = challengeResult.body?.x402;
+    const requestId = String(challenge?.requestId || '').trim();
+    const accept = Array.isArray(challenge?.accepts) ? challenge.accepts[0] : null;
+    if (!requestId || !accept?.tokenAddress || !accept?.recipient || !accept?.amount) {
+      throw new Error('Malformed x402 challenge payload.');
+    }
+    workflow.requestId = requestId;
+    appendWorkflowStep(workflow, 'challenge_issued', 'ok', {
+      requestId,
+      amount: accept.amount,
+      recipient: accept.recipient
+    });
+    broadcastEvent('challenge_issued', {
+      traceId,
+      requestId,
+      amount: accept.amount,
+      recipient: accept.recipient,
+      url: normalizedTask.url
+    });
+    workflow.updatedAt = new Date().toISOString();
+    upsertWorkflow(workflow);
+
+    let payBody = {};
+    try {
+      const pay = await postSessionPayWithRetry(
+        {
+          tokenAddress: accept.tokenAddress,
+          recipient: accept.recipient,
+          amount: accept.amount,
+          requestId,
+          action: 'x-reader-feed',
+          query: `ATAPI x-reader ${normalizedTask.url}`
+        },
+        { maxAttempts: 3, timeoutMs: 210_000 }
+      );
+      payBody = pay.body || {};
+    } catch (error) {
+      payBody = error?.payBody || {};
+      throw new Error(payBody?.reason || payBody?.error || error?.message || 'session pay failed');
+    }
+    const txHash = String(payBody?.payment?.txHash || '').trim();
+    const userOpHash = String(payBody?.payment?.userOpHash || '').trim();
+    if (!txHash) throw new Error('session pay returned empty txHash.');
+    workflow.txHash = txHash;
+    workflow.userOpHash = userOpHash;
+    appendWorkflowStep(workflow, 'payment_sent', 'ok', { txHash, userOpHash });
+    broadcastEvent('payment_sent', {
+      traceId,
+      requestId,
+      txHash,
+      userOpHash,
+      url: normalizedTask.url
+    });
+    workflow.updatedAt = new Date().toISOString();
+    upsertWorkflow(workflow);
+
+    const proofResult = await handleA2AXReader({
+      payer,
+      sourceAgentId,
+      targetAgentId,
+      traceId,
+      requestId,
+      paymentProof: {
+        requestId,
+        txHash,
+        payer,
+        tokenAddress: accept.tokenAddress,
+        recipient: accept.recipient,
+        amount: accept.amount
+      },
+      task: normalizedTask
+    });
+    if (proofResult.status !== 200) {
+      throw new Error(
+        proofResult?.body?.reason || proofResult?.body?.error || `proof submit failed: ${proofResult.status}`
+      );
+    }
+    appendWorkflowStep(workflow, 'proof_submitted', 'ok', { verified: true });
+    broadcastEvent('proof_submitted', { traceId, requestId, verified: true });
+    appendWorkflowStep(workflow, 'unlocked', 'ok', {
+      result: proofResult?.body?.result?.summary || ''
+    });
+    broadcastEvent('unlocked', {
+      traceId,
+      requestId,
+      txHash,
+      summary: proofResult?.body?.result?.summary || '',
+      reader: proofResult?.body?.result?.reader || null,
+      url: normalizedTask.url
+    });
+    workflow.state = 'unlocked';
+    workflow.result = proofResult?.body?.result || null;
+    workflow.updatedAt = new Date().toISOString();
+    upsertWorkflow(workflow);
+
+    return res.json({
+      ok: true,
+      traceId,
+      requestId,
+      txHash,
+      userOpHash,
+      state: workflow.state,
+      workflow,
+      receipt: proofResult?.body?.receipt || null
+    });
+  } catch (error) {
+    appendWorkflowStep(workflow, 'failed', 'error', { reason: error.message });
+    broadcastEvent('failed', {
+      traceId,
+      state: 'failed',
+      reason: error.message,
+      code: error?.code || 'workflow_failed'
+    });
+    workflow.state = 'failed';
+    workflow.error = error.message;
+    workflow.updatedAt = new Date().toISOString();
+    upsertWorkflow(workflow);
+    return res.status(500).json({
+      ok: false,
+      traceId,
+      state: workflow.state,
+      error: 'workflow_failed',
+      reason: error.message,
+      workflow,
+      receipt:
+        workflow.requestId && workflow.sourceAgentId && workflow.targetAgentId
+          ? buildA2AReceipt(
+              {
+                requestId: workflow.requestId,
+                status: 'pending',
+                action: 'x-reader-feed',
+                query: `ATAPI x-reader ${workflow?.input?.url || ''}`.trim(),
+                payer: workflow.payer || '',
+                amount: String(X402_X_READER_PRICE || ''),
+                tokenAddress: SETTLEMENT_TOKEN,
+                recipient: KITE_AGENT2_AA_ADDRESS,
+                paymentTxHash: workflow.txHash || '',
+                a2a: {
+                  sourceAgentId: workflow.sourceAgentId,
+                  targetAgentId: workflow.targetAgentId,
+                  taskType: 'x-reader-feed',
+                  traceId
+                }
+              },
+              workflow,
+              { state: 'failed', phase: 'failed', error: error.message, traceId }
+            )
+          : null
+    });
+  }
+});
+
 app.get('/api/workflow/:traceId', requireRole('viewer'), (req, res) => {
   const traceId = String(req.params.traceId || '').trim();
   if (!traceId) {
@@ -4871,6 +5316,258 @@ async function handleA2ARiskScore(body = {}) {
   };
 }
 
+async function handleA2AXReader(body = {}) {
+  const payer = String(body.payer || '').trim();
+  const sourceAgentId = String(body.sourceAgentId || KITE_AGENT1_ID).trim();
+  const targetAgentId = String(body.targetAgentId || KITE_AGENT2_ID).trim();
+  const traceId = String(body.traceId || '').trim();
+  const requestId = String(body.requestId || '').trim();
+  const paymentProof = body.paymentProof;
+  const taskInput = body.task || {};
+  const identityInput = body.identity || {};
+
+  let task = null;
+  try {
+    task = normalizeXReaderParams({
+      url: body.url || taskInput.url || taskInput.resourceUrl,
+      mode: body.mode || body.source || taskInput.mode || taskInput.source || 'auto',
+      maxChars: body.maxChars ?? taskInput.maxChars ?? X_READER_MAX_CHARS_DEFAULT
+    });
+  } catch (error) {
+    return {
+      status: 400,
+      body: {
+        error: 'invalid_task',
+        reason: error.message
+      }
+    };
+  }
+
+  const actionCfg = getActionConfig('x-reader-feed');
+  const actionAmount = String(actionCfg?.amount || X402_X_READER_PRICE || '0.00001');
+  const requests = readX402Requests();
+  const a2aQuery = `ATAPI x-reader ${task.url}`;
+
+  if (!requestId || !paymentProof) {
+    let identityVerification = null;
+    try {
+      identityVerification = await ensureWorkflowIdentityVerified({
+        traceId,
+        identityInput
+      });
+    } catch (error) {
+      return {
+        status: 400,
+        body: {
+          error: 'identity_verification_failed',
+          reason: error?.message || 'identity verification failed'
+        }
+      };
+    }
+
+    const policyResult = evaluateTransferPolicy({
+      payer,
+      recipient: actionCfg.recipient,
+      amount: actionAmount,
+      requests
+    });
+    if (!policyResult.ok) {
+      logPolicyFailure({
+        action: 'a2a-x-reader-feed',
+        payer,
+        recipient: actionCfg.recipient,
+        amount: actionAmount,
+        code: policyResult.code,
+        message: policyResult.message,
+        evidence: policyResult.evidence
+      });
+      return {
+        status: 403,
+        body: {
+          error: policyResult.code,
+          reason: policyResult.message,
+          evidence: policyResult.evidence
+        }
+      };
+    }
+
+    const reqItem = createX402Request(a2aQuery, payer, actionCfg.action, {
+      amount: actionAmount,
+      recipient: actionCfg.recipient,
+      policy: {
+        decision: 'allowed',
+        snapshot: buildPolicySnapshot(),
+        evidence: policyResult.evidence
+      },
+      identity: identityVerification?.identity
+    });
+    reqItem.actionParams = task;
+    reqItem.a2a = {
+      sourceAgentId,
+      targetAgentId,
+      taskType: 'x-reader-feed',
+      traceId
+    };
+    requests.unshift(reqItem);
+    writeX402Requests(requests);
+    const receipt = buildA2AReceipt(reqItem, null, {
+      traceId,
+      phase: 'payment_required',
+      state: 'running'
+    });
+
+    return {
+      status: 402,
+      body: {
+        ...buildPaymentRequiredResponse(reqItem),
+        a2a: {
+          protocol: 'x402-a2a-v1',
+          sourceAgentId,
+          targetAgentId,
+          taskType: 'x-reader-feed',
+          task,
+          identity: identityVerification?.identity || null
+        },
+        receipt
+      }
+    };
+  }
+
+  const reqItem = requests.find((item) => item.requestId === requestId);
+  if (!reqItem) {
+    return {
+      status: 402,
+      body: {
+        error: 'payment_required',
+        reason: 'request not found'
+      }
+    };
+  }
+
+  if (Date.now() > reqItem.expiresAt) {
+    reqItem.status = 'expired';
+    writeX402Requests(requests);
+    return {
+      status: 402,
+      body: buildPaymentRequiredResponse(reqItem, 'request expired')
+    };
+  }
+
+  if (reqItem.status === 'paid') {
+    let reader = reqItem?.result?.reader || null;
+    if (!reader) {
+      try {
+        reader = await fetchXReaderDigest(reqItem.actionParams || task);
+      } catch {
+        reader = null;
+      }
+    }
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        mode: 'x402',
+        requestId: reqItem.requestId,
+        reused: true,
+        result: {
+          summary: reqItem?.result?.summary || 'ATAPI x-reader digest already unlocked',
+          reader
+        },
+        a2a: reqItem.a2a || null,
+        receipt: buildA2AReceipt(reqItem, null, {
+          traceId,
+          sourceAgentId,
+          targetAgentId,
+          capability: 'x-reader-feed',
+          phase: 'settled',
+          state: 'success',
+          summary: reqItem?.result?.summary || 'ATAPI x-reader digest already unlocked'
+        })
+      }
+    };
+  }
+
+  const validationError = validatePaymentProof(reqItem, paymentProof);
+  if (validationError) {
+    return {
+      status: 402,
+      body: buildPaymentRequiredResponse(reqItem, validationError)
+    };
+  }
+
+  const verification = await verifyProofOnChain(reqItem, paymentProof);
+  if (!verification.ok) {
+    return {
+      status: 402,
+      body: buildPaymentRequiredResponse(reqItem, `on-chain proof verification failed: ${verification.reason}`)
+    };
+  }
+
+  const reader = await fetchXReaderDigest(reqItem.actionParams || task);
+  const summaryTail = reader.title || reader.url || 'x-reader digest';
+
+  reqItem.status = 'paid';
+  reqItem.paidAt = Date.now();
+  reqItem.paymentTxHash = paymentProof.txHash;
+  reqItem.paymentProof = {
+    requestId: paymentProof.requestId,
+    txHash: paymentProof.txHash,
+    payer: paymentProof.payer || '',
+    tokenAddress: paymentProof.tokenAddress,
+    recipient: paymentProof.recipient,
+    amount: paymentProof.amount
+  };
+  reqItem.proofVerification = {
+    mode: 'onchain_transfer_log',
+    verifiedAt: Date.now(),
+    details: verification.details || null
+  };
+  reqItem.a2a = {
+    ...(reqItem.a2a || {}),
+    sourceAgentId: String(reqItem?.a2a?.sourceAgentId || sourceAgentId).trim(),
+    targetAgentId: String(reqItem?.a2a?.targetAgentId || targetAgentId).trim(),
+    taskType: String(reqItem?.a2a?.taskType || 'x-reader-feed').trim(),
+    traceId: String(reqItem?.a2a?.traceId || traceId).trim()
+  };
+  reqItem.result = {
+    summary: `ATAPI x-reader digest unlocked by x402 payment: ${summaryTail}`,
+    reader
+  };
+  writeX402Requests(requests);
+
+  const receipt = buildA2AReceipt(reqItem, null, {
+    traceId: reqItem?.a2a?.traceId || traceId,
+    sourceAgentId,
+    targetAgentId,
+    capability: 'x-reader-feed',
+    phase: 'settled',
+    state: 'success',
+    summary: reqItem?.result?.summary || summaryTail
+  });
+
+  return {
+    status: 200,
+    body: {
+      ok: true,
+      mode: 'x402',
+      requestId: reqItem.requestId,
+      payment: {
+        txHash: paymentProof.txHash,
+        amount: reqItem.amount,
+        tokenAddress: reqItem.tokenAddress,
+        recipient: reqItem.recipient
+      },
+      result: reqItem.result,
+      a2a: reqItem.a2a || {
+        sourceAgentId,
+        targetAgentId,
+        taskType: 'x-reader-feed'
+      },
+      receipt
+    }
+  };
+}
+
 async function handleA2AStopOrders(body = {}) {
   const payer = String(body.payer || '').trim();
   const sourceAgentId = String(body.sourceAgentId || KITE_AGENT1_ID).trim();
@@ -5159,6 +5856,19 @@ app.post('/api/a2a/tasks/risk-score', requireRole('agent'), async (req, res) => 
   }
 });
 
+app.post('/api/a2a/tasks/x-reader', requireRole('agent'), async (req, res) => {
+  try {
+    const result = await handleA2AXReader(req.body);
+    return res.status(result.status).json(result.body);
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: 'a2a_x_reader_handler_failed',
+      reason: error.message || 'Unknown error'
+    });
+  }
+});
+
 app.get('/api/skill/openclaw/manifest', (req, res) => {
   return res.json({
     ok: true,
@@ -5338,6 +6048,16 @@ app.post('/api/x402/kol-score', requireRole('agent'), async (req, res) => {
       });
     }
   }
+  if (actionCfg.action === 'x-reader-feed') {
+    try {
+      normalizedActionParams = normalizeXReaderParams(actionParamsInput || {});
+    } catch (error) {
+      return res.status(400).json({
+        error: 'invalid_x_reader_params',
+        reason: error.message
+      });
+    }
+  }
   const amountToCharge =
     actionCfg.action === 'reactive-stop-orders'
       ? computeReactiveStopOrderAmount(normalizedActionParams || {})
@@ -5457,6 +6177,20 @@ app.post('/api/x402/kol-score', requireRole('agent'), async (req, res) => {
         summary: 'BTC risk score already unlocked'
       };
     }
+    if (reqItem.action === 'x-reader-feed') {
+      let reader = reqItem?.result?.reader || null;
+      if (!reader) {
+        try {
+          reader = await fetchXReaderDigest(reqItem.actionParams || {});
+        } catch {
+          reader = null;
+        }
+      }
+      paidResult = {
+        summary: reqItem?.result?.summary || 'x-reader digest already unlocked',
+        reader
+      };
+    }
     return res.json({
       ok: true,
       mode: 'x402',
@@ -5522,6 +6256,13 @@ app.post('/api/x402/kol-score', requireRole('agent'), async (req, res) => {
   if (reqItem.action === 'risk-score-feed') {
     const riskResult = await runRiskScoreAnalysis(reqItem.actionParams || {});
     finalResult = riskResult;
+  }
+  if (reqItem.action === 'x-reader-feed') {
+    const reader = await fetchXReaderDigest(reqItem.actionParams || {});
+    finalResult = {
+      summary: `x-reader digest unlocked by x402 payment: ${reader.title || reader.url}`,
+      reader
+    };
   }
   reqItem.result = finalResult;
   writeX402Requests(requests);
@@ -5806,11 +6547,11 @@ app.post('/api/services/:serviceId/invoke', requireRole('agent'), async (req, re
     return res.status(409).json({ ok: false, error: 'service_inactive', reason: 'Service is not active.' });
   }
   const action = String(service.action || '').trim().toLowerCase();
-  if (!['btc-price-feed', 'risk-score-feed'].includes(action)) {
+  if (!['btc-price-feed', 'risk-score-feed', 'x-reader-feed'].includes(action)) {
     return res.status(400).json({
       ok: false,
       error: 'unsupported_service_action',
-      reason: 'Supported action: btc-price-feed, risk-score-feed.'
+      reason: 'Supported action: btc-price-feed, risk-score-feed, x-reader-feed.'
     });
   }
 
@@ -5874,6 +6615,16 @@ app.post('/api/services/:serviceId/invoke', requireRole('agent'), async (req, re
             source: service.source || 'hyperliquid',
             payer
           }
+        : action === 'x-reader-feed'
+          ? {
+              traceId,
+              sourceAgentId,
+              targetAgentId,
+              url: service.resourceUrl || service.exampleInput?.url || body.url || '',
+              mode: service.source || service.mode || 'auto',
+              maxChars: Number(service.maxChars || service.exampleInput?.maxChars || X_READER_MAX_CHARS_DEFAULT),
+              payer
+            }
         : {
             traceId,
             sourceAgentId,
@@ -5882,7 +6633,12 @@ app.post('/api/services/:serviceId/invoke', requireRole('agent'), async (req, re
             source: service.source || 'hyperliquid',
             payer
           };
-    const workflowPath = action === 'risk-score-feed' ? '/api/workflow/risk-score/run' : '/api/workflow/btc-price/run';
+    const workflowPath =
+      action === 'risk-score-feed'
+        ? '/api/workflow/risk-score/run'
+        : action === 'x-reader-feed'
+          ? '/api/workflow/x-reader/run'
+          : '/api/workflow/btc-price/run';
 
     const resp = await fetch(`http://127.0.0.1:${PORT}${workflowPath}`, {
       method: 'POST',
