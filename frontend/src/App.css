@@ -146,6 +146,11 @@ body {
   color: #8d2d1f;
 }
 
+.receipt-btn {
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
 .error-banner {
   margin: 12px 0 0;
   border: 1px solid rgba(212, 79, 58, 0.4);

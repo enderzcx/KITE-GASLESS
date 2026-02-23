@@ -1972,6 +1972,57 @@ function toSafeNumber(value) {
   return Number.isFinite(n) ? n : NaN;
 }
 
+function stableSerialize(value) {
+  if (value === null || value === undefined) return 'null';
+  if (typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableSerialize(item)).join(',')}]`;
+  }
+  const entries = Object.entries(value)
+    .filter(([, v]) => v !== undefined)
+    .sort(([a], [b]) => a.localeCompare(b));
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableSerialize(v)}`).join(',')}}`;
+}
+
+function buildResponseHash(requestId = '', action = '', resultPayload = {}) {
+  const envelope = {
+    requestId: String(requestId || '').trim(),
+    action: String(action || '').trim().toLowerCase(),
+    result: resultPayload && typeof resultPayload === 'object' ? resultPayload : {}
+  };
+  const canonical = stableSerialize(envelope);
+  const responseHash = ethers.keccak256(ethers.toUtf8Bytes(canonical));
+  return { envelope, canonical, responseHash };
+}
+
+async function signResponseHash(hash = '') {
+  const normalized = String(hash || '').trim();
+  if (!/^0x[0-9a-fA-F]{64}$/.test(normalized) || !backendSigner) {
+    return {
+      signature: '',
+      signer: backendSigner?.address || '',
+      scheme: 'personal_sign',
+      available: Boolean(backendSigner)
+    };
+  }
+  try {
+    const signature = await backendSigner.signMessage(ethers.getBytes(normalized));
+    return {
+      signature: String(signature || '').trim(),
+      signer: backendSigner.address,
+      scheme: 'personal_sign',
+      available: true
+    };
+  } catch {
+    return {
+      signature: '',
+      signer: backendSigner?.address || '',
+      scheme: 'personal_sign',
+      available: Boolean(backendSigner)
+    };
+  }
+}
+
 function getUtcDateKey(ms) {
   const d = new Date(ms);
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(
@@ -4194,6 +4245,96 @@ app.get('/api/evidence/export', requireRole('viewer'), (req, res) => {
   };
 
   return res.json({ ok: true, traceId, evidence: exportPayload });
+});
+
+app.get('/api/receipt/:requestId', requireRole('viewer'), async (req, res) => {
+  const requestId = String(req.params.requestId || '').trim();
+  if (!requestId) {
+    return res.status(400).json({ ok: false, error: 'requestId_required' });
+  }
+  const requests = readX402Requests();
+  const reqItem = requests.find((item) => String(item?.requestId || '').trim() === requestId);
+  if (!reqItem) {
+    return res.status(404).json({ ok: false, error: 'request_not_found', requestId });
+  }
+
+  const workflowByRequestId = buildLatestWorkflowByRequestId(readWorkflows());
+  const workflow = workflowByRequestId.get(requestId) || null;
+  const action = String(reqItem?.action || workflow?.type || '').trim().toLowerCase();
+  const resultPayload = (workflow?.result && typeof workflow.result === 'object' ? workflow.result : null) ||
+    (reqItem?.result && typeof reqItem.result === 'object' ? reqItem.result : {}) ||
+    {};
+  const { responseHash } = buildResponseHash(requestId, action, resultPayload);
+  const signatureBundle = await signResponseHash(responseHash);
+
+  const txHash = String(reqItem?.paymentTxHash || reqItem?.paymentProof?.txHash || workflow?.txHash || '').trim();
+  const block = reqItem?.proofVerification?.details?.blockNumber ?? '-';
+  const onchainStatus =
+    reqItem?.proofVerification
+      ? 'success'
+      : ['failed', 'expired', 'rejected', 'error'].includes(String(reqItem?.status || '').trim().toLowerCase())
+        ? 'failed'
+        : 'pending';
+  const explorer = txHash ? `https://testnet.kitescan.ai/tx/${txHash}` : '';
+  const flow =
+    String(reqItem?.a2a?.sourceAgentId || '').trim() && String(reqItem?.a2a?.targetAgentId || '').trim()
+      ? 'a2a+x402'
+      : 'agent-to-api+x402';
+
+  const receiptPayload = {
+    version: 'kiteclaw-receipt-v1',
+    generatedAt: new Date().toISOString(),
+    requestId,
+    workflowTraceId: String(workflow?.traceId || reqItem?.a2a?.traceId || '').trim(),
+    action,
+    flow,
+    identity: {
+      agentId: reqItem?.identity?.agentId || '',
+      registry: reqItem?.identity?.registry || '',
+      wallet: reqItem?.identity?.agentWallet || ''
+    },
+    payment: {
+      amount: String(reqItem?.amount || '').trim(),
+      tokenAddress: String(reqItem?.tokenAddress || '').trim(),
+      payer: String(reqItem?.payer || workflow?.payer || '').trim(),
+      payee: String(reqItem?.recipient || '').trim(),
+      txHash,
+      userOpHash: String(workflow?.userOpHash || '').trim(),
+      settledAt: Number(reqItem?.paidAt || 0) > 0 ? new Date(Number(reqItem.paidAt)).toISOString() : ''
+    },
+    onchainConfirmation: {
+      txHash,
+      block,
+      status: onchainStatus,
+      explorer,
+      mode: reqItem?.proofVerification?.mode || 'onchain_transfer_log',
+      verifiedAt:
+        Number(reqItem?.proofVerification?.verifiedAt || 0) > 0
+          ? new Date(Number(reqItem.proofVerification.verifiedAt)).toISOString()
+          : ''
+    },
+    apiResult: {
+      summary: String(resultPayload?.summary || '').trim(),
+      payload: resultPayload,
+      responseHash,
+      responseSignature: signatureBundle.signature,
+      signer: signatureBundle.signer,
+      signatureScheme: signatureBundle.scheme,
+      signatureAvailable: signatureBundle.available
+    }
+  };
+
+  const shouldDownload = /^(1|true|yes|download)$/i.test(String(req.query.download || '').trim());
+  if (shouldDownload) {
+    const fileName = `kiteclaw_receipt_${requestId}.json`;
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename=\"${fileName}\"`);
+  }
+  return res.json({
+    ok: true,
+    traceId: req.traceId || '',
+    receipt: receiptPayload
+  });
 });
 
 app.get('/api/a2a/capabilities', (req, res) => {

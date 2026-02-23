@@ -687,6 +687,36 @@ function App() {
     }
   }, [invokePayer, loadServiceReceipts, loadSnapshot, loadTrace, selectedServiceId]);
 
+  const downloadReceipt = useCallback(async (requestIdRaw = '') => {
+    const requestId = String(requestIdRaw || '').trim();
+    if (!requestId) {
+      setErrorText('No requestId found for receipt download.');
+      return;
+    }
+    try {
+      setErrorText('');
+      const resp = await fetch(
+        resolveApiUrl(`/api/receipt/${encodeURIComponent(requestId)}`, { download: 1 }),
+        { headers: buildHeaders() }
+      );
+      if (!resp.ok) {
+        const payload = await resp.json().catch(() => ({}));
+        throw new Error(payload?.reason || payload?.error || `HTTP ${resp.status}`);
+      }
+      const blob = await resp.blob();
+      const objectUrl = window.URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = objectUrl;
+      anchor.download = `kiteclaw_receipt_${requestId}.json`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.URL.revokeObjectURL(objectUrl);
+    } catch (error) {
+      setErrorText(error?.message || 'Receipt download failed.');
+    }
+  }, []);
+
   useEffect(() => {
     void loadSnapshot();
     const timer = setInterval(() => {
@@ -927,6 +957,7 @@ function App() {
   const latestPoint = chartSeries.length > 0 ? chartSeries[chartSeries.length - 1] : null;
   const activePoint =
     hoverIndex >= 0 && hoverIndex < chartModel.points.length ? chartModel.points[hoverIndex] : latestPoint;
+  const currentRequestId = String(currentRequest?.requestId || currentWorkflow?.requestId || '').trim();
 
   const renderTraceList = () => {
     if (records.length === 0) {
@@ -1104,6 +1135,14 @@ function App() {
                       {quote ? `$${formatPrice(quote.priceUsd)}` : '-'}
                     </strong>
                     <span className="muted-text">{quote?.provider || '-'}</span>
+                    <button
+                      type="button"
+                      className="ghost-btn receipt-btn"
+                      onClick={() => void downloadReceipt(currentRequestId)}
+                      disabled={!currentRequestId}
+                    >
+                      Download Receipt
+                    </button>
                   </div>
                 ) : null}
                 {step.id === 'onchain' ? (
@@ -1259,6 +1298,16 @@ function App() {
               <p>price: {quote?.priceUsd ?? '-'}</p>
               <p>pair: {quote?.pair || 'BTCUSDT'}</p>
               <p>at: {formatTime(quote?.fetchedAt || '')}</p>
+              <p>
+                <button
+                  type="button"
+                  className="ghost-btn receipt-btn"
+                  onClick={() => void downloadReceipt(currentRequestId)}
+                  disabled={!currentRequestId}
+                >
+                  Download Receipt
+                </button>
+              </p>
             </article>
             <article className="evidence-card">
               <h3>Workflow</h3>

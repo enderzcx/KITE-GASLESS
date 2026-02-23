@@ -6,6 +6,18 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 
 ## [Unreleased]
 
+### Added
+- Receipt export API for judge-friendly proof bundles:
+  - `GET /api/receipt/:requestId`
+  - optional `?download=1` to download `kiteclaw_receipt_<requestId>.json`.
+- Receipt payload now includes:
+  - `amount/tokenAddress/payer/payee`
+  - `responseHash`
+  - `responseSignature` (when backend signer is available).
+
+### Changed
+- Demo and Ops UI now provide `Download Receipt` action from API result panels.
+
 ## [v1.8.0] - 2026-02-22
 
 ### Added

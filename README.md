@@ -46,6 +46,7 @@ Current Version: `v1.8.0`
 - BTC demo summary wording uses `ATAPI` for the paid quote path to avoid A2A naming confusion.
 - Verifiable agent identity (registry-backed)
 - Auditable settlement mapping (`requestId <-> txHash`)
+- Downloadable receipt JSON (`amount/token/payer/payee` + `responseHash` + `responseSignature`)
 - Service status + reputation:
   - status metrics (`successRate`, `avgConfirmSec`, `lastError`)
   - reputation score/grade from paid receipts and on-chain confirmations
@@ -113,6 +114,7 @@ Upgrade authority remains with each proxy owner; this project does not grant per
 - `GET /api/demo/trace-by-request/:requestId`
 - `GET /api/demo/stream` (SSE)
 - `GET /api/x402/mapping/latest`
+- `GET /api/receipt/:requestId`
 - `GET /api/market/btc/price`
 - `GET /api/services`
 - `GET /api/services/:serviceId`
