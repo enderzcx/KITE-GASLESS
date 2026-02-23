@@ -294,6 +294,7 @@ function App() {
   const [hoverIndex, setHoverIndex] = useState(-1);
   const [flyAnim, setFlyAnim] = useState(null);
   const [readerExpanded, setReaderExpanded] = useState(false);
+  const [readerCopied, setReaderCopied] = useState(false);
   const [services, setServices] = useState([]);
   const [selectedServiceId, setSelectedServiceId] = useState('');
   const [serviceReceipts, setServiceReceipts] = useState([]);
@@ -327,6 +328,7 @@ function App() {
   const flowPriceRef = useRef(null);
   const chartPriceRef = useRef(null);
   const traceFetchRef = useRef({ token: 0, traceId: '' });
+  const readerCopyTimerRef = useRef(null);
 
   const isOpsPage = route === 'ops';
   const isMarketPage = route === 'market';
@@ -395,7 +397,22 @@ function App() {
 
   useEffect(() => {
     setReaderExpanded(false);
+    setReaderCopied(false);
+    if (readerCopyTimerRef.current) {
+      clearTimeout(readerCopyTimerRef.current);
+      readerCopyTimerRef.current = null;
+    }
   }, [selectedTraceId]);
+
+  useEffect(
+    () => () => {
+      if (readerCopyTimerRef.current) {
+        clearTimeout(readerCopyTimerRef.current);
+        readerCopyTimerRef.current = null;
+      }
+    },
+    []
+  );
 
   useEffect(() => {
     if (!flyAnim?.id) return undefined;
@@ -723,6 +740,38 @@ function App() {
       window.URL.revokeObjectURL(objectUrl);
     } catch (error) {
       setErrorText(error?.message || 'Receipt download failed.');
+    }
+  }, []);
+
+  const copyReaderDigest = useCallback(async (textRaw = '') => {
+    const text = String(textRaw || '').trim();
+    if (!text) {
+      setErrorText('No digest text to copy.');
+      return;
+    }
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.setAttribute('readonly', 'readonly');
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        const ok = document.execCommand('copy');
+        textarea.remove();
+        if (!ok) throw new Error('clipboard_copy_failed');
+      }
+      setReaderCopied(true);
+      if (readerCopyTimerRef.current) clearTimeout(readerCopyTimerRef.current);
+      readerCopyTimerRef.current = setTimeout(() => {
+        setReaderCopied(false);
+        readerCopyTimerRef.current = null;
+      }, 1600);
+    } catch (error) {
+      setErrorText(error?.message || 'Failed to copy digest.');
     }
   }, []);
 
@@ -1320,13 +1369,20 @@ function App() {
                   <p className="reader-excerpt-label">excerpt:</p>
                   <p className="reader-excerpt-text">{readerExpanded ? readerExcerpt || '-' : readerPreviewText}</p>
                   {readerExcerpt ? (
-                    <p>
+                    <p className="reader-action-row">
                       <button
                         type="button"
                         className="ghost-btn receipt-btn"
                         onClick={() => setReaderExpanded((prev) => !prev)}
                       >
                         {readerExpanded ? 'Hide full digest' : 'Show full digest'}
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost-btn receipt-btn"
+                        onClick={() => void copyReaderDigest(readerExcerpt)}
+                      >
+                        {readerCopied ? 'Copied' : 'Copy Digest'}
                       </button>
                     </p>
                   ) : null}

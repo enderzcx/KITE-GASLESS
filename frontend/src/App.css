@@ -666,6 +666,12 @@ body {
   line-height: 1.45;
 }
 
+.reader-action-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .evidence-card a,
 .flow-onchain-block a {
   color: var(--run);
