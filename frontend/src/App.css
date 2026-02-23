@@ -90,29 +90,6 @@ body {
   gap: 8px 10px;
 }
 
-.connection-pill {
-  display: inline-flex;
-  align-items: center;
-  border-radius: 999px;
-  padding: 8px 14px;
-  border: 1px solid var(--border);
-  font-weight: 700;
-}
-
-.connection-pill.live {
-  color: var(--ok);
-  border-color: rgba(31, 148, 79, 0.33);
-  background: var(--ok-soft);
-  animation: pulse 1.5s ease-in-out infinite;
-}
-
-.connection-pill.polling,
-.connection-pill.connecting {
-  color: var(--run);
-  border-color: rgba(47, 121, 206, 0.33);
-  background: var(--run-soft);
-}
-
 .sync-text {
   font-size: 13px;
   color: var(--ink-muted);
@@ -697,27 +674,6 @@ body {
   color: var(--ink-muted);
 }
 
-.price-fly-token {
-  position: fixed;
-  z-index: 30;
-  transform: translate(-50%, -50%) scale(0.9);
-  border: 1px solid rgba(9, 134, 111, 0.34);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.95);
-  color: var(--accent);
-  padding: 5px 11px;
-  font-weight: 700;
-  pointer-events: none;
-  opacity: 0.65;
-  transition: left 780ms cubic-bezier(0.22, 0.81, 0.33, 1), top 780ms cubic-bezier(0.22, 0.81, 0.33, 1),
-    opacity 780ms ease, transform 780ms ease;
-}
-
-.price-fly-token.active {
-  opacity: 0.08;
-  transform: translate(-50%, -50%) scale(0.45);
-}
-
 /* Session setup fallback styles */
 .transfer-container {
   margin-top: 12px;
@@ -804,16 +760,6 @@ body {
   background: var(--failed-soft);
   color: #8d2d1f;
   font-size: 13px;
-}
-
-@keyframes pulse {
-  0%,
-  100% {
-    box-shadow: 0 0 0 0 rgba(31, 148, 79, 0.24);
-  }
-  50% {
-    box-shadow: 0 0 0 8px rgba(31, 148, 79, 0);
-  }
 }
 
 @keyframes chartPulse {

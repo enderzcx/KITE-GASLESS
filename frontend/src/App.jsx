@@ -11,7 +11,6 @@ const ADMIN_API_KEY = String(import.meta.env.VITE_API_KEY_ADMIN || import.meta.e
 
 const POLL_INTERVAL_MS = 8000;
 const RECORD_LIMIT = 80;
-const EVENT_LIMIT = 18;
 const CHART_POINT_LIMIT = 60;
 
 const STEP_ORDER = ['identity', 'challenge', 'payment', 'proof', 'api_result', 'onchain'];
@@ -22,15 +21,6 @@ const STEP_LABELS = {
   proof: 'Proof Verified',
   api_result: 'API Result',
   onchain: 'On-chain Confirmation'
-};
-
-const EVENT_META = {
-  workflow_started: { label: 'Workflow started', state: 'running', stepId: 'identity' },
-  challenge_issued: { label: 'x402 challenge issued', state: 'running', stepId: 'challenge' },
-  payment_sent: { label: 'Payment sent', state: 'running', stepId: 'payment' },
-  proof_submitted: { label: 'Payment proof submitted', state: 'running', stepId: 'proof' },
-  unlocked: { label: 'Workflow unlocked', state: 'success', stepId: 'api_result' },
-  failed: { label: 'Workflow failed', state: 'failed', stepId: 'api_result' }
 };
 
 function resolveApiUrl(path, params) {
@@ -111,13 +101,6 @@ function shortenMiddle(text, left = 10, right = 8) {
 function fullText(text) {
   const value = String(text || '').trim();
   return value || '-';
-}
-
-function statusText(mode) {
-  if (mode === 'live') return 'SSE live';
-  if (mode === 'polling') return 'Polling fallback';
-  if (mode === 'connecting') return 'Connecting stream';
-  return 'Disconnected';
 }
 
 function normalizeStepState(value) {
@@ -201,11 +184,6 @@ function normalizeSeriesPoints(input = []) {
   return [...dedup.values()].sort((a, b) => Date.parse(a.t) - Date.parse(b.t));
 }
 
-function appendSeriesPoint(series, point, maxSize = 300) {
-  const merged = normalizeSeriesPoints([...(Array.isArray(series) ? series : []), point]);
-  return merged.slice(-maxSize);
-}
-
 function buildChartModel(series = []) {
   const width = 920;
   const height = 360;
@@ -281,18 +259,13 @@ function App() {
   const [selectedTraceId, setSelectedTraceId] = useState('');
   const [traceData, setTraceData] = useState(null);
   const [identityLatest, setIdentityLatest] = useState(null);
-  const [events, setEvents] = useState([]);
   const [lastSyncAt, setLastSyncAt] = useState('');
-  const [streamMode, setStreamMode] = useState(VIEWER_API_KEY ? 'polling' : 'connecting');
   const [errorText, setErrorText] = useState('');
   const [refreshing, setRefreshing] = useState(false);
   const [traceLoading, setTraceLoading] = useState(false);
-  const [stepFlash, setStepFlash] = useState('');
-  const [streamToken, setStreamToken] = useState(0);
   const [triggering, setTriggering] = useState(false);
   const [failTriggering, setFailTriggering] = useState(false);
   const [hoverIndex, setHoverIndex] = useState(-1);
-  const [flyAnim, setFlyAnim] = useState(null);
   const [readerExpanded, setReaderExpanded] = useState(false);
   const [readerCopied, setReaderCopied] = useState(false);
   const [services, setServices] = useState([]);
@@ -363,27 +336,6 @@ function App() {
     }
   }, []);
 
-  const triggerPriceFlight = useCallback((quote) => {
-    const startEl = flowPriceRef.current;
-    const endEl = chartPriceRef.current;
-    if (!startEl || !endEl) return;
-
-    const start = startEl.getBoundingClientRect();
-    const end = endEl.getBoundingClientRect();
-    const text = `$${formatPrice(quote?.priceUsd)}`;
-    const id = `${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
-
-    setFlyAnim({
-      id,
-      text,
-      x1: start.left + start.width / 2,
-      y1: start.top + start.height / 2,
-      x2: end.left + end.width / 2,
-      y2: end.top + end.height / 2,
-      active: false
-    });
-  }, []);
-
   useEffect(() => {
     normalizeRoutePath();
     const onPopState = () => {
@@ -413,18 +365,6 @@ function App() {
     },
     []
   );
-
-  useEffect(() => {
-    if (!flyAnim?.id) return undefined;
-    const raf = requestAnimationFrame(() => {
-      setFlyAnim((prev) => (prev ? { ...prev, active: true } : prev));
-    });
-    const timer = setTimeout(() => setFlyAnim(null), 900);
-    return () => {
-      cancelAnimationFrame(raf);
-      clearTimeout(timer);
-    };
-  }, [flyAnim?.id]);
 
   useEffect(() => {
     if (typeof window.ethereum === 'undefined' || !window.ethereum.on) return undefined;
@@ -792,96 +732,6 @@ function App() {
     return () => clearInterval(timer);
   }, [loadServiceCatalog, route]);
 
-  useEffect(() => {
-    const source = new EventSource(
-      resolveApiUrl('/api/demo/stream', VIEWER_API_KEY ? { apiKey: VIEWER_API_KEY } : undefined)
-    );
-    const eventNames = Object.keys(EVENT_META);
-
-    const onOpen = () => setStreamMode('live');
-    const onError = () => {
-      source.close();
-      setStreamMode('polling');
-    };
-    const onConnected = () => setStreamMode('live');
-
-    source.addEventListener('connected', onConnected);
-    source.addEventListener('ping', () => {});
-    source.onopen = onOpen;
-    source.onerror = onError;
-
-    const listeners = eventNames.map((eventName) => {
-      const handler = async (event) => {
-        let payload = {};
-        try {
-          payload = JSON.parse(event?.data || '{}');
-        } catch {
-          payload = {};
-        }
-
-        const meta = EVENT_META[eventName] || { label: eventName, state: 'running', stepId: '' };
-        const eventTraceId = String(payload?.traceId || '').trim();
-
-        setEvents((prev) => {
-          const next = [
-            {
-              id: `${Date.now()}_${Math.random().toString(16).slice(2, 8)}`,
-              name: eventName,
-              label: meta.label,
-              state: meta.state,
-              stepId: meta.stepId,
-              traceId: eventTraceId,
-              at: new Date().toISOString()
-            },
-            ...prev
-          ];
-          return next.slice(0, EVENT_LIMIT);
-        });
-
-        if (meta.stepId) {
-          setStepFlash(meta.stepId);
-          setTimeout(() => setStepFlash(''), 320);
-        }
-
-        if (eventName === 'unlocked' && payload?.quote) {
-          const quotePayload = payload.quote;
-          const point = normalizeSeriesPoints([
-            {
-              t: quotePayload?.fetchedAt || new Date().toISOString(),
-              priceUsd: quotePayload?.priceUsd,
-              provider: quotePayload?.provider,
-              requestId: payload?.requestId || '',
-              traceId: eventTraceId
-            }
-          ])[0];
-          if (point) {
-            setSeries((prev) => appendSeriesPoint(prev, point, 300).slice(-CHART_POINT_LIMIT));
-            triggerPriceFlight(quotePayload);
-          }
-        }
-
-        if (eventTraceId) {
-          setSelectedTraceId(eventTraceId);
-          await loadTrace(eventTraceId);
-        }
-
-        if (['challenge_issued', 'payment_sent', 'proof_submitted', 'unlocked', 'failed'].includes(eventName)) {
-          await loadSnapshot();
-        }
-      };
-      source.addEventListener(eventName, handler);
-      return { eventName, handler };
-    });
-
-    return () => {
-      source.removeEventListener('connected', onConnected);
-      for (const item of listeners) {
-        source.removeEventListener(item.eventName, item.handler);
-      }
-      source.close();
-    };
-  }, [loadSnapshot, loadTrace, streamToken, triggerPriceFlight]);
-
   const triggerDemoRun = useCallback(async () => {
     setTriggering(true);
     setErrorText('');
@@ -1067,7 +917,6 @@ function App() {
           </p>
         </div>
         <div className="header-actions">
-          <span className={`connection-pill ${streamMode}`}>{statusText(streamMode)}</span>
           <span className="sync-text">Last sync: {formatTime(lastSyncAt)}</span>
           <button type="button" className="ghost-btn" onClick={triggerDemoRun} disabled={triggering || failTriggering}>
             {triggering ? 'Running...' : 'Run Demo'}
@@ -1081,11 +930,6 @@ function App() {
           <button type="button" className="ghost-btn" onClick={() => navigate('ops')}>
             Open Ops
           </button>
-          {!VIEWER_API_KEY && streamMode !== 'live' ? (
-            <button type="button" className="ghost-btn" onClick={() => setStreamToken((x) => x + 1)}>
-              Retry SSE
-            </button>
-          ) : null}
         </div>
       </header>
 
@@ -1186,7 +1030,7 @@ function App() {
 
           <ol className="flow-step-list">
             {timeline.map((step, idx) => (
-              <li key={step.id} className={`flow-step-card ${step.state} ${stepFlash === step.id ? 'flash' : ''}`}>
+              <li key={step.id} className={`flow-step-card ${step.state}`}>
                 <div className="flow-step-top">
                   <span className="flow-index">{idx + 1}</span>
                   <strong>{step.label}</strong>
@@ -1233,18 +1077,6 @@ function App() {
 
         </section>
       </main>
-
-      {flyAnim ? (
-        <div
-          className={`price-fly-token ${flyAnim.active ? 'active' : ''}`}
-          style={{
-            left: `${flyAnim.active ? flyAnim.x2 : flyAnim.x1}px`,
-            top: `${flyAnim.active ? flyAnim.y2 : flyAnim.y1}px`
-          }}
-        >
-          {flyAnim.text}
-        </div>
-      ) : null}
     </div>
   );
 
@@ -1254,10 +1086,9 @@ function App() {
         <div>
           <p className="header-kicker">KITE TESTNET / OPS</p>
           <h1>Operations Console</h1>
-          <p className="header-subtitle">KPI, traces, live stream events and session setup live here.</p>
+          <p className="header-subtitle">KPI, traces and session setup live here.</p>
         </div>
         <div className="header-actions">
-          <span className={`connection-pill ${streamMode}`}>{statusText(streamMode)}</span>
           <span className="sync-text">Last sync: {formatTime(lastSyncAt)}</span>
           <button type="button" className="ghost-btn" onClick={() => void loadSnapshot({ manual: true })} disabled={refreshing}>
             {refreshing ? 'Refreshing...' : 'Refresh'}
@@ -1268,11 +1099,6 @@ function App() {
           <button type="button" className="ghost-btn danger" onClick={triggerFailDemo} disabled={triggering || failTriggering}>
             {failTriggering ? 'Failing...' : 'Fail Demo'}
           </button>
-          {streamMode !== 'live' ? (
-            <button type="button" className="ghost-btn" onClick={() => setStreamToken((x) => x + 1)}>
-              Retry SSE
-            </button>
-          ) : null}
           <button type="button" className="ghost-btn" onClick={() => navigate('market')}>
             Open Market
           </button>
@@ -1310,31 +1136,6 @@ function App() {
             <span className="panel-note">click row to open trace</span>
           </div>
           <div className="trace-list">{renderTraceList()}</div>
-        </section>
-
-        <section className="panel">
-          <div className="panel-head">
-            <h2>Live Event Feed</h2>
-            <span className="panel-note">SSE events</span>
-          </div>
-          <ul className="event-list">
-            {events.length === 0 ? (
-              <li className="empty-text">
-                {streamMode === 'live'
-                  ? 'Waiting for workflow events...'
-                  : 'Stream not live yet. Keep this page open or click Retry SSE on home page.'}
-              </li>
-            ) : (
-              events.map((item) => (
-                <li key={item.id} className={`event-row ${item.state}`}>
-                  <span className={`event-dot ${item.state}`} />
-                  <span>{item.label}</span>
-                  <span>{shortenMiddle(item.traceId, 12, 8)}</span>
-                  <span>{formatTime(item.at)}</span>
-                </li>
-              ))
-            )}
-          </ul>
         </section>
 
         <section className="panel ops-evidence">
@@ -1459,7 +1260,6 @@ function App() {
           <p className="header-subtitle">Publish services, discover providers, and invoke per-call x402 settlements.</p>
         </div>
         <div className="header-actions">
-          <span className={`connection-pill ${streamMode}`}>{statusText(streamMode)}</span>
           <span className="sync-text">Last sync: {formatTime(lastSyncAt)}</span>
           <button type="button" className="ghost-btn" onClick={() => void loadServiceCatalog({ manual: true })} disabled={marketRefreshing}>
             {marketRefreshing ? 'Refreshing...' : 'Refresh Catalog'}
