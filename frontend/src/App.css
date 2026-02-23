@@ -516,7 +516,7 @@ body {
   background: rgba(255, 255, 255, 0.74);
   padding: 8px;
   display: grid;
-  grid-template-columns: 1.4fr 0.95fr 0.45fr auto;
+  grid-template-columns: 1.3fr 0.9fr 0.45fr 0.45fr auto;
   align-items: center;
   gap: 8px;
   text-align: left;
@@ -562,6 +562,14 @@ body {
 
 .market-receipt-list {
   margin-top: 10px;
+}
+
+.market-reputation {
+  margin-top: 12px;
+}
+
+.market-reputation .panel-head h2 {
+  font-size: 22px;
 }
 
 .trace-row.active {
@@ -729,11 +737,13 @@ body {
 }
 
 .vault-input input,
-.vault-input textarea {
+.vault-input textarea,
+.vault-input select {
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 8px;
   font: inherit;
+  background: #fff;
 }
 
 .rules-list {

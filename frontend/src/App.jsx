@@ -299,14 +299,25 @@ function App() {
   const [marketRefreshing, setMarketRefreshing] = useState(false);
   const [publishingService, setPublishingService] = useState(false);
   const [invokingService, setInvokingService] = useState(false);
+  const [serviceStatusLoading, setServiceStatusLoading] = useState(false);
+  const [selectedServiceStatus, setSelectedServiceStatus] = useState(null);
+  const [selectedServiceReputation, setSelectedServiceReputation] = useState(null);
+  const [agentReputationRows, setAgentReputationRows] = useState([]);
   const [invokePayer, setInvokePayer] = useState('');
   const [serviceForm, setServiceForm] = useState({
     id: '',
+    action: 'btc-price-feed',
     name: 'BTCUSD Quote Service',
     description: 'Pay-per-call BTCUSD quote via ERC8004 + x402.',
     pair: 'BTCUSDT',
     source: 'hyperliquid',
     price: '0.00001',
+    tags: 'atapi,x402,btc',
+    horizonMin: '60',
+    slaMs: '12000',
+    rateLimitPerMinute: '12',
+    budgetPerDay: '0.06',
+    allowlistPayers: '',
     active: true
   });
 
@@ -510,6 +521,34 @@ function App() {
     }
   }, []);
 
+  const loadServiceStatus = useCallback(async (serviceId, { silent = false } = {}) => {
+    const normalized = String(serviceId || '').trim();
+    if (!normalized) {
+      setSelectedServiceStatus(null);
+      setSelectedServiceReputation(null);
+      return;
+    }
+    setServiceStatusLoading(true);
+    try {
+      const payload = await fetchJson(`/api/services/${encodeURIComponent(normalized)}/status`);
+      setSelectedServiceStatus(payload?.status || null);
+      setSelectedServiceReputation(payload?.reputation || null);
+    } catch (error) {
+      if (!silent) setErrorText(error?.message || 'Failed to load service status.');
+    } finally {
+      setServiceStatusLoading(false);
+    }
+  }, []);
+
+  const loadAgentReputation = useCallback(async ({ silent = false } = {}) => {
+    try {
+      const payload = await fetchJson('/api/reputation/agents');
+      setAgentReputationRows(Array.isArray(payload?.items) ? payload.items : []);
+    } catch (error) {
+      if (!silent) setErrorText(error?.message || 'Failed to load reputation board.');
+    }
+  }, []);
+
   const loadServiceCatalog = useCallback(
     async ({ manual = false, forceServiceId = '' } = {}) => {
       if (manual) setMarketRefreshing(true);
@@ -521,9 +560,13 @@ function App() {
         if (targetId) {
           setSelectedServiceId(targetId);
           await loadServiceReceipts(targetId, { silent: true });
+          await loadServiceStatus(targetId, { silent: true });
         } else {
           setServiceReceipts([]);
+          setSelectedServiceStatus(null);
+          setSelectedServiceReputation(null);
         }
+        await loadAgentReputation({ silent: true });
         setLastSyncAt(new Date().toISOString());
       } catch (error) {
         setErrorText(error?.message || 'Failed to load service catalog.');
@@ -531,7 +574,7 @@ function App() {
         if (manual) setMarketRefreshing(false);
       }
     },
-    [loadServiceReceipts, selectedServiceId]
+    [loadAgentReputation, loadServiceReceipts, loadServiceStatus, selectedServiceId]
   );
 
   const fillInvokePayerFromRuntime = useCallback(async () => {
@@ -555,12 +598,21 @@ function App() {
         '/api/services/publish',
         {
           id: serviceForm.id || undefined,
+          action: serviceForm.action || 'btc-price-feed',
           name: serviceForm.name,
           description: serviceForm.description,
-          action: 'btc-price-feed',
           pair: serviceForm.pair || 'BTCUSDT',
           source: serviceForm.source || 'hyperliquid',
           price: serviceForm.price || '0.00001',
+          tags: String(serviceForm.tags || '').split(',').map((item) => item.trim()).filter(Boolean),
+          horizonMin: Number(serviceForm.horizonMin || 60),
+          slaMs: Number(serviceForm.slaMs || 12000),
+          rateLimitPerMinute: Number(serviceForm.rateLimitPerMinute || 12),
+          budgetPerDay: Number(serviceForm.budgetPerDay || 0),
+          allowlistPayers: String(serviceForm.allowlistPayers || '')
+            .split(',')
+            .map((item) => item.trim())
+            .filter(Boolean),
           active: serviceForm.active !== false
         },
         adminKey
@@ -577,6 +629,25 @@ function App() {
       setPublishingService(false);
     }
   }, [loadServiceCatalog, serviceForm]);
+
+  const toggleServiceActive = useCallback(async () => {
+    const serviceId = String(selectedServiceId || '').trim();
+    if (!serviceId) return;
+    const selected = services.find((item) => String(item?.id || '').trim() === serviceId);
+    if (!selected) return;
+    const adminKey = ADMIN_API_KEY || AGENT_API_KEY || VIEWER_API_KEY;
+    try {
+      setErrorText('');
+      if (selected.active === false) {
+        await postJson(`/api/services/${encodeURIComponent(serviceId)}/unrevoke`, {}, adminKey);
+      } else {
+        await postJson(`/api/services/${encodeURIComponent(serviceId)}/revoke`, {}, adminKey);
+      }
+      await loadServiceCatalog({ forceServiceId: serviceId });
+    } catch (error) {
+      setErrorText(error?.message || 'Failed to toggle service active state.');
+    }
+  }, [selectedServiceId, services, loadServiceCatalog]);
 
   const invokeSelectedService = useCallback(async () => {
     const serviceId = String(selectedServiceId || '').trim();
@@ -822,6 +893,15 @@ function App() {
   const currentWorkflow = traceData?.workflow || null;
   const currentRequest = traceData?.request || null;
   const selectedService = services.find((item) => String(item?.id || '').trim() === String(selectedServiceId || '').trim()) || null;
+  const reputationByServiceId = useMemo(() => {
+    const map = new Map();
+    for (const row of agentReputationRows) {
+      const serviceId = String(row?.serviceId || '').trim();
+      if (!serviceId) continue;
+      map.set(serviceId, row?.reputation || null);
+    }
+    return map;
+  }, [agentReputationRows]);
   const quote = traceData?.workflow?.result?.quote || traceData?.request?.result?.quote || null;
   const onchainProof = currentRequest?.proofVerification || null;
   const onchainDetails = onchainProof?.details || {};
@@ -1277,6 +1357,37 @@ function App() {
             </div>
             <div className="market-form-row">
               <div className="vault-input">
+                <label htmlFor="svc-action">Action</label>
+                <select
+                  id="svc-action"
+                  value={serviceForm.action}
+                  onChange={(event) => setServiceForm((prev) => ({ ...prev, action: event.target.value }))}
+                >
+                  <option value="btc-price-feed">btc-price-feed (ATAPI)</option>
+                  <option value="risk-score-feed">risk-score-feed (A2A)</option>
+                </select>
+              </div>
+              <div className="vault-input">
+                <label htmlFor="svc-tags">Tags (csv)</label>
+                <input
+                  id="svc-tags"
+                  value={serviceForm.tags}
+                  onChange={(event) => setServiceForm((prev) => ({ ...prev, tags: event.target.value }))}
+                  placeholder="a2a,x402,risk"
+                />
+              </div>
+              <div className="vault-input">
+                <label htmlFor="svc-horizon">horizonMin</label>
+                <input
+                  id="svc-horizon"
+                  value={serviceForm.horizonMin}
+                  onChange={(event) => setServiceForm((prev) => ({ ...prev, horizonMin: event.target.value }))}
+                  placeholder="60"
+                />
+              </div>
+            </div>
+            <div className="market-form-row">
+              <div className="vault-input">
                 <label htmlFor="svc-pair">Pair</label>
                 <input
                   id="svc-pair"
@@ -1304,6 +1415,44 @@ function App() {
                 />
               </div>
             </div>
+            <div className="market-form-row">
+              <div className="vault-input">
+                <label htmlFor="svc-sla">SLA ms</label>
+                <input
+                  id="svc-sla"
+                  value={serviceForm.slaMs}
+                  onChange={(event) => setServiceForm((prev) => ({ ...prev, slaMs: event.target.value }))}
+                  placeholder="12000"
+                />
+              </div>
+              <div className="vault-input">
+                <label htmlFor="svc-rpm">Rate limit/min</label>
+                <input
+                  id="svc-rpm"
+                  value={serviceForm.rateLimitPerMinute}
+                  onChange={(event) => setServiceForm((prev) => ({ ...prev, rateLimitPerMinute: event.target.value }))}
+                  placeholder="12"
+                />
+              </div>
+              <div className="vault-input">
+                <label htmlFor="svc-budget">Budget/day</label>
+                <input
+                  id="svc-budget"
+                  value={serviceForm.budgetPerDay}
+                  onChange={(event) => setServiceForm((prev) => ({ ...prev, budgetPerDay: event.target.value }))}
+                  placeholder="0.06"
+                />
+              </div>
+            </div>
+            <div className="vault-input">
+              <label htmlFor="svc-allowlist">Payer allowlist (csv, optional)</label>
+              <input
+                id="svc-allowlist"
+                value={serviceForm.allowlistPayers}
+                onChange={(event) => setServiceForm((prev) => ({ ...prev, allowlistPayers: event.target.value }))}
+                placeholder="0xabc...,0xdef..."
+              />
+            </div>
             <div className="session-actions">
               <button type="button" className="ghost-btn" onClick={publishService} disabled={publishingService}>
                 {publishingService ? 'Publishing...' : serviceForm.id ? 'Update Service' : 'Publish Service'}
@@ -1328,19 +1477,28 @@ function App() {
                       setSelectedServiceId(id);
                       setServiceForm({
                         id,
+                        action: String(item?.action || 'btc-price-feed').trim().toLowerCase(),
                         name: String(item?.name || '').trim(),
                         description: String(item?.description || '').trim(),
                         pair: String(item?.pair || 'BTCUSDT').trim().toUpperCase(),
                         source: String(item?.sourceRequested || item?.source || 'hyperliquid').trim().toLowerCase(),
                         price: String(item?.price || '0.00001').trim(),
+                        tags: Array.isArray(item?.tags) ? item.tags.join(',') : '',
+                        horizonMin: String(item?.horizonMin || 60),
+                        slaMs: String(item?.slaMs || 12000),
+                        rateLimitPerMinute: String(item?.rateLimitPerMinute || 12),
+                        budgetPerDay: String(item?.budgetPerDay || 0),
+                        allowlistPayers: Array.isArray(item?.allowlistPayers) ? item.allowlistPayers.join(',') : '',
                         active
                       });
                       void loadServiceReceipts(id);
+                      void loadServiceStatus(id);
                     }}
                   >
                     <span>{item?.name || id}</span>
                     <span>{item?.action || '-'}</span>
                     <span>{item?.price || '-'}</span>
+                    <span>{reputationByServiceId.get(id)?.score ?? '-'}</span>
                     <span className={`status-pill mini ${active ? 'success' : 'failed'}`}>{active ? 'active' : 'inactive'}</span>
                   </button>
                 );
@@ -1364,13 +1522,37 @@ function App() {
                   <p>action: {selectedService.action}</p>
                   <p>pair: {selectedService.pair}</p>
                   <p>source: {selectedService.sourceRequested || selectedService.source}</p>
+                  <p>tags: {Array.isArray(selectedService.tags) && selectedService.tags.length > 0 ? selectedService.tags.join(', ') : '-'}</p>
                 </article>
                 <article className="evidence-card">
-                  <h3>x402 Terms</h3>
+                  <h3>x402 + Guardrails</h3>
                   <p>price: {selectedService.price}</p>
                   <p>token: {fullText(selectedService.tokenAddress)}</p>
                   <p>recipient: {fullText(selectedService.recipient)}</p>
                   <p>providerAgent: {selectedService.providerAgentId || '-'}</p>
+                  <p>rate/min: {selectedService.rateLimitPerMinute ?? '-'}</p>
+                  <p>budget/day: {selectedService.budgetPerDay ?? '-'}</p>
+                  <p>SLA(ms): {selectedService.slaMs ?? '-'}</p>
+                  <p>allowlist: {Array.isArray(selectedService.allowlistPayers) && selectedService.allowlistPayers.length > 0 ? selectedService.allowlistPayers.length : 0}</p>
+                </article>
+                <article className="evidence-card">
+                  <h3>Service Status</h3>
+                  <p>state: {selectedServiceStatus?.state || '-'}</p>
+                  <p>total: {selectedServiceStatus?.totals?.total ?? 0}</p>
+                  <p>success: {selectedServiceStatus?.totals?.success ?? 0}</p>
+                  <p>failed: {selectedServiceStatus?.totals?.failed ?? 0}</p>
+                  <p>successRate: {selectedServiceStatus?.successRate ?? 0}%</p>
+                  <p>avgConfirmSec: {selectedServiceStatus?.avgConfirmSec ?? 0}</p>
+                  <p>lastError: {selectedServiceStatus?.lastError || '-'}</p>
+                </article>
+                <article className="evidence-card">
+                  <h3>Reputation</h3>
+                  <p>score: {selectedServiceReputation?.score ?? '-'}</p>
+                  <p>grade: {selectedServiceReputation?.grade || '-'}</p>
+                  <p>sampleSize: {selectedServiceReputation?.sampleSize ?? 0}</p>
+                  <p>onchainMatch: {selectedServiceReputation?.factors?.onchainMatchRate ?? 0}%</p>
+                  <p>successRate: {selectedServiceReputation?.factors?.successRate ?? 0}%</p>
+                  <p>avgConfirmSec: {selectedServiceReputation?.factors?.avgConfirmSec ?? 0}</p>
                 </article>
               </div>
 
@@ -1387,6 +1569,12 @@ function App() {
                 <div className="session-actions">
                   <button type="button" className="ghost-btn" onClick={fillInvokePayerFromRuntime}>
                     Use Runtime Payer
+                  </button>
+                  <button type="button" className="ghost-btn" onClick={toggleServiceActive}>
+                    {selectedService.active === false ? 'Unrevoke Service' : 'Revoke Service'}
+                  </button>
+                  <button type="button" className="ghost-btn" onClick={() => void loadServiceStatus(selectedService.id)} disabled={serviceStatusLoading}>
+                    {serviceStatusLoading ? 'Loading Status...' : 'Refresh Status'}
                   </button>
                   <button type="button" className="ghost-btn" onClick={invokeSelectedService} disabled={invokingService}>
                     {invokingService ? 'Invoking...' : 'Invoke Service'}
@@ -1408,6 +1596,28 @@ function App() {
                   ))
                 )}
               </ul>
+
+              <div className="market-reputation">
+                <div className="panel-head">
+                  <h2>Agent Reputation Board</h2>
+                  <span className="panel-note">{agentReputationRows.length} rows</span>
+                </div>
+                <div className="trace-list">
+                  {agentReputationRows.length === 0 ? (
+                    <p className="empty-text">No reputation rows yet.</p>
+                  ) : (
+                    agentReputationRows.map((row, idx) => (
+                      <div key={`${row.serviceId || 'rep'}_${idx}`} className="trace-row">
+                        <span>{row.agentId || '-'}</span>
+                        <span>{row.serviceId || '-'}</span>
+                        <span>{row.action || '-'}</span>
+                        <span>{row.reputation?.score ?? '-'}</span>
+                        <span>{row.reputation?.grade || '-'}</span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
             </>
           ) : (
             <p className="empty-text">Select or publish a service first.</p>

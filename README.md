@@ -41,10 +41,19 @@ Current Version: `v1.8.0`
 - Paid BTC quote workflow (`btc-price-feed`) with quote provider attribution
 - Agent-to-agent and agent-to-api flow evidence in one console
 - Service directory MVP: publish service, discover service, invoke with per-call x402 settlement
+- Real A2A service in market: `risk-score-feed` (agent invokes agent capability with x402 settlement)
 - BTC quote loop is a sample scenario; platform model supports publishing and consuming arbitrary agent services
 - BTC demo summary wording uses `ATAPI` for the paid quote path to avoid A2A naming confusion.
 - Verifiable agent identity (registry-backed)
 - Auditable settlement mapping (`requestId <-> txHash`)
+- Service status + reputation:
+  - status metrics (`successRate`, `avgConfirmSec`, `lastError`)
+  - reputation score/grade from paid receipts and on-chain confirmations
+- Service-level safety controls:
+  - revoke/unrevoke
+  - per-minute invoke cap
+  - per-day service budget cap
+  - optional payer allowlist
 - Direct on-chain confirmation without indexer dependency:
   - `txHash`
   - `block`
@@ -98,6 +107,7 @@ Upgrade authority remains with each proxy owner; this project does not grant per
 ## Core API Endpoints (Current)
 
 - `POST /api/workflow/btc-price/run`
+- `POST /api/workflow/risk-score/run`
 - `GET /api/demo/price-series?limit=60`
 - `GET /api/demo/trace/:traceId`
 - `GET /api/demo/trace-by-request/:requestId`
@@ -109,6 +119,10 @@ Upgrade authority remains with each proxy owner; this project does not grant per
 - `POST /api/services/publish`
 - `POST /api/services/:serviceId/invoke`
 - `GET /api/services/:serviceId/receipts`
+- `GET /api/services/:serviceId/status`
+- `POST /api/services/:serviceId/revoke`
+- `POST /api/services/:serviceId/unrevoke`
+- `GET /api/reputation/agents`
 - `GET /api/automation/btc-price/status`
 - `POST /api/automation/btc-price/start`
 - `POST /api/automation/btc-price/stop`
@@ -123,6 +137,18 @@ Upgrade authority remains with each proxy owner; this project does not grant per
   - `fetch failed`
 - Workflow now includes retry logic for session-pay transient failures, but occasional failed traces are still possible on unstable network windows.
 - For judge demos, pre-run a few traces so the chart already has successful paid points.
+
+## Judge Quick Verify
+
+1. Open `/` and click `Run Demo`.
+2. Confirm the flow reaches on-chain confirmation and chart point updates only after paid unlock.
+3. Open `/market` and invoke `BTC Risk Score (A2A)`.
+4. Check `requestId/txHash/block/status/explorer` in receipts and details.
+5. Open `/ops` to inspect recent traces and live event feed.
+
+Reference docs:
+- `docs/JUDGE_WALKTHROUGH.md`
+- `docs/ARCHITECTURE.md`
 
 ## Architecture
 

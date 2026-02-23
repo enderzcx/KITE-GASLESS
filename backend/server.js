@@ -30,6 +30,7 @@ const KITE_AGENT2_AA_ADDRESS =
   process.env.KITE_AGENT2_AA_ADDRESS || '0xEd335560178B85f0524FfFf3372e9Bf45aB42aC8';
 const X402_REACTIVE_PRICE = process.env.X402_REACTIVE_PRICE || '0.03';
 const X402_BTC_PRICE = process.env.X402_BTC_PRICE || '0.00001';
+const X402_RISK_SCORE_PRICE = process.env.X402_RISK_SCORE_PRICE || '0.00002';
 const X402_TTL_MS = 10 * 60 * 1000;
 const KITE_AGENT1_ID = process.env.KITE_AGENT1_ID || '1';
 const KITE_AGENT2_ID = process.env.KITE_AGENT2_ID || '2';
@@ -792,6 +793,15 @@ function getServiceProviderBytes32(action) {
     }
     return ethers.encodeBytes32String('kol-score');
   }
+  if (normalized === 'risk-score-feed') {
+    const alias = String(process.env.KITE_RISK_SERVICE_PROVIDER_ALIAS || 'kol-score')
+      .trim()
+      .toLowerCase();
+    if (alias === 'reactive-stop-orders') {
+      return ethers.encodeBytes32String('reactive-stop-orders');
+    }
+    return ethers.encodeBytes32String('kol-score');
+  }
   return ethers.encodeBytes32String('kol-score');
 }
 
@@ -1306,6 +1316,14 @@ function getActionConfig(actionRaw = '') {
       summary: 'BTC price quote unlocked by x402 payment'
     };
   }
+  if (action === 'risk-score-feed') {
+    return {
+      action: 'risk-score-feed',
+      amount: X402_RISK_SCORE_PRICE,
+      recipient: KITE_AGENT2_AA_ADDRESS,
+      summary: 'BTC risk score unlocked by x402 payment'
+    };
+  }
   return null;
 }
 
@@ -1353,6 +1371,24 @@ function normalizeBtcPriceParams(input = {}) {
     source: 'hyperliquid',
     sourceRequested: rawSource,
     providers: ['hyperliquid', 'binance', 'okx']
+  };
+}
+
+function normalizeRiskScoreParams(input = {}) {
+  const rawSymbol = String(input.symbol || input.pair || 'BTCUSDT').trim().toUpperCase();
+  const symbolCompact = rawSymbol.replace(/[-_\s]/g, '');
+  if (!['BTC', 'BTCUSDT', 'BTCUSD'].includes(symbolCompact)) {
+    throw new Error('Risk-score task requires symbol BTC/BTCUSDT/BTCUSD.');
+  }
+  const horizonMinRaw = Number(input.horizonMin ?? input.horizonMins ?? 60);
+  const horizonMin = Number.isFinite(horizonMinRaw) ? Math.max(5, Math.min(Math.round(horizonMinRaw), 240)) : 60;
+  const normalizedBtc = normalizeBtcPriceParams({ source: input.source || 'hyperliquid', pair: rawSymbol });
+  return {
+    symbol: symbolCompact === 'BTC' || symbolCompact === 'BTCUSD' ? 'BTCUSDT' : symbolCompact,
+    horizonMin,
+    source: normalizedBtc.source,
+    sourceRequested: normalizedBtc.sourceRequested,
+    providers: normalizedBtc.providers
   };
 }
 
@@ -1439,25 +1475,93 @@ async function fetchBtcPriceQuote(params = {}) {
   throw new Error(`price_source_unavailable (${failures.join(', ') || 'no provider'})`);
 }
 
+function toRiskLevel(score = 50) {
+  if (score >= 80) return 'high';
+  if (score >= 60) return 'elevated';
+  if (score >= 35) return 'medium';
+  return 'low';
+}
+
+function buildRiskScoreSummary(score, level, symbol, quote) {
+  return `${symbol} risk score ${score}/100 (${level}) at $${quote.priceUsd} [${quote.provider}]`;
+}
+
+async function runRiskScoreAnalysis(input = {}) {
+  const task = normalizeRiskScoreParams(input);
+  const quote = await fetchBtcPriceQuote({
+    pair: task.symbol,
+    source: task.sourceRequested
+  });
+
+  const horizonPoints = Math.max(3, Math.min(task.horizonMin, 60));
+  const series = buildDemoPriceSeries(horizonPoints).series;
+  const prices = series.map((item) => Number(item.priceUsd)).filter((item) => Number.isFinite(item) && item > 0);
+  const avgPrice = prices.length > 0 ? prices.reduce((sum, value) => sum + value, 0) / prices.length : Number(quote.priceUsd);
+  const minPrice = prices.length > 0 ? Math.min(...prices) : Number(quote.priceUsd);
+  const maxPrice = prices.length > 0 ? Math.max(...prices) : Number(quote.priceUsd);
+  const rangePct = avgPrice > 0 ? ((maxPrice - minPrice) / avgPrice) * 100 : 0;
+
+  const deviationPct = avgPrice > 0 ? (Math.abs(Number(quote.priceUsd) - avgPrice) / avgPrice) * 100 : 0;
+  const rawScore = 22 + rangePct * 11 + deviationPct * 8;
+  const bounded = Math.max(5, Math.min(95, Math.round(rawScore)));
+  const level = toRiskLevel(bounded);
+
+  return {
+    summary: buildRiskScoreSummary(bounded, level, task.symbol, quote),
+    risk: {
+      symbol: task.symbol,
+      score: bounded,
+      level,
+      horizonMin: task.horizonMin,
+      rangePct: Number(rangePct.toFixed(4)),
+      deviationPct: Number(deviationPct.toFixed(4)),
+      sampleSize: prices.length,
+      provider: quote.provider
+    },
+    quote
+  };
+}
+
 function createServiceId() {
   return `svc_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
 }
 
 function normalizeServiceAction(actionRaw = '') {
   const action = String(actionRaw || 'btc-price-feed').trim().toLowerCase();
-  if (action !== 'btc-price-feed') {
-    throw new Error('Only btc-price-feed service is supported in this MVP.');
+  if (!['btc-price-feed', 'risk-score-feed'].includes(action)) {
+    throw new Error('Supported service actions: btc-price-feed, risk-score-feed.');
   }
   return action;
+}
+
+function normalizeStringList(input, { lower = false, dedup = true } = {}) {
+  const values = Array.isArray(input)
+    ? input
+    : String(input || '')
+        .split(',')
+        .map((value) => value.trim())
+        .filter(Boolean);
+  const normalized = values
+    .map((value) => (lower ? String(value || '').trim().toLowerCase() : String(value || '').trim()))
+    .filter(Boolean);
+  if (!dedup) return normalized;
+  return normalized.filter((value, index, arr) => arr.indexOf(value) === index);
 }
 
 function sanitizeServiceRecord(input = {}, existing = null) {
   const now = new Date().toISOString();
   const action = normalizeServiceAction(input.action || existing?.action || 'btc-price-feed');
-  const normalizedTask = normalizeBtcPriceParams({
-    pair: input.pair || existing?.pair || 'BTCUSDT',
-    source: input.source || existing?.source || 'hyperliquid'
-  });
+  const normalizedTask =
+    action === 'risk-score-feed'
+      ? normalizeRiskScoreParams({
+          symbol: input.pair || input.symbol || existing?.pair || 'BTCUSDT',
+          source: input.source || existing?.source || 'hyperliquid',
+          horizonMin: input.horizonMin ?? existing?.horizonMin ?? 60
+        })
+      : normalizeBtcPriceParams({
+          pair: input.pair || existing?.pair || 'BTCUSDT',
+          source: input.source || existing?.source || 'hyperliquid'
+        });
   const recipient = normalizeAddress(input.recipient || existing?.recipient || KITE_AGENT2_AA_ADDRESS);
   if (!recipient || !ethers.isAddress(recipient)) {
     throw new Error('service recipient must be a valid address');
@@ -1473,6 +1577,19 @@ function sanitizeServiceRecord(input = {}, existing = null) {
   const name = String(input.name || existing?.name || '').trim() || 'BTCUSD Quote Service';
   const description = String(input.description || existing?.description || '').trim() || 'Pay-per-call BTCUSD quote service.';
   const providerAgentId = String(input.providerAgentId || existing?.providerAgentId || KITE_AGENT2_ID).trim();
+  const tags = normalizeStringList(input.tags || existing?.tags || ['atapi', 'x402', action], { lower: true, dedup: true });
+  const allowlistPayers = normalizeAddresses(input.allowlistPayers || existing?.allowlistPayers || []);
+  const slaMsRaw = Number(input.slaMs ?? existing?.slaMs ?? 12000);
+  const rateLimitPerMinuteRaw = Number(input.rateLimitPerMinute ?? existing?.rateLimitPerMinute ?? 12);
+  const budgetPerDayRaw = Number(input.budgetPerDay ?? existing?.budgetPerDay ?? 0);
+  const exampleInput =
+    input.exampleInput && typeof input.exampleInput === 'object'
+      ? input.exampleInput
+      : existing?.exampleInput && typeof existing.exampleInput === 'object'
+        ? existing.exampleInput
+        : action === 'risk-score-feed'
+          ? { symbol: 'BTCUSDT', horizonMin: 60, source: 'hyperliquid' }
+          : { pair: 'BTCUSDT', source: 'hyperliquid' };
   const activeInput = input.active;
   const active =
     typeof activeInput === 'boolean'
@@ -1489,10 +1606,20 @@ function sanitizeServiceRecord(input = {}, existing = null) {
     pair: normalizedTask.pair,
     source: normalizedTask.source,
     sourceRequested: normalizedTask.sourceRequested,
+    horizonMin: normalizedTask.horizonMin || null,
     providerAgentId,
     recipient,
     tokenAddress,
     price: String(Number(priceRaw.toFixed(6))),
+    tags,
+    slaMs: Number.isFinite(slaMsRaw) && slaMsRaw > 0 ? Math.round(slaMsRaw) : 12000,
+    rateLimitPerMinute:
+      Number.isFinite(rateLimitPerMinuteRaw) && rateLimitPerMinuteRaw > 0
+        ? Math.min(120, Math.max(1, Math.round(rateLimitPerMinuteRaw)))
+        : 12,
+    budgetPerDay: Number.isFinite(budgetPerDayRaw) && budgetPerDayRaw > 0 ? Number(budgetPerDayRaw.toFixed(6)) : 0,
+    allowlistPayers,
+    exampleInput,
     active,
     createdAt: String(existing?.createdAt || now).trim(),
     updatedAt: now,
@@ -1515,6 +1642,36 @@ function createDefaultServiceCatalog() {
       recipient: normalizeAddress(KITE_AGENT2_AA_ADDRESS),
       tokenAddress: normalizeAddress(SETTLEMENT_TOKEN),
       price: String(Number(Number(X402_BTC_PRICE || '0.00001').toFixed(6))),
+      tags: ['atapi', 'x402', 'btc', 'price-feed'],
+      slaMs: 12000,
+      rateLimitPerMinute: 12,
+      budgetPerDay: 0.06,
+      allowlistPayers: [],
+      exampleInput: { pair: 'BTCUSDT', source: 'hyperliquid' },
+      active: true,
+      createdAt: now,
+      updatedAt: now,
+      publishedBy: 'system'
+    },
+    {
+      id: 'svc_btc_risk_score',
+      name: 'BTC Risk Score (A2A)',
+      description: 'Agent-to-agent risk score derived from paid BTC quote and recent volatility.',
+      action: 'risk-score-feed',
+      pair: 'BTCUSDT',
+      source: 'hyperliquid',
+      sourceRequested: 'hyperliquid',
+      horizonMin: 60,
+      providerAgentId: '3',
+      recipient: normalizeAddress(KITE_AGENT2_AA_ADDRESS),
+      tokenAddress: normalizeAddress(SETTLEMENT_TOKEN),
+      price: String(Number(Number(X402_RISK_SCORE_PRICE || '0.00002').toFixed(6))),
+      tags: ['a2a', 'x402', 'risk'],
+      slaMs: 15000,
+      rateLimitPerMinute: 10,
+      budgetPerDay: 0.08,
+      allowlistPayers: [],
+      exampleInput: { symbol: 'BTCUSDT', horizonMin: 60, source: 'hyperliquid' },
       active: true,
       createdAt: now,
       updatedAt: now,
@@ -1588,6 +1745,156 @@ function mapServiceReceipt(invocation = {}, workflowByTraceId = new Map(), reque
   };
 }
 
+function computeServiceReputation(service = null, receipts = []) {
+  const rows = Array.isArray(receipts) ? receipts : [];
+  const total = rows.length;
+  const successCount = rows.filter((item) => String(item?.state || '').toLowerCase() === 'success' || String(item?.state || '').toLowerCase() === 'unlocked').length;
+  const failedCount = rows.filter((item) => String(item?.state || '').toLowerCase() === 'failed').length;
+  const successRate = total > 0 ? successCount / total : 0;
+  const onchainSuccessCount = rows.filter((item) => String(item?.onchain?.status || '').toLowerCase() === 'success').length;
+  const onchainRatio = total > 0 ? onchainSuccessCount / total : 0;
+
+  const latencies = rows
+    .map((item) => {
+      const created = Date.parse(String(item?.createdAt || '').trim());
+      const updated = Date.parse(String(item?.updatedAt || '').trim());
+      if (!Number.isFinite(created) || !Number.isFinite(updated) || updated <= created) return NaN;
+      return (updated - created) / 1000;
+    })
+    .filter((value) => Number.isFinite(value) && value >= 0);
+  const avgConfirmSec = latencies.length > 0 ? latencies.reduce((sum, value) => sum + value, 0) / latencies.length : 0;
+  const latencyScore = avgConfirmSec <= 0 ? 1 : Math.max(0, Math.min(1, 1 - avgConfirmSec / 120));
+
+  const reputationScore = Number(
+    Math.max(
+      0,
+      Math.min(100, (successRate * 70 + onchainRatio * 20 + latencyScore * 10) * 100)
+    ).toFixed(2)
+  );
+
+  return {
+    serviceId: String(service?.id || '').trim(),
+    providerAgentId: String(service?.providerAgentId || '').trim(),
+    score: reputationScore,
+    grade: reputationScore >= 85 ? 'A' : reputationScore >= 70 ? 'B' : reputationScore >= 55 ? 'C' : 'D',
+    factors: {
+      successRate: Number((successRate * 100).toFixed(2)),
+      onchainMatchRate: Number((onchainRatio * 100).toFixed(2)),
+      avgConfirmSec: Number(avgConfirmSec.toFixed(2))
+    },
+    sampleSize: total,
+    failedCount
+  };
+}
+
+function evaluateServiceInvokeGuard(service = {}, input = {}) {
+  const payer = normalizeAddress(input.payer || '');
+  const nowMs = Number(input.nowMs || Date.now());
+  const invocations = Array.isArray(input.invocations) ? input.invocations : [];
+  const checks = [];
+
+  const allowlist = normalizeAddresses(service.allowlistPayers || []);
+  if (allowlist.length > 0 && (!payer || !allowlist.includes(payer))) {
+    return {
+      ok: false,
+      code: 'service_payer_not_allowed',
+      reason: 'Payer is not in service allowlist.',
+      checks: [{ rule: 'allowlistPayers', ok: false, expected: allowlist, got: payer }]
+    };
+  }
+  checks.push({ rule: 'allowlistPayers', ok: true });
+
+  const rpm = Number(service.rateLimitPerMinute || 0);
+  if (Number.isFinite(rpm) && rpm > 0) {
+    const windowStart = nowMs - 60 * 1000;
+    const recentCount = invocations.filter((item) => {
+      const at = Date.parse(String(item?.createdAt || item?.updatedAt || '').trim());
+      return Number.isFinite(at) && at >= windowStart;
+    }).length;
+    if (recentCount >= rpm) {
+      return {
+        ok: false,
+        code: 'service_rate_limited',
+        reason: `Service per-minute limit exceeded (${recentCount}/${rpm}).`,
+        checks: [{ rule: 'rateLimitPerMinute', ok: false, recentCount, limit: rpm }]
+      };
+    }
+    checks.push({ rule: 'rateLimitPerMinute', ok: true, recentCount, limit: rpm });
+  }
+
+  const budget = Number(service.budgetPerDay || 0);
+  const price = Number(service.price || 0);
+  if (Number.isFinite(budget) && budget > 0 && Number.isFinite(price) && price > 0) {
+    const dayKey = getUtcDateKey(nowMs);
+    const spent = invocations
+      .filter((item) => {
+        const at = Date.parse(String(item?.updatedAt || item?.createdAt || '').trim());
+        if (!Number.isFinite(at)) return false;
+        if (getUtcDateKey(at) !== dayKey) return false;
+        const state = String(item?.state || '').trim().toLowerCase();
+        return state === 'success' || state === 'unlocked';
+      })
+      .reduce((sum, item) => {
+        const amount = Number(item?.amount || price || 0);
+        return sum + (Number.isFinite(amount) && amount > 0 ? amount : 0);
+      }, 0);
+    const projected = spent + price;
+    if (projected > budget) {
+      return {
+        ok: false,
+        code: 'service_budget_exceeded',
+        reason: `Service daily budget exceeded (${projected.toFixed(6)} > ${budget}).`,
+        checks: [{ rule: 'budgetPerDay', ok: false, spent: Number(spent.toFixed(6)), projected: Number(projected.toFixed(6)), budget }]
+      };
+    }
+    checks.push({ rule: 'budgetPerDay', ok: true, spent: Number(spent.toFixed(6)), projected: Number(projected.toFixed(6)), budget });
+  }
+
+  return {
+    ok: true,
+    checks
+  };
+}
+
+function buildServiceStatus(service, allInvocations = [], receipts = []) {
+  const rows = allInvocations
+    .filter((item) => String(item?.serviceId || '').trim() === String(service?.id || '').trim())
+    .sort((a, b) => Date.parse(b?.updatedAt || b?.createdAt || 0) - Date.parse(a?.updatedAt || a?.createdAt || 0));
+
+  const total = rows.length;
+  const success = rows.filter((item) => ['success', 'unlocked'].includes(String(item?.state || '').trim().toLowerCase())).length;
+  const failed = rows.filter((item) => String(item?.state || '').trim().toLowerCase() === 'failed').length;
+  const running = rows.filter((item) => String(item?.state || '').trim().toLowerCase() === 'running').length;
+  const successRate = total > 0 ? Number(((success / total) * 100).toFixed(2)) : 0;
+  const latency = receipts
+    .map((item) => {
+      const c = Date.parse(String(item?.createdAt || '').trim());
+      const u = Date.parse(String(item?.updatedAt || '').trim());
+      if (!Number.isFinite(c) || !Number.isFinite(u) || u <= c) return NaN;
+      return (u - c) / 1000;
+    })
+    .filter((v) => Number.isFinite(v) && v >= 0);
+  const avgConfirmSec = latency.length > 0 ? Number((latency.reduce((s, v) => s + v, 0) / latency.length).toFixed(2)) : 0;
+
+  return {
+    serviceId: String(service?.id || '').trim(),
+    state: running > 0 ? 'running' : failed > 0 && success === 0 ? 'degraded' : 'healthy',
+    totals: {
+      total,
+      success,
+      failed,
+      running
+    },
+    successRate,
+    avgConfirmSec,
+    lastUpdatedAt: String(rows[0]?.updatedAt || rows[0]?.createdAt || service?.updatedAt || '').trim(),
+    lastError:
+      String(
+        rows.find((item) => String(item?.error || '').trim())?.error || ''
+      ).trim()
+  };
+}
+
 function computeReactiveStopOrderAmount(actionParams = {}) {
   const baseAmount = Number(X402_REACTIVE_PRICE || '0.03');
   const base = Number.isFinite(baseAmount) && baseAmount > 0 ? baseAmount : 0.03;
@@ -1623,6 +1930,16 @@ function buildA2ACapabilities() {
           source: 'hyperliquid (fallback: binance, okx; legacy auto/binance/coingecko accepted)'
         },
         price: X402_BTC_PRICE,
+        recipient: KITE_AGENT2_AA_ADDRESS
+      },
+      {
+        id: 'risk-score-feed',
+        input: {
+          symbol: 'string (BTC/BTCUSDT/BTCUSD)',
+          horizonMin: 'number 5-240',
+          source: 'hyperliquid (fallback: binance, okx)'
+        },
+        price: X402_RISK_SCORE_PRICE,
         recipient: KITE_AGENT2_AA_ADDRESS
       },
       {
@@ -3463,6 +3780,216 @@ app.post('/api/workflow/btc-price/run', requireRole('agent'), async (req, res) =
   }
 });
 
+app.post('/api/workflow/risk-score/run', requireRole('agent'), async (req, res) => {
+  let normalizedTask = null;
+  try {
+    normalizedTask = normalizeRiskScoreParams({
+      symbol: req.body?.symbol || req.body?.pair || 'BTCUSDT',
+      source: req.body?.source || 'hyperliquid',
+      horizonMin: req.body?.horizonMin ?? 60
+    });
+  } catch (error) {
+    return res.status(400).json({
+      ok: false,
+      error: 'invalid_task',
+      reason: error?.message || 'invalid task'
+    });
+  }
+
+  const sourceAgentId = String(req.body?.sourceAgentId || KITE_AGENT1_ID).trim();
+  const targetAgentId = String(req.body?.targetAgentId || KITE_AGENT2_ID).trim();
+  const traceId = resolveWorkflowTraceId(req.body?.traceId);
+  const runtime = readSessionRuntime();
+  const payer = normalizeAddress(req.body?.payer || runtime.aaWallet || '');
+  const workflow = {
+    traceId,
+    type: 'risk-score',
+    state: 'running',
+    sourceAgentId,
+    targetAgentId,
+    payer,
+    input: normalizedTask,
+    requestId: '',
+    txHash: '',
+    userOpHash: '',
+    steps: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  upsertWorkflow(workflow);
+  broadcastEvent('workflow_started', { traceId, state: workflow.state, input: workflow.input });
+
+  try {
+    const challengeResult = await handleA2ARiskScore({
+      payer,
+      sourceAgentId,
+      targetAgentId,
+      traceId,
+      task: normalizedTask
+    });
+    if (challengeResult.status !== 402) {
+      throw new Error(
+        challengeResult?.body?.reason ||
+          challengeResult?.body?.error ||
+          `Expected 402 challenge, got ${challengeResult.status}`
+      );
+    }
+    const challenge = challengeResult.body?.x402;
+    const requestId = String(challenge?.requestId || '').trim();
+    const accept = Array.isArray(challenge?.accepts) ? challenge.accepts[0] : null;
+    if (!requestId || !accept?.tokenAddress || !accept?.recipient || !accept?.amount) {
+      throw new Error('Malformed x402 challenge payload.');
+    }
+    workflow.requestId = requestId;
+    appendWorkflowStep(workflow, 'challenge_issued', 'ok', {
+      requestId,
+      amount: accept.amount,
+      recipient: accept.recipient
+    });
+    broadcastEvent('challenge_issued', {
+      traceId,
+      requestId,
+      amount: accept.amount,
+      recipient: accept.recipient,
+      symbol: normalizedTask.symbol,
+      horizonMin: normalizedTask.horizonMin
+    });
+    workflow.updatedAt = new Date().toISOString();
+    upsertWorkflow(workflow);
+
+    let payBody = {};
+    try {
+      const pay = await postSessionPayWithRetry(
+        {
+          tokenAddress: accept.tokenAddress,
+          recipient: accept.recipient,
+          amount: accept.amount,
+          requestId,
+          action: 'risk-score-feed',
+          query: `A2A risk-score ${normalizedTask.symbol} horizon=${normalizedTask.horizonMin} source=${normalizedTask.source}`
+        },
+        { maxAttempts: 3, timeoutMs: 210_000 }
+      );
+      payBody = pay.body || {};
+    } catch (error) {
+      payBody = error?.payBody || {};
+      throw new Error(payBody?.reason || payBody?.error || error?.message || 'session pay failed');
+    }
+    const txHash = String(payBody?.payment?.txHash || '').trim();
+    const userOpHash = String(payBody?.payment?.userOpHash || '').trim();
+    if (!txHash) throw new Error('session pay returned empty txHash.');
+    workflow.txHash = txHash;
+    workflow.userOpHash = userOpHash;
+    appendWorkflowStep(workflow, 'payment_sent', 'ok', { txHash, userOpHash });
+    broadcastEvent('payment_sent', {
+      traceId,
+      requestId,
+      txHash,
+      userOpHash,
+      symbol: normalizedTask.symbol,
+      horizonMin: normalizedTask.horizonMin
+    });
+    workflow.updatedAt = new Date().toISOString();
+    upsertWorkflow(workflow);
+
+    const proofResult = await handleA2ARiskScore({
+      payer,
+      sourceAgentId,
+      targetAgentId,
+      traceId,
+      requestId,
+      paymentProof: {
+        requestId,
+        txHash,
+        payer,
+        tokenAddress: accept.tokenAddress,
+        recipient: accept.recipient,
+        amount: accept.amount
+      },
+      task: normalizedTask
+    });
+    if (proofResult.status !== 200) {
+      throw new Error(
+        proofResult?.body?.reason || proofResult?.body?.error || `proof submit failed: ${proofResult.status}`
+      );
+    }
+    appendWorkflowStep(workflow, 'proof_submitted', 'ok', { verified: true });
+    broadcastEvent('proof_submitted', { traceId, requestId, verified: true });
+    appendWorkflowStep(workflow, 'unlocked', 'ok', {
+      result: proofResult?.body?.result?.summary || ''
+    });
+    broadcastEvent('unlocked', {
+      traceId,
+      requestId,
+      txHash,
+      summary: proofResult?.body?.result?.summary || '',
+      quote: proofResult?.body?.result?.quote || null,
+      risk: proofResult?.body?.result?.risk || null,
+      symbol: normalizedTask.symbol,
+      horizonMin: normalizedTask.horizonMin
+    });
+    workflow.state = 'unlocked';
+    workflow.result = proofResult?.body?.result || null;
+    workflow.updatedAt = new Date().toISOString();
+    upsertWorkflow(workflow);
+
+    return res.json({
+      ok: true,
+      traceId,
+      requestId,
+      txHash,
+      userOpHash,
+      state: workflow.state,
+      workflow,
+      receipt: proofResult?.body?.receipt || null
+    });
+  } catch (error) {
+    appendWorkflowStep(workflow, 'failed', 'error', { reason: error.message });
+    broadcastEvent('failed', {
+      traceId,
+      state: 'failed',
+      reason: error.message,
+      code: error?.code || 'workflow_failed'
+    });
+    workflow.state = 'failed';
+    workflow.error = error.message;
+    workflow.updatedAt = new Date().toISOString();
+    upsertWorkflow(workflow);
+    return res.status(500).json({
+      ok: false,
+      traceId,
+      state: workflow.state,
+      error: 'workflow_failed',
+      reason: error.message,
+      workflow,
+      receipt:
+        workflow.requestId && workflow.sourceAgentId && workflow.targetAgentId
+          ? buildA2AReceipt(
+              {
+                requestId: workflow.requestId,
+                status: 'pending',
+                action: 'risk-score-feed',
+                query: `A2A risk-score ${workflow?.input?.symbol || 'BTCUSDT'} horizon=${workflow?.input?.horizonMin || 60}`.trim(),
+                payer: workflow.payer || '',
+                amount: String(X402_RISK_SCORE_PRICE || ''),
+                tokenAddress: SETTLEMENT_TOKEN,
+                recipient: KITE_AGENT2_AA_ADDRESS,
+                paymentTxHash: workflow.txHash || '',
+                a2a: {
+                  sourceAgentId: workflow.sourceAgentId,
+                  targetAgentId: workflow.targetAgentId,
+                  taskType: 'risk-score-feed',
+                  traceId
+                }
+              },
+              workflow,
+              { state: 'failed', phase: 'failed', error: error.message, traceId }
+            )
+          : null
+    });
+  }
+});
+
 app.get('/api/workflow/:traceId', requireRole('viewer'), (req, res) => {
   const traceId = String(req.params.traceId || '').trim();
   if (!traceId) {
@@ -3959,6 +4486,250 @@ async function handleA2ABtcPrice(body = {}) {
   };
 }
 
+async function handleA2ARiskScore(body = {}) {
+  const payer = String(body.payer || '').trim();
+  const sourceAgentId = String(body.sourceAgentId || KITE_AGENT1_ID).trim();
+  const targetAgentId = String(body.targetAgentId || KITE_AGENT2_ID).trim();
+  const traceId = String(body.traceId || '').trim();
+  const requestId = String(body.requestId || '').trim();
+  const paymentProof = body.paymentProof;
+  const taskInput = body.task || {};
+  const identityInput = body.identity || {};
+
+  let task = null;
+  try {
+    task = normalizeRiskScoreParams(taskInput);
+  } catch (error) {
+    return {
+      status: 400,
+      body: {
+        error: 'invalid_task',
+        reason: error.message
+      }
+    };
+  }
+
+  const actionCfg = getActionConfig('risk-score-feed');
+  const actionAmount = String(actionCfg?.amount || X402_RISK_SCORE_PRICE || '0.00002');
+  const requests = readX402Requests();
+  const a2aQuery = `A2A risk-score ${task.symbol} horizon=${task.horizonMin} source=${task.source}`;
+
+  if (!requestId || !paymentProof) {
+    let identityVerification = null;
+    try {
+      identityVerification = await ensureWorkflowIdentityVerified({
+        traceId,
+        identityInput
+      });
+    } catch (error) {
+      return {
+        status: 400,
+        body: {
+          error: 'identity_verification_failed',
+          reason: error?.message || 'identity verification failed'
+        }
+      };
+    }
+
+    const policyResult = evaluateTransferPolicy({
+      payer,
+      recipient: actionCfg.recipient,
+      amount: actionAmount,
+      requests
+    });
+    if (!policyResult.ok) {
+      logPolicyFailure({
+        action: 'a2a-risk-score-feed',
+        payer,
+        recipient: actionCfg.recipient,
+        amount: actionAmount,
+        code: policyResult.code,
+        message: policyResult.message,
+        evidence: policyResult.evidence
+      });
+      return {
+        status: 403,
+        body: {
+          error: policyResult.code,
+          reason: policyResult.message,
+          evidence: policyResult.evidence
+        }
+      };
+    }
+
+    const reqItem = createX402Request(a2aQuery, payer, actionCfg.action, {
+      amount: actionAmount,
+      recipient: actionCfg.recipient,
+      policy: {
+        decision: 'allowed',
+        snapshot: buildPolicySnapshot(),
+        evidence: policyResult.evidence
+      },
+      identity: identityVerification?.identity
+    });
+    reqItem.actionParams = task;
+    reqItem.a2a = {
+      sourceAgentId,
+      targetAgentId,
+      taskType: 'risk-score-feed',
+      traceId
+    };
+    requests.unshift(reqItem);
+    writeX402Requests(requests);
+    const receipt = buildA2AReceipt(reqItem, null, {
+      traceId,
+      phase: 'payment_required',
+      state: 'running'
+    });
+
+    return {
+      status: 402,
+      body: {
+        ...buildPaymentRequiredResponse(reqItem),
+        a2a: {
+          protocol: 'x402-a2a-v1',
+          sourceAgentId,
+          targetAgentId,
+          taskType: 'risk-score-feed',
+          task,
+          identity: identityVerification?.identity || null
+        },
+        receipt
+      }
+    };
+  }
+
+  const reqItem = requests.find((item) => item.requestId === requestId);
+  if (!reqItem) {
+    return {
+      status: 402,
+      body: {
+        error: 'payment_required',
+        reason: 'request not found'
+      }
+    };
+  }
+
+  if (Date.now() > reqItem.expiresAt) {
+    reqItem.status = 'expired';
+    writeX402Requests(requests);
+    return {
+      status: 402,
+      body: buildPaymentRequiredResponse(reqItem, 'request expired')
+    };
+  }
+
+  if (reqItem.status === 'paid') {
+    let riskResult = reqItem?.result || null;
+    if (!riskResult) {
+      try {
+        riskResult = await runRiskScoreAnalysis(reqItem.actionParams || task);
+      } catch {
+        riskResult = null;
+      }
+    }
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        mode: 'x402',
+        requestId: reqItem.requestId,
+        reused: true,
+        result: riskResult || { summary: 'A2A risk score already unlocked' },
+        a2a: reqItem.a2a || null,
+        receipt: buildA2AReceipt(reqItem, null, {
+          traceId,
+          sourceAgentId,
+          targetAgentId,
+          capability: 'risk-score-feed',
+          phase: 'settled',
+          state: 'success',
+          summary: reqItem?.result?.summary || 'A2A risk score already unlocked'
+        })
+      }
+    };
+  }
+
+  const validationError = validatePaymentProof(reqItem, paymentProof);
+  if (validationError) {
+    return {
+      status: 402,
+      body: buildPaymentRequiredResponse(reqItem, validationError)
+    };
+  }
+
+  const verification = await verifyProofOnChain(reqItem, paymentProof);
+  if (!verification.ok) {
+    return {
+      status: 402,
+      body: buildPaymentRequiredResponse(reqItem, `on-chain proof verification failed: ${verification.reason}`)
+    };
+  }
+
+  const riskResult = await runRiskScoreAnalysis(reqItem.actionParams || task);
+
+  reqItem.status = 'paid';
+  reqItem.paidAt = Date.now();
+  reqItem.paymentTxHash = paymentProof.txHash;
+  reqItem.paymentProof = {
+    requestId: paymentProof.requestId,
+    txHash: paymentProof.txHash,
+    payer: paymentProof.payer || '',
+    tokenAddress: paymentProof.tokenAddress,
+    recipient: paymentProof.recipient,
+    amount: paymentProof.amount
+  };
+  reqItem.proofVerification = {
+    mode: 'onchain_transfer_log',
+    verifiedAt: Date.now(),
+    details: verification.details || null
+  };
+  reqItem.a2a = {
+    ...(reqItem.a2a || {}),
+    sourceAgentId: String(reqItem?.a2a?.sourceAgentId || sourceAgentId).trim(),
+    targetAgentId: String(reqItem?.a2a?.targetAgentId || targetAgentId).trim(),
+    taskType: String(reqItem?.a2a?.taskType || 'risk-score-feed').trim(),
+    traceId: String(reqItem?.a2a?.traceId || traceId).trim()
+  };
+  reqItem.result = {
+    summary: `A2A risk score unlocked by x402 payment: ${riskResult.summary}`,
+    ...riskResult
+  };
+  writeX402Requests(requests);
+
+  const receipt = buildA2AReceipt(reqItem, null, {
+    traceId: reqItem?.a2a?.traceId || traceId,
+    sourceAgentId,
+    targetAgentId,
+    capability: 'risk-score-feed',
+    phase: 'settled',
+    state: 'success',
+    summary: reqItem?.result?.summary || riskResult.summary
+  });
+
+  return {
+    status: 200,
+    body: {
+      ok: true,
+      mode: 'x402',
+      requestId: reqItem.requestId,
+      payment: {
+        txHash: paymentProof.txHash,
+        amount: reqItem.amount,
+        tokenAddress: reqItem.tokenAddress,
+        recipient: reqItem.recipient
+      },
+      result: reqItem.result,
+      a2a: reqItem.a2a || {
+        sourceAgentId,
+        targetAgentId,
+        taskType: 'risk-score-feed'
+      },
+      receipt
+    }
+  };
+}
+
 async function handleA2AStopOrders(body = {}) {
   const payer = String(body.payer || '').trim();
   const sourceAgentId = String(body.sourceAgentId || KITE_AGENT1_ID).trim();
@@ -4234,6 +5005,19 @@ app.post('/api/a2a/tasks/btc-price', requireRole('agent'), async (req, res) => {
   }
 });
 
+app.post('/api/a2a/tasks/risk-score', requireRole('agent'), async (req, res) => {
+  try {
+    const result = await handleA2ARiskScore(req.body);
+    return res.status(result.status).json(result.body);
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: 'a2a_risk_score_handler_failed',
+      reason: error.message || 'Unknown error'
+    });
+  }
+});
+
 app.get('/api/skill/openclaw/manifest', (req, res) => {
   return res.json({
     ok: true,
@@ -4403,6 +5187,16 @@ app.post('/api/x402/kol-score', requireRole('agent'), async (req, res) => {
       });
     }
   }
+  if (actionCfg.action === 'risk-score-feed') {
+    try {
+      normalizedActionParams = normalizeRiskScoreParams(actionParamsInput || {});
+    } catch (error) {
+      return res.status(400).json({
+        error: 'invalid_risk_score_params',
+        reason: error.message
+      });
+    }
+  }
   const amountToCharge =
     actionCfg.action === 'reactive-stop-orders'
       ? computeReactiveStopOrderAmount(normalizedActionParams || {})
@@ -4509,6 +5303,19 @@ app.post('/api/x402/kol-score', requireRole('agent'), async (req, res) => {
         quote
       };
     }
+    if (reqItem.action === 'risk-score-feed') {
+      let riskResult = reqItem?.result || null;
+      if (!riskResult) {
+        try {
+          riskResult = await runRiskScoreAnalysis(reqItem.actionParams || {});
+        } catch {
+          riskResult = null;
+        }
+      }
+      paidResult = riskResult || {
+        summary: 'BTC risk score already unlocked'
+      };
+    }
     return res.json({
       ok: true,
       mode: 'x402',
@@ -4570,6 +5377,10 @@ app.post('/api/x402/kol-score', requireRole('agent'), async (req, res) => {
       summary: `BTC ${quote.pair} = $${quote.priceUsd} (${quote.provider})`,
       quote
     };
+  }
+  if (reqItem.action === 'risk-score-feed') {
+    const riskResult = await runRiskScoreAnalysis(reqItem.actionParams || {});
+    finalResult = riskResult;
   }
   reqItem.result = finalResult;
   writeX402Requests(requests);
@@ -4853,8 +5664,13 @@ app.post('/api/services/:serviceId/invoke', requireRole('agent'), async (req, re
   if (service.active === false) {
     return res.status(409).json({ ok: false, error: 'service_inactive', reason: 'Service is not active.' });
   }
-  if (String(service.action || '').trim().toLowerCase() !== 'btc-price-feed') {
-    return res.status(400).json({ ok: false, error: 'unsupported_service_action', reason: 'Only btc-price-feed is supported in this MVP.' });
+  const action = String(service.action || '').trim().toLowerCase();
+  if (!['btc-price-feed', 'risk-score-feed'].includes(action)) {
+    return res.status(400).json({
+      ok: false,
+      error: 'unsupported_service_action',
+      reason: 'Supported action: btc-price-feed, risk-score-feed.'
+    });
   }
 
   const runtime = readSessionRuntime();
@@ -4865,11 +5681,25 @@ app.post('/api/services/:serviceId/invoke', requireRole('agent'), async (req, re
   const targetAgentId = String(body.targetAgentId || service.providerAgentId || KITE_AGENT2_ID).trim();
   const invocationId = createTraceId('svc_call');
   const now = new Date().toISOString();
+  const serviceInvocations = readServiceInvocations().filter((item) => String(item?.serviceId || '').trim() === serviceId);
+  const guard = evaluateServiceInvokeGuard(service, {
+    payer,
+    nowMs: Date.now(),
+    invocations: serviceInvocations
+  });
+  if (!guard.ok) {
+    return res.status(403).json({
+      ok: false,
+      error: guard.code || 'service_guard_blocked',
+      reason: guard.reason || 'service guard blocked invoke',
+      checks: guard.checks || []
+    });
+  }
 
   const invocation = {
     invocationId,
     serviceId,
-    action: 'btc-price-feed',
+    action,
     traceId,
     requestId: '',
     state: 'running',
@@ -4892,18 +5722,31 @@ app.post('/api/services/:serviceId/invoke', requireRole('agent'), async (req, re
     const internalApiKey = getInternalAgentApiKey();
     const headers = { 'Content-Type': 'application/json' };
     if (internalApiKey) headers['x-api-key'] = internalApiKey;
+    const invokePayload =
+      action === 'risk-score-feed'
+        ? {
+            traceId,
+            sourceAgentId,
+            targetAgentId,
+            symbol: service.pair || 'BTCUSDT',
+            horizonMin: Number(service.horizonMin || 60),
+            source: service.source || 'hyperliquid',
+            payer
+          }
+        : {
+            traceId,
+            sourceAgentId,
+            targetAgentId,
+            pair: service.pair || 'BTCUSDT',
+            source: service.source || 'hyperliquid',
+            payer
+          };
+    const workflowPath = action === 'risk-score-feed' ? '/api/workflow/risk-score/run' : '/api/workflow/btc-price/run';
 
-    const resp = await fetch(`http://127.0.0.1:${PORT}/api/workflow/btc-price/run`, {
+    const resp = await fetch(`http://127.0.0.1:${PORT}${workflowPath}`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({
-        traceId,
-        sourceAgentId,
-        targetAgentId,
-        pair: service.pair || 'BTCUSDT',
-        source: service.source || 'hyperliquid',
-        payer
-      })
+      body: JSON.stringify(invokePayload)
     });
     const payload = await resp.json().catch(() => ({}));
     const workflow = payload?.workflow || null;
@@ -4942,6 +5785,95 @@ app.post('/api/services/:serviceId/invoke', requireRole('agent'), async (req, re
       traceId
     });
   }
+});
+
+app.get('/api/services/:serviceId/status', requireRole('viewer'), (req, res) => {
+  const serviceId = String(req.params.serviceId || '').trim();
+  if (!serviceId) return res.status(400).json({ ok: false, error: 'serviceId_required' });
+  const service = ensureServiceCatalog().find((item) => String(item?.id || '').trim() === serviceId);
+  if (!service) return res.status(404).json({ ok: false, error: 'service_not_found', serviceId });
+
+  const workflows = readWorkflows();
+  const workflowByTraceId = new Map(workflows.map((item) => [String(item?.traceId || '').trim(), item]));
+  const requests = readX402Requests();
+  const requestById = new Map(requests.map((item) => [String(item?.requestId || '').trim(), item]));
+  const invocations = readServiceInvocations().filter((item) => String(item?.serviceId || '').trim() === serviceId);
+  const receipts = invocations.map((item) => mapServiceReceipt(item, workflowByTraceId, requestById));
+  const status = buildServiceStatus(service, invocations, receipts);
+  const reputation = computeServiceReputation(service, receipts);
+  return res.json({
+    ok: true,
+    traceId: req.traceId || '',
+    service,
+    status,
+    reputation
+  });
+});
+
+app.get('/api/reputation/agents', requireRole('viewer'), (req, res) => {
+  const services = ensureServiceCatalog();
+  const workflows = readWorkflows();
+  const workflowByTraceId = new Map(workflows.map((item) => [String(item?.traceId || '').trim(), item]));
+  const requests = readX402Requests();
+  const requestById = new Map(requests.map((item) => [String(item?.requestId || '').trim(), item]));
+  const invocations = readServiceInvocations();
+
+  const rows = services.map((service) => {
+    const perServiceInv = invocations.filter((item) => String(item?.serviceId || '').trim() === String(service.id || '').trim());
+    const receipts = perServiceInv.map((item) => mapServiceReceipt(item, workflowByTraceId, requestById));
+    const reputation = computeServiceReputation(service, receipts);
+    return {
+      agentId: String(service.providerAgentId || '').trim() || 'unknown',
+      serviceId: String(service.id || '').trim(),
+      action: String(service.action || '').trim(),
+      reputation
+    };
+  });
+
+  return res.json({
+    ok: true,
+    traceId: req.traceId || '',
+    total: rows.length,
+    items: rows
+  });
+});
+
+app.post('/api/services/:serviceId/revoke', requireRole('admin'), (req, res) => {
+  const serviceId = String(req.params.serviceId || '').trim();
+  if (!serviceId) return res.status(400).json({ ok: false, error: 'serviceId_required' });
+  const rows = ensureServiceCatalog();
+  const idx = rows.findIndex((item) => String(item?.id || '').trim() === serviceId);
+  if (idx < 0) return res.status(404).json({ ok: false, error: 'service_not_found', serviceId });
+  rows[idx] = {
+    ...rows[idx],
+    active: false,
+    updatedAt: new Date().toISOString()
+  };
+  writePublishedServices(rows);
+  return res.json({
+    ok: true,
+    traceId: req.traceId || '',
+    service: rows[idx]
+  });
+});
+
+app.post('/api/services/:serviceId/unrevoke', requireRole('admin'), (req, res) => {
+  const serviceId = String(req.params.serviceId || '').trim();
+  if (!serviceId) return res.status(400).json({ ok: false, error: 'serviceId_required' });
+  const rows = ensureServiceCatalog();
+  const idx = rows.findIndex((item) => String(item?.id || '').trim() === serviceId);
+  if (idx < 0) return res.status(404).json({ ok: false, error: 'service_not_found', serviceId });
+  rows[idx] = {
+    ...rows[idx],
+    active: true,
+    updatedAt: new Date().toISOString()
+  };
+  writePublishedServices(rows);
+  return res.json({
+    ok: true,
+    traceId: req.traceId || '',
+    service: rows[idx]
+  });
 });
 
 app.get('/api/services/:serviceId/receipts', requireRole('viewer'), (req, res) => {
