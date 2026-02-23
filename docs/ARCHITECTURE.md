@@ -12,7 +12,7 @@ Backend (Express)
   - Service directory + invoke guards
   - x402 challenge/proof
   - ERC8004 identity checks
-  - SSE stream + evidence APIs
+  - Evidence APIs
         |
         +--> Kite testnet (payment tx + confirmation)
         +--> Price providers (Hyperliquid -> Binance -> OKX fallback)

@@ -449,62 +449,10 @@ app.use((req, res, next) => {
 });
 app.use('/api', apiRateLimit);
 
-const sseClients = new Set();
-
 function broadcastEvent(eventName, payload = {}) {
-  const msg = `event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`;
-  const eventTraceId = String(payload?.traceId || '').trim();
-  for (const client of sseClients) {
-    const clientTraceId = String(client?.traceId || '').trim();
-    if (!clientTraceId && eventTraceId) {
-      continue;
-    }
-    if (clientTraceId && eventTraceId && clientTraceId !== eventTraceId) {
-      continue;
-    }
-    if (clientTraceId && !eventTraceId) {
-      continue;
-    }
-    try {
-      client.res.write(msg);
-    } catch {
-      // ignore broken stream
-    }
-  }
-}
-
-function openSseStream(req, res) {
-  const traceIdFilter = String(req.query?.traceId || '').trim();
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache, no-transform');
-  res.setHeader('Connection', 'keep-alive');
-  res.flushHeaders?.();
-
-  const client = {
-    res,
-    traceId: traceIdFilter
-  };
-  sseClients.add(client);
-  res.write(
-    `event: connected\ndata: ${JSON.stringify({
-      ok: true,
-      at: new Date().toISOString(),
-      traceId: traceIdFilter || ''
-    })}\n\n`
-  );
-
-  const keepalive = setInterval(() => {
-    try {
-      res.write(`event: ping\ndata: ${JSON.stringify({ t: Date.now() })}\n\n`);
-    } catch {
-      // handled by close
-    }
-  }, 15000);
-
-  req.on('close', () => {
-    clearInterval(keepalive);
-    sseClients.delete(client);
-  });
+  // SSE module removed; keep no-op to avoid touching workflow call sites.
+  void eventName;
+  void payload;
 }
 
 function cloneValue(value) {
@@ -3581,14 +3529,6 @@ app.get('/api/chat/agent/health', requireRole('viewer'), async (req, res) => {
       traceId: req.traceId || ''
     });
   }
-});
-
-app.get('/api/events/stream', requireRole('viewer'), (req, res) => {
-  openSseStream(req, res);
-});
-
-app.get('/api/demo/stream', requireRole('viewer'), (req, res) => {
-  openSseStream(req, res);
 });
 
 app.post('/api/workflow/stop-order/run', requireRole('agent'), async (req, res) => {

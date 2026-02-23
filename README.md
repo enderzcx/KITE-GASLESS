@@ -99,7 +99,6 @@ Upgrade authority remains with each proxy owner; this project does not grant per
 3. Homepage chart appends only paid/unlocked BTC points.
 4. Open `/ops` for operational evidence:
    - recent traces
-   - live event feed
    - evidence drawer
    - session setup panel
    - guardrail-driven failure replay (`Fail Demo`)
@@ -115,7 +114,6 @@ Upgrade authority remains with each proxy owner; this project does not grant per
 - `GET /api/demo/price-series?limit=60`
 - `GET /api/demo/trace/:traceId`
 - `GET /api/demo/trace-by-request/:requestId`
-- `GET /api/demo/stream` (SSE)
 - `GET /api/x402/mapping/latest`
 - `GET /api/receipt/:requestId`
 - `GET /api/market/btc/price`
@@ -150,7 +148,7 @@ Upgrade authority remains with each proxy owner; this project does not grant per
 3. Open `/market` and invoke `BTC Risk Score (A2A)`.
 4. Invoke `X Reader Digest (ATAPI)` with a target URL.
 5. Check `requestId/txHash/block/status/explorer` in receipts and details.
-6. Open `/ops` to inspect recent traces and live event feed.
+6. Open `/ops` to inspect recent traces and evidence drawer.
 
 Reference docs:
 - `docs/JUDGE_WALKTHROUGH.md`
@@ -160,7 +158,7 @@ Reference docs:
 
 `Frontend (React) -> Backend (Express) -> OpenClaw Adapter -> OpenClaw`
 
-`Backend also provides x402 gateway + policy engine + workflow orchestration + SSE events`
+`Backend also provides x402 gateway + policy engine + workflow orchestration`
 
 ## Repository Structure (Minimal Kept Set)
 
@@ -310,12 +308,10 @@ After running `pm2 startup`, copy and execute the generated command once.
 
 ```bash
 curl -sS https://your-subdomain.duckdns.org/api/chat/agent/health
-curl -N https://your-subdomain.duckdns.org/api/events/stream?traceId=test
 ```
 
 Expected:
 - health endpoint returns `{"ok":true,...}`
-- SSE endpoint returns `connected` and `ping` events
 
 Check minute loop status (server-side ATAPI polling):
 

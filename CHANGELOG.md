@@ -22,6 +22,13 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 ### Changed
 - Demo and Ops UI now provide `Download Receipt` action from API result panels.
 - Market form now supports x-reader fields (`url/mode/maxChars`) and service details render x-reader metadata.
+- Frontend removed SSE connection indicator and live event panel; polling-only UX for stable demos.
+
+### Removed
+- Removed backend SSE stream endpoints:
+  - `GET /api/demo/stream`
+  - `GET /api/events/stream`
+- SSE broadcast internals removed from active runtime (workflow broadcast kept as no-op for compatibility).
 
 ## [v1.8.0] - 2026-02-22
 
