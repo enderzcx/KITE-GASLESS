@@ -50,6 +50,9 @@ if [[ ! -f "$FRONTEND_DIR/.env.production" ]]; then
   exit 1
 fi
 
+echo "[INFO] Validating backend production env"
+bash "$APP_DIR/deploy/scripts/validate-prod-env.sh" "$BACKEND_DIR/.env"
+
 echo "[INFO] Preparing persistent data link"
 if [[ -L "$BACKEND_DIR/data" ]]; then
   CURRENT_TARGET="$(readlink -f "$BACKEND_DIR/data" || true)"

@@ -212,8 +212,17 @@ Fill `backend/.env` with real values:
 - `KITECLAW_BACKEND_SIGNER_PRIVATE_KEY`
 - `ERC8004_IDENTITY_REGISTRY`
 - `ERC8004_AGENT_ID`
+- `AUTO_BTC_PRICE_ENABLED=1`
+- `AUTO_BTC_PRICE_INTERVAL_MS=60000`
+- `AUTO_BTC_PRICE_PAYER=<your AA wallet>`
 - `IDENTITY_VERIFY_MODE=registry_only` (recommended for public demo websites)
 - OpenClaw remote API settings (`OPENCLAW_BASE_URL`, `OPENCLAW_MODEL`, etc.)
+
+Validate production env before deploy:
+
+```bash
+bash deploy/scripts/validate-prod-env.sh backend/.env
+```
 
 If session payment fails with `sessionExists BAD_DATA`, ensure AA account is deployed first:
 
@@ -229,6 +238,8 @@ export REPO_URL=https://github.com/enderzcx/KITE-GASLESS.git
 export BRANCH=main
 bash deploy/scripts/deploy.sh
 ```
+
+`deploy.sh` now validates backend production env before build/restart. It will fail fast if key fields are missing or invalid.
 
 Apply nginx site:
 
@@ -246,6 +257,15 @@ sudo systemctl reload nginx
 sudo certbot --nginx -d your-subdomain.duckdns.org
 ```
 
+### 4.1) Freeze PM2 startup on reboot
+
+```bash
+pm2 save
+pm2 startup systemd -u root --hp /root
+```
+
+After running `pm2 startup`, copy and execute the generated command once.
+
 ### 5) Smoke checks
 
 ```bash
@@ -256,6 +276,12 @@ curl -N https://your-subdomain.duckdns.org/api/events/stream?traceId=test
 Expected:
 - health endpoint returns `{"ok":true,...}`
 - SSE endpoint returns `connected` and `ping` events
+
+Check minute loop status (server-side ATAPI polling):
+
+```bash
+curl -sS https://your-subdomain.duckdns.org/api/automation/btc-price/status
+```
 
 ### 6) Data backup
 
