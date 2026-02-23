@@ -268,6 +268,7 @@ function App() {
   const [hoverIndex, setHoverIndex] = useState(-1);
   const [readerExpanded, setReaderExpanded] = useState(false);
   const [readerCopied, setReaderCopied] = useState(false);
+  const [opsCopiedField, setOpsCopiedField] = useState('');
   const [services, setServices] = useState([]);
   const [selectedServiceId, setSelectedServiceId] = useState('');
   const [serviceReceipts, setServiceReceipts] = useState([]);
@@ -302,6 +303,7 @@ function App() {
   const chartPriceRef = useRef(null);
   const traceFetchRef = useRef({ token: 0, traceId: '' });
   const readerCopyTimerRef = useRef(null);
+  const opsCopyTimerRef = useRef(null);
 
   const isOpsPage = route === 'ops';
   const isMarketPage = route === 'market';
@@ -350,9 +352,14 @@ function App() {
   useEffect(() => {
     setReaderExpanded(false);
     setReaderCopied(false);
+    setOpsCopiedField('');
     if (readerCopyTimerRef.current) {
       clearTimeout(readerCopyTimerRef.current);
       readerCopyTimerRef.current = null;
+    }
+    if (opsCopyTimerRef.current) {
+      clearTimeout(opsCopyTimerRef.current);
+      opsCopyTimerRef.current = null;
     }
   }, [selectedTraceId]);
 
@@ -361,6 +368,10 @@ function App() {
       if (readerCopyTimerRef.current) {
         clearTimeout(readerCopyTimerRef.current);
         readerCopyTimerRef.current = null;
+      }
+      if (opsCopyTimerRef.current) {
+        clearTimeout(opsCopyTimerRef.current);
+        opsCopyTimerRef.current = null;
       }
     },
     []
@@ -712,6 +723,38 @@ function App() {
       }, 1600);
     } catch (error) {
       setErrorText(error?.message || 'Failed to copy digest.');
+    }
+  }, []);
+
+  const copyOpsField = useCallback(async (textRaw = '', field = 'value') => {
+    const text = String(textRaw || '').trim();
+    if (!text || text === '-') {
+      setErrorText('No value to copy.');
+      return;
+    }
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.setAttribute('readonly', 'readonly');
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        const ok = document.execCommand('copy');
+        textarea.remove();
+        if (!ok) throw new Error('clipboard_copy_failed');
+      }
+      setOpsCopiedField(field);
+      if (opsCopyTimerRef.current) clearTimeout(opsCopyTimerRef.current);
+      opsCopyTimerRef.current = setTimeout(() => {
+        setOpsCopiedField('');
+        opsCopyTimerRef.current = null;
+      }, 1400);
+    } catch (error) {
+      setErrorText(error?.message || 'Failed to copy value.');
     }
   }, []);
 
@@ -1136,6 +1179,89 @@ function App() {
             <span className="panel-note">click row to open trace</span>
           </div>
           <div className="trace-list">{renderTraceList()}</div>
+        </section>
+
+        <section className="panel ops-quickview">
+          <div className="panel-head">
+            <h2>Selected Trace</h2>
+            <span className={`status-pill ${traceState}`}>{traceState}</span>
+          </div>
+          {currentWorkflow || currentRequest || selectedTraceId ? (
+            <>
+              <div className="quick-meta-grid">
+                <article className="evidence-card">
+                  <h3>Snapshot</h3>
+                  <p>traceId: {fullText(selectedTraceId || currentWorkflow?.traceId || '-')}</p>
+                  <p>requestId: {fullText(currentRequestId || '-')}</p>
+                  <p>action: {currentAction || '-'}</p>
+                  <p>flow: {flowLabel}</p>
+                  <p>updated: {formatTime(currentWorkflow?.updatedAt || currentRequest?.updatedAt || '')}</p>
+                </article>
+                <article className="evidence-card">
+                  <h3>Payment + Result</h3>
+                  <p>amount: {currentRequest?.amount || '-'}</p>
+                  <p>payer: {fullText(currentWorkflow?.payer || currentRequest?.payer || '-')}</p>
+                  <p>provider: {readerResult?.provider || quote?.provider || '-'}</p>
+                  <p>
+                    result:{' '}
+                    {readerResult?.title
+                      ? readerResult.title
+                      : Number.isFinite(Number(quote?.priceUsd))
+                        ? `$${formatPrice(quote?.priceUsd)}`
+                        : '-'}
+                  </p>
+                  <p>summary: {summaryText || '-'}</p>
+                </article>
+              </div>
+
+              <ol className="quick-step-list">
+                {timeline.map((step, idx) => (
+                  <li key={`q_${step.id}`} className={`quick-step ${step.state}`}>
+                    <span>{idx + 1}. {step.label}</span>
+                    <span className={`status-pill mini ${step.state}`}>{step.state}</span>
+                  </li>
+                ))}
+              </ol>
+
+              <div className="session-actions">
+                <button
+                  type="button"
+                  className="ghost-btn"
+                  onClick={() => void downloadReceipt(currentRequestId)}
+                  disabled={!currentRequestId}
+                >
+                  Download Receipt
+                </button>
+                {onchainExplorerLink ? (
+                  <a href={onchainExplorerLink} target="_blank" rel="noreferrer" className="ghost-btn">
+                    Open Explorer
+                  </a>
+                ) : (
+                  <button type="button" className="ghost-btn" disabled>
+                    Open Explorer
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="ghost-btn"
+                  onClick={() => void copyOpsField(currentRequestId, 'requestId')}
+                  disabled={!currentRequestId}
+                >
+                  {opsCopiedField === 'requestId' ? 'Copied requestId' : 'Copy requestId'}
+                </button>
+                <button
+                  type="button"
+                  className="ghost-btn"
+                  onClick={() => void copyOpsField(onchainTxHash, 'txHash')}
+                  disabled={!onchainTxHash}
+                >
+                  {opsCopiedField === 'txHash' ? 'Copied txHash' : 'Copy txHash'}
+                </button>
+              </div>
+            </>
+          ) : (
+            <p className="empty-text">Click a trace row on the left to inspect this panel.</p>
+          )}
         </section>
 
         <section className="panel ops-evidence">

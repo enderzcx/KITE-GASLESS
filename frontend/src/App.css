@@ -162,6 +162,10 @@ body {
   grid-column: 1 / -1;
 }
 
+.ops-quickview {
+  min-height: 360px;
+}
+
 .panel {
   border: 1px solid var(--border);
   border-radius: 18px;
@@ -609,6 +613,33 @@ body {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
+}
+
+.quick-meta-grid {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.quick-step-list {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 6px;
+}
+
+.quick-step {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.74);
+  padding: 7px 9px;
+  font-size: 13px;
 }
 
 .evidence-card {
