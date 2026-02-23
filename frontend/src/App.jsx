@@ -406,6 +406,23 @@ function App() {
     }
   }, []);
 
+  const loadTraceByRequest = useCallback(
+    async (requestId) => {
+      const normalized = String(requestId || '').trim();
+      if (!normalized) return;
+      try {
+        const payload = await fetchJson(`/api/demo/trace-by-request/${encodeURIComponent(normalized)}`);
+        const traceId = String(payload?.traceId || '').trim();
+        if (!traceId) throw new Error('Trace id missing for this request.');
+        setSelectedTraceId(traceId);
+        await loadTrace(traceId);
+      } catch (error) {
+        setErrorText(error?.message || 'Failed to replay by requestId.');
+      }
+    },
+    [loadTrace]
+  );
+
   const loadSnapshot = useCallback(
     async ({ manual = false, forceTraceId = '' } = {}) => {
       if (manual) setRefreshing(true);
@@ -469,12 +486,9 @@ function App() {
   }, [loadSnapshot]);
 
   useEffect(() => {
-    if (VIEWER_API_KEY) {
-      setStreamMode('polling');
-      return undefined;
-    }
-
-    const source = new EventSource(resolveApiUrl('/api/demo/stream'));
+    const source = new EventSource(
+      resolveApiUrl('/api/demo/stream', VIEWER_API_KEY ? { apiKey: VIEWER_API_KEY } : undefined)
+    );
     const eventNames = Object.keys(EVENT_META);
 
     const onOpen = () => setStreamMode('live');
@@ -698,11 +712,14 @@ function App() {
           key={`${item.requestId || 'row'}_${idx}`}
           className={`trace-row ${selectedTraceId === traceId ? 'active' : ''}`}
           onClick={() => {
-            if (!traceId) return;
-            setSelectedTraceId(traceId);
-            void loadTrace(traceId);
+            if (traceId) {
+              setSelectedTraceId(traceId);
+              void loadTrace(traceId);
+              return;
+            }
+            void loadTraceByRequest(item?.requestId || '');
           }}
-          disabled={!traceId}
+          disabled={!traceId && !item?.requestId}
         >
           <span>{shortenMiddle(traceId || item.requestId, 14, 8)}</span>
           <span>{item.flowMode || '-'}</span>
@@ -915,6 +932,11 @@ function App() {
           <button type="button" className="ghost-btn danger" onClick={triggerFailDemo} disabled={triggering || failTriggering}>
             {failTriggering ? 'Failing...' : 'Fail Demo'}
           </button>
+          {streamMode !== 'live' ? (
+            <button type="button" className="ghost-btn" onClick={() => setStreamToken((x) => x + 1)}>
+              Retry SSE
+            </button>
+          ) : null}
           <button type="button" className="ghost-btn" onClick={() => navigate('demo')}>
             Back to Demo
           </button>
@@ -946,7 +968,7 @@ function App() {
         <section className="panel">
           <div className="panel-head">
             <h2>Recent Traces</h2>
-            <span className="panel-note">click to replay</span>
+            <span className="panel-note">click row to open trace</span>
           </div>
           <div className="trace-list">{renderTraceList()}</div>
         </section>
@@ -958,7 +980,11 @@ function App() {
           </div>
           <ul className="event-list">
             {events.length === 0 ? (
-              <li className="empty-text">Waiting for workflow events...</li>
+              <li className="empty-text">
+                {streamMode === 'live'
+                  ? 'Waiting for workflow events...'
+                  : 'Stream not live yet. Keep this page open or click Retry SSE on home page.'}
+              </li>
             ) : (
               events.map((item) => (
                 <li key={item.id} className={`event-row ${item.state}`}>

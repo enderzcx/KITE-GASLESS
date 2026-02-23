@@ -140,6 +140,10 @@ function extractApiKey(req) {
   if (xApiKey) return xApiKey;
   const auth = String(req.headers.authorization || '').trim();
   if (auth.toLowerCase().startsWith('bearer ')) return auth.slice(7).trim();
+  const streamQueryKey = String(req.query?.apiKey || req.query?.token || '').trim();
+  if (streamQueryKey && req.method === 'GET' && String(req.path || '').includes('/stream')) {
+    return streamQueryKey;
+  }
   return '';
 }
 
@@ -871,7 +875,7 @@ function mapX402Item(item = {}, workflow = null) {
     tokenAddress: item.tokenAddress || '',
     recipient: item.recipient || '',
     workflowState: workflow?.state || '',
-    workflowTraceId: workflow?.traceId || '',
+    workflowTraceId: workflow?.traceId || item?.a2a?.traceId || '',
     workflowUpdatedAt: workflow?.updatedAt || workflow?.createdAt || '',
     workflowError: workflow?.error || '',
     policyDecision: item?.policy?.decision || '',
@@ -3422,6 +3426,23 @@ app.get('/api/demo/trace/:traceId', requireRole('viewer'), (req, res) => {
     receipt,
     identityLatest,
     timeline
+  });
+});
+
+app.get('/api/demo/trace-by-request/:requestId', requireRole('viewer'), (req, res) => {
+  const requestId = String(req.params.requestId || '').trim();
+  if (!requestId) {
+    return res.status(400).json({ ok: false, error: 'requestId_required' });
+  }
+  const workflows = readWorkflows();
+  const workflow = workflows.find((w) => String(w.requestId || '').trim() === requestId);
+  if (!workflow?.traceId) {
+    return res.status(404).json({ ok: false, error: 'workflow_not_found_by_request', requestId });
+  }
+  return res.json({
+    ok: true,
+    requestId,
+    traceId: String(workflow.traceId || '').trim()
   });
 });
 
