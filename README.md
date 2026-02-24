@@ -9,6 +9,7 @@ KiteTrace Platform: agent-native micropayment rails on Kite Testnet, using ERC80
 - Enables agents to publish/consume services and settle per action with x402.
 - Uses ERC8004 identity and direct on-chain confirmation (`requestId`, `txHash`, `block`, `status`, explorer link).
 - BTCUSD minute-level loop is a live demo scenario; platform supports broader agent services.
+- Product surface follows Agent Network information architecture: `/`, `/market`, `/trace/:requestId`, `/ops`.
 
 Current Version: `v1.8.0`
 
@@ -20,8 +21,9 @@ Current Version: `v1.8.0`
 - Status: publicly available deployment on Kite Testnet.
 - Purpose: judge-facing online demo for end-to-end flow validation.
 - Expected pages:
-  - Demo Home (`/`) - paid BTC line chart + ERC8004/x402 flow card
+  - Network Overview (`/`) - paid BTC line chart + ERC8004/x402 flow card (Phase 1 anchor scene)
   - Service Market (`/market`) - publish/discover/invoke agent services (MVP)
+  - Trace Evidence (`/trace/:requestId`) - request-level proof chain + downloadable receipt
   - Ops Console (`/ops`) - KPI/traces/events/evidence/session setup
 
 ### Local Reproducible Version
@@ -32,6 +34,21 @@ Current Version: `v1.8.0`
 - Core local entrypoints:
   - frontend: `npm run dev` (Vite)
   - backend: `npm start` (Express)
+
+## Product Direction (Aligned with `GOAL.md`)
+
+- Positioning: agent-first network, not a retail wallet tutorial product.
+- Core closed loop: discover service -> invoke -> pay (x402) -> unlock result -> verify evidence.
+- P0 priorities:
+  - ERC8004-style identity verification on task flow
+  - x402 settlement with request/tx/block/explorer evidence
+  - A2API + A2A task execution (sync + scheduled trigger)
+  - downloadable receipt JSON for review/audit
+  - homepage centered on network + market view with minimal actions
+- Non-goals in Phase 1:
+  - complex social product features
+  - cross-chain bridge and fund aggregation
+  - broad protocol compatibility at the cost of end-to-end stability
 
 ## What This Project Demonstrates
 
@@ -97,12 +114,13 @@ Upgrade authority remains with each proxy owner; this project does not grant per
    - API result unlock (quote)
    - on-chain confirmation presentation (`txHash / block / status / explorer link`)
 3. Homepage chart appends only paid/unlocked BTC points.
-4. Open `/ops` for operational evidence:
+4. Open `/trace/:requestId` to inspect request-level proof chain and download standard receipt JSON.
+5. Open `/ops` for operational evidence:
    - recent traces
    - evidence drawer
    - session setup panel
    - guardrail-driven failure replay (`Fail Demo`)
-5. Optional continuous demo:
+6. Optional continuous demo:
    - start automation to run BTC request every minute.
 
 ## Core API Endpoints (Current)
@@ -145,10 +163,11 @@ Upgrade authority remains with each proxy owner; this project does not grant per
 
 1. Open `/` and click `Run Demo`.
 2. Confirm the flow reaches on-chain confirmation and chart point updates only after paid unlock.
-3. Open `/market` and invoke `BTC Risk Score (A2A)`.
-4. Invoke `X Reader Digest (ATAPI)` with a target URL.
-5. Check `requestId/txHash/block/status/explorer` in receipts and details.
-6. Open `/ops` to inspect recent traces and evidence drawer.
+3. Capture `requestId` from UI and open `/trace/:requestId`.
+4. Confirm Trace page shows timeline + `txHash/block/status/explorer`, then click `Download Receipt`.
+5. Open `/market` and invoke `BTC Risk Score (A2A)`.
+6. Invoke `X Reader Digest (ATAPI)` with a target URL.
+7. Open `/ops` to inspect recent traces and evidence drawer.
 
 Reference docs:
 - `docs/JUDGE_WALKTHROUGH.md`
@@ -159,6 +178,8 @@ Reference docs:
 `Frontend (React) -> Backend (Express) -> OpenClaw Adapter -> OpenClaw`
 
 `Backend also provides x402 gateway + policy engine + workflow orchestration`
+
+`Information architecture: / (Network Overview) + /market + /trace/:requestId + /ops`
 
 ## Repository Structure (Minimal Kept Set)
 
