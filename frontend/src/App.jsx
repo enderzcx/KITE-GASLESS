@@ -141,16 +141,30 @@ function toVisualState(record = {}) {
   return 'running';
 }
 
+function readTraceRequestIdFromPathname() {
+  const path = String(window.location.pathname || '/').trim();
+  const match = path.match(/^\/trace(?:\/([^/]+))?\/?$/i);
+  if (!match) return '';
+  const raw = String(match[1] || '').trim();
+  if (!raw) return '';
+  try {
+    return decodeURIComponent(raw).trim();
+  } catch {
+    return raw;
+  }
+}
+
 function readRouteFromPathname() {
   const path = String(window.location.pathname || '/').trim();
   if (path === '/ops') return 'ops';
   if (path === '/market') return 'market';
+  if (/^\/trace(?:\/|$)/i.test(path)) return 'trace';
   return 'demo';
 }
 
 function normalizeRoutePath() {
   const path = String(window.location.pathname || '/').trim();
-  if (path === '/' || path === '/ops' || path === '/market') return;
+  if (path === '/' || path === '/ops' || path === '/market' || /^\/trace(?:\/[^/]+)?\/?$/i.test(path)) return;
   try {
     window.history.replaceState({}, '', `/${window.location.search}${window.location.hash}`);
   } catch {
@@ -250,6 +264,8 @@ function buildChartModel(series = []) {
 
 function App() {
   const [route, setRoute] = useState(() => readRouteFromPathname());
+  const [traceRequestId, setTraceRequestId] = useState(() => readTraceRequestIdFromPathname());
+  const [traceRequestInput, setTraceRequestInput] = useState(() => readTraceRequestIdFromPathname());
   const [walletState, setWalletState] = useState({ ownerAddress: '', aaAddress: '' });
   const [showSetup, setShowSetup] = useState(false);
 
@@ -307,6 +323,7 @@ function App() {
 
   const isOpsPage = route === 'ops';
   const isMarketPage = route === 'market';
+  const isTracePage = route === 'trace';
 
   const navigate = useCallback((nextRoute) => {
     const target = nextRoute === 'ops' ? '/ops' : nextRoute === 'market' ? '/market' : '/';
@@ -342,7 +359,11 @@ function App() {
     normalizeRoutePath();
     const onPopState = () => {
       normalizeRoutePath();
-      setRoute(readRouteFromPathname());
+      const nextRoute = readRouteFromPathname();
+      const nextRequestId = readTraceRequestIdFromPathname();
+      setRoute(nextRoute);
+      setTraceRequestId(nextRequestId);
+      setTraceRequestInput(nextRequestId);
       setShowSetup(false);
     };
     window.addEventListener('popstate', onPopState);
@@ -426,6 +447,47 @@ function App() {
       }
     },
     [loadTrace]
+  );
+
+  const openTracePage = useCallback(
+    (requestIdRaw = '') => {
+      const requestId = String(requestIdRaw || '').trim();
+      const target = requestId ? `/trace/${encodeURIComponent(requestId)}` : '/trace';
+      try {
+        if (window.location.pathname !== target) {
+          window.history.pushState({}, '', `${target}${window.location.search}${window.location.hash}`);
+        }
+      } catch {
+        // ignore history errors
+      }
+      setRoute('trace');
+      setShowSetup(false);
+      setTraceRequestId(requestId);
+      setTraceRequestInput(requestId);
+      if (!requestId) {
+        setSelectedTraceId('');
+        setTraceData(null);
+        return;
+      }
+      if (route === 'trace' && requestId === String(traceRequestId || '').trim()) {
+        void loadTraceByRequest(requestId);
+      }
+    },
+    [loadTraceByRequest, route, traceRequestId]
+  );
+
+  const submitTraceLookup = useCallback(
+    (event) => {
+      event?.preventDefault?.();
+      const requestId = String(traceRequestInput || '').trim();
+      if (!requestId) {
+        setErrorText('Enter a requestId first.');
+        return;
+      }
+      setErrorText('');
+      openTracePage(requestId);
+    },
+    [openTracePage, traceRequestInput]
   );
 
   const loadSnapshot = useCallback(
@@ -775,6 +837,17 @@ function App() {
     return () => clearInterval(timer);
   }, [loadServiceCatalog, route]);
 
+  useEffect(() => {
+    if (route !== 'trace') return;
+    const requestId = String(traceRequestId || '').trim();
+    if (!requestId) {
+      setSelectedTraceId('');
+      setTraceData(null);
+      return;
+    }
+    void loadTraceByRequest(requestId);
+  }, [loadTraceByRequest, route, traceRequestId]);
+
   const triggerDemoRun = useCallback(async () => {
     setTriggering(true);
     setErrorText('');
@@ -967,6 +1040,9 @@ function App() {
           <button type="button" className="ghost-btn danger" onClick={triggerFailDemo} disabled={triggering || failTriggering}>
             {failTriggering ? 'Failing...' : 'Fail Demo'}
           </button>
+          <button type="button" className="ghost-btn" onClick={() => openTracePage(currentRequestId)} disabled={!currentRequestId}>
+            Open Trace
+          </button>
           <button type="button" className="ghost-btn" onClick={() => navigate('market')}>
             Open Market
           </button>
@@ -1141,6 +1217,9 @@ function App() {
           </button>
           <button type="button" className="ghost-btn danger" onClick={triggerFailDemo} disabled={triggering || failTriggering}>
             {failTriggering ? 'Failing...' : 'Fail Demo'}
+          </button>
+          <button type="button" className="ghost-btn" onClick={() => openTracePage(currentRequestId)} disabled={!currentRequestId}>
+            Open Trace
           </button>
           <button type="button" className="ghost-btn" onClick={() => navigate('market')}>
             Open Market
@@ -1374,6 +1453,177 @@ function App() {
         </div>
         {showSetup ? <AgentSettingsPage onBack={() => setShowSetup(false)} walletState={walletState} /> : null}
       </section>
+    </div>
+  );
+
+  const renderTracePage = () => (
+    <div className="page-shell">
+      <header className="page-header">
+        <div>
+          <p className="header-kicker">KITE TESTNET / TRACE</p>
+          <h1>Receipt & Evidence</h1>
+          <p className="header-subtitle">Lookup by requestId and inspect complete x402 + on-chain evidence.</p>
+        </div>
+        <div className="header-actions">
+          <span className="sync-text">Last sync: {formatTime(lastSyncAt)}</span>
+          <button
+            type="button"
+            className="ghost-btn"
+            onClick={() => {
+              if (traceRequestId) {
+                void loadTraceByRequest(traceRequestId);
+              } else {
+                setErrorText('Enter a requestId first.');
+              }
+            }}
+            disabled={traceLoading}
+          >
+            {traceLoading ? 'Loading...' : 'Reload Trace'}
+          </button>
+          <button
+            type="button"
+            className="ghost-btn"
+            onClick={() => void downloadReceipt(currentRequestId || traceRequestId)}
+            disabled={!(currentRequestId || traceRequestId)}
+          >
+            Download Receipt
+          </button>
+          <button type="button" className="ghost-btn" onClick={() => navigate('demo')}>
+            Back to Demo
+          </button>
+          <button type="button" className="ghost-btn" onClick={() => navigate('market')}>
+            Open Market
+          </button>
+          <button type="button" className="ghost-btn" onClick={() => navigate('ops')}>
+            Open Ops
+          </button>
+        </div>
+      </header>
+
+      {errorText ? <p className="error-banner">{errorText}</p> : null}
+
+      <main className="trace-layout">
+        <section className="panel">
+          <div className="panel-head">
+            <h2>Lookup</h2>
+            <span className="panel-note">{traceLoading ? 'loading' : 'ready'}</span>
+          </div>
+          <form className="trace-lookup" onSubmit={submitTraceLookup}>
+            <div className="vault-input">
+              <label htmlFor="trace-request-id">requestId</label>
+              <input
+                id="trace-request-id"
+                value={traceRequestInput}
+                onChange={(event) => setTraceRequestInput(event.target.value)}
+                placeholder="paste x402 requestId"
+              />
+            </div>
+            <div className="session-actions">
+              <button type="submit" className="ghost-btn">
+                Open Request
+              </button>
+            </div>
+          </form>
+          <p className="flow-meta">requestId: {fullText(currentRequestId || traceRequestId || '-')}</p>
+          <p className="flow-meta">traceId: {fullText(selectedTraceId || currentWorkflow?.traceId || '-')}</p>
+          <p className="flow-meta">state: {traceState || '-'}</p>
+          <p className="flow-summary">{summaryText}</p>
+        </section>
+
+        <section className="panel trace-evidence-panel">
+          <div className="panel-head">
+            <h2>Snapshot</h2>
+            <span className={`status-pill ${traceState}`}>{traceState}</span>
+          </div>
+          <div className="evidence-grid trace-evidence-grid">
+            <article className="evidence-card">
+              <h3>Identity</h3>
+              <p>agentId: {currentRequest?.identity?.agentId || '-'}</p>
+              <p>registry: {fullText(currentRequest?.identity?.registry || '-')}</p>
+              <p>wallet: {fullText(currentRequest?.identity?.agentWallet || '-')}</p>
+            </article>
+            <article className="evidence-card">
+              <h3>Payment</h3>
+              <p>requestId: {fullText(currentRequestId || traceRequestId || '-')}</p>
+              <p>amount: {currentRequest?.amount || '-'}</p>
+              <p>token: {fullText(currentRequest?.tokenAddress || '-')}</p>
+              <p>payer: {fullText(currentWorkflow?.payer || currentRequest?.payer || '-')}</p>
+              <p>payee: {fullText(currentRequest?.recipient || '-')}</p>
+            </article>
+            <article className="evidence-card">
+              <h3>On-chain</h3>
+              <p>txHash: {fullText(onchainTxHash || '-')}</p>
+              <p>block: {onchainBlock}</p>
+              <p>status: {onchainStatus}</p>
+              <p>
+                explorer:{' '}
+                {onchainExplorerLink ? (
+                  <a href={onchainExplorerLink} target="_blank" rel="noreferrer">
+                    {onchainExplorerLink}
+                  </a>
+                ) : (
+                  '-'
+                )}
+              </p>
+            </article>
+            <article className="evidence-card">
+              <h3>API Result</h3>
+              {readerResult ? (
+                <>
+                  <p>provider: {readerResult?.provider || '-'}</p>
+                  <p>url: {readerResult?.url || '-'}</p>
+                  <p>title: {readerResult?.title || '-'}</p>
+                  <p>quality: {readerQuality}</p>
+                </>
+              ) : (
+                <>
+                  <p>provider: {quote?.provider || '-'}</p>
+                  <p>price: {Number.isFinite(Number(quote?.priceUsd)) ? `$${formatPrice(quote?.priceUsd)}` : '-'}</p>
+                  <p>pair: {quote?.pair || '-'}</p>
+                </>
+              )}
+              <p>summary: {summaryText || '-'}</p>
+            </article>
+          </div>
+        </section>
+
+        <section className="panel trace-timeline-panel">
+          <div className="panel-head">
+            <h2>Timeline</h2>
+            <span className="panel-note">{flowLabel}</span>
+          </div>
+          <ol className="flow-step-list">
+            {timeline.map((step, idx) => (
+              <li key={`trace_${step.id}`} className={`flow-step-card ${step.state}`}>
+                <div className="flow-step-top">
+                  <span className="flow-index">{idx + 1}</span>
+                  <strong>{step.label}</strong>
+                  <span className={`status-pill mini ${step.state}`}>{step.state}</span>
+                </div>
+                <p className="flow-step-detail">{step.detail || 'waiting...'}</p>
+                {step.id === 'api_result' ? (
+                  <div className="flow-price-row">
+                    <span className="muted-label">Result</span>
+                    <strong className="flow-price-tag">
+                      {Number.isFinite(Number(quote?.priceUsd))
+                        ? `$${formatPrice(quote?.priceUsd)}`
+                        : readerResult?.provider || '-'}
+                    </strong>
+                    <button
+                      type="button"
+                      className="ghost-btn receipt-btn"
+                      onClick={() => void downloadReceipt(currentRequestId || traceRequestId)}
+                      disabled={!(currentRequestId || traceRequestId)}
+                    >
+                      Download Receipt
+                    </button>
+                  </div>
+                ) : null}
+              </li>
+            ))}
+          </ol>
+        </section>
+      </main>
     </div>
   );
 
@@ -1751,7 +2001,7 @@ function App() {
     </div>
   );
 
-  return isOpsPage ? renderOpsPage() : isMarketPage ? renderMarketPage() : renderDemoPage();
+  return isOpsPage ? renderOpsPage() : isMarketPage ? renderMarketPage() : isTracePage ? renderTracePage() : renderDemoPage();
 }
 
 export default App;
