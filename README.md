@@ -144,11 +144,31 @@ Upgrade authority remains with each proxy owner; this project does not grant per
 - `POST /api/services/:serviceId/revoke`
 - `POST /api/services/:serviceId/unrevoke`
 - `GET /api/reputation/agents`
+- `GET /api/network/agents`
+- `POST /api/network/tasks/run`
+- `POST /api/network/demo/router-risk/run`
+- `GET /api/xmtp/status`
+- `POST /api/xmtp/start`
+- `POST /api/xmtp/stop`
+- `GET /api/xmtp/events`
+- `GET /api/xmtp/can-message`
+- `POST /api/xmtp/dm/send`
 - `GET /api/automation/btc-price/status`
 - `POST /api/automation/btc-price/start`
 - `POST /api/automation/btc-price/stop`
 - `POST /api/policy/revoke`
 - `POST /api/policy/unrevoke`
+
+### XMTP Router->Risk Quick Verify (Local)
+
+```powershell
+cd backend
+powershell -ExecutionPolicy Bypass -File .\scripts\run-xmtp-router-risk-demo.ps1 `
+  -BaseUrl "http://127.0.0.1:3001" `
+  -AdminApiKey "<admin_key>" `
+  -AgentApiKey "<agent_key>" `
+  -ViewerApiKey "<viewer_key>"
+```
 
 ## Runtime Notes (Testnet)
 

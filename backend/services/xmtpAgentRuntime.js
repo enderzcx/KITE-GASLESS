@@ -1,4 +1,6 @@
-import { Agent, IdentifierKind, filter } from '@xmtp/agent-sdk';
+import fs from 'fs';
+import path from 'path';
+import { Agent, IdentifierKind, createSigner, createUser, filter } from '@xmtp/agent-sdk';
 
 const MAX_DEDUPE_SET_SIZE = 2000;
 
@@ -10,6 +12,20 @@ function normalizeAddress(value = '') {
 
 function normalizeText(value = '') {
   return String(value || '').trim();
+}
+
+function normalizePrivateKey(value = '') {
+  const raw = normalizeText(value);
+  if (!raw) return '';
+  const candidate = raw.startsWith('0x') ? raw : `0x${raw}`;
+  if (!/^0x[0-9a-fA-F]{64}$/.test(candidate)) return '';
+  return candidate;
+}
+
+function normalizeHex(value = '') {
+  const raw = normalizeText(value);
+  if (!raw) return '';
+  return raw.startsWith('0x') ? raw : `0x${raw}`;
 }
 
 function toIsoNow() {
@@ -63,11 +79,18 @@ export function createXmtpAgentRuntime(options = {}) {
   const eventRetention = Math.max(50, Math.min(Number(options.eventRetention || 600), 5000));
   const autoAck = Boolean(options.autoAck);
   const enabled = Boolean(options.enabled);
+  const runtimeName = normalizeText(options.runtimeName || 'router-runtime') || 'router-runtime';
+  const defaultAgentId = normalizeText(options.agentId || '');
+  const configuredWalletKey = normalizePrivateKey(options.walletKey || '');
+  const configuredDbEncryptionKey = normalizeHex(options.dbEncryptionKey || '');
+  const configuredDbDirectory = normalizeText(options.dbDirectory || '');
 
   const state = {
     enabled,
     configured: false,
     running: false,
+    runtimeName,
+    agentId: defaultAgentId,
     env: normalizeText(process.env.XMTP_ENV || options.env || 'dev').toLowerCase() || 'dev',
     address: '',
     inboxId: '',
@@ -91,6 +114,12 @@ export function createXmtpAgentRuntime(options = {}) {
       createdAt: toIsoNow(),
       direction: normalizeText(input.direction) || 'internal',
       event: normalizeText(input.event) || 'unknown',
+      runtimeName,
+      agentId: normalizeText(input.agentId || state.agentId || defaultAgentId),
+      fromAgentId: normalizeText(input.fromAgentId),
+      kind: normalizeText(input.kind),
+      channel: normalizeText(input.channel),
+      hopIndex: Number.isFinite(Number(input.hopIndex)) ? Number(input.hopIndex) : null,
       traceId: normalizeText(input.traceId),
       requestId: normalizeText(input.requestId),
       taskId: normalizeText(input.taskId),
@@ -116,6 +145,7 @@ export function createXmtpAgentRuntime(options = {}) {
       ...state,
       autoAck,
       eventRetention,
+      runtimeName,
       events: Array.isArray(readEvents()) ? readEvents().length : 0
     };
   }
@@ -230,6 +260,11 @@ export function createXmtpAgentRuntime(options = {}) {
       const senderAddress = normalizeAddress((await ctx.getSenderAddress()) || '');
       const text = normalizeText(message?.content || '');
       const parsed = parseJsonObject(text);
+      const kind = normalizeText(parsed?.kind || '');
+      const fromAgentId = normalizeText(parsed?.fromAgentId || '');
+      const toAgentId = normalizeText(parsed?.toAgentId || '');
+      const hopIndex = Number.isFinite(Number(parsed?.hopIndex)) ? Number(parsed.hopIndex) : null;
+      const channel = normalizeText(parsed?.channel || 'dm');
       const taskId = normalizeText(parsed?.taskId || '');
       const traceId = normalizeText(parsed?.traceId || '');
       const requestId = normalizeText(parsed?.requestId || '');
@@ -243,6 +278,11 @@ export function createXmtpAgentRuntime(options = {}) {
           messageId,
           senderInboxId: normalizeText(message?.senderInboxId || ''),
           senderAddress,
+          fromAgentId,
+          toAgentId,
+          kind,
+          channel,
+          hopIndex,
           taskId,
           traceId,
           requestId,
@@ -261,6 +301,11 @@ export function createXmtpAgentRuntime(options = {}) {
         messageId,
         senderInboxId: normalizeText(message?.senderInboxId || ''),
         senderAddress,
+        fromAgentId,
+        toAgentId,
+        kind,
+        channel,
+        hopIndex,
         taskId,
         traceId,
         requestId,
@@ -276,6 +321,10 @@ export function createXmtpAgentRuntime(options = {}) {
         taskId,
         traceId,
         requestId,
+        fromAgentId: state.agentId || defaultAgentId,
+        toAgentId: fromAgentId,
+        hopIndex: Number.isFinite(Number(hopIndex)) ? Number(hopIndex) + 1 : 2,
+        channel,
         from: state.address,
         receivedAt: toIsoNow()
       };
@@ -289,6 +338,10 @@ export function createXmtpAgentRuntime(options = {}) {
         conversationId,
         messageId: normalizeText(ackMessageId),
         toAddress: senderAddress,
+        fromAgentId: state.agentId || defaultAgentId,
+        kind: 'task-ack',
+        channel,
+        hopIndex: Number.isFinite(Number(ackPayload.hopIndex)) ? Number(ackPayload.hopIndex) : null,
         taskId,
         traceId,
         requestId,
@@ -312,15 +365,29 @@ export function createXmtpAgentRuntime(options = {}) {
     }
     if (state.running && agent) return getStatus();
 
-    const walletKey = normalizeText(process.env.XMTP_WALLET_KEY || '');
+    const walletKey = configuredWalletKey || normalizePrivateKey(process.env.XMTP_WALLET_KEY || '');
     state.configured = /^0x[0-9a-fA-F]{64}$/.test(walletKey);
     if (!state.configured) {
       state.lastError = 'xmtp_wallet_key_missing_or_invalid';
       return getStatus();
     }
 
+    const dbEncryptionKey =
+      configuredDbEncryptionKey || normalizeHex(process.env.XMTP_DB_ENCRYPTION_KEY || '');
+    const dbDirectory =
+      configuredDbDirectory || normalizeText(process.env.XMTP_DB_DIRECTORY || '');
+    const signer = createSigner(createUser(walletKey));
+    const createOptions = {
+      env: state.env
+    };
+    if (dbEncryptionKey) createOptions.dbEncryptionKey = dbEncryptionKey;
+    if (dbDirectory) {
+      fs.mkdirSync(dbDirectory, { recursive: true, mode: 0o700 });
+      createOptions.dbPath = (inboxId) => path.join(dbDirectory, `xmtp-${inboxId}.db3`);
+    }
+
     try {
-      agent = await Agent.createFromEnv();
+      agent = await Agent.create(signer, createOptions);
       agent.on('message', (ctx) => {
         void onIncomingMessage(ctx);
       });
@@ -346,7 +413,9 @@ export function createXmtpAgentRuntime(options = {}) {
         meta: {
           env: state.env,
           inboxId: state.inboxId,
-          address: state.address
+          address: state.address,
+          runtimeName,
+          agentId: state.agentId
         }
       });
       return getStatus();
@@ -385,12 +454,22 @@ export function createXmtpAgentRuntime(options = {}) {
   function listEvents(input = {}) {
     const limit = Math.max(1, Math.min(Number(input.limit || 80), 500));
     const direction = normalizeText(input.direction).toLowerCase();
+    const runtime = normalizeText(input.runtimeName);
+    const fromAgentId = normalizeText(input.fromAgentId);
+    const toAgentId = normalizeText(input.toAgentId);
+    const conversationId = normalizeText(input.conversationId);
+    const kind = normalizeText(input.kind);
     const traceId = normalizeText(input.traceId);
     const taskId = normalizeText(input.taskId);
     const requestId = normalizeText(input.requestId);
     return (Array.isArray(readEvents()) ? readEvents() : [])
       .filter((row) => {
         if (direction && normalizeText(row?.direction).toLowerCase() !== direction) return false;
+        if (runtime && normalizeText(row?.runtimeName) !== runtime) return false;
+        if (fromAgentId && normalizeText(row?.fromAgentId) !== fromAgentId) return false;
+        if (toAgentId && normalizeText(row?.toAgentId) !== toAgentId) return false;
+        if (conversationId && normalizeText(row?.conversationId) !== conversationId) return false;
+        if (kind && normalizeText(row?.kind) !== kind) return false;
         if (traceId && normalizeText(row?.traceId) !== traceId) return false;
         if (taskId && normalizeText(row?.taskId) !== taskId) return false;
         if (requestId && normalizeText(row?.requestId) !== requestId) return false;
@@ -401,9 +480,30 @@ export function createXmtpAgentRuntime(options = {}) {
 
   async function sendDm(input = {}) {
     const text = normalizeText(input.text);
-    const envelope = input?.envelope && typeof input.envelope === 'object' && !Array.isArray(input.envelope)
+    const rawEnvelope = input?.envelope && typeof input.envelope === 'object' && !Array.isArray(input.envelope)
       ? input.envelope
       : null;
+    const resolved = resolveAddress(input);
+    const toAgentId = normalizeText(input.toAgentId || rawEnvelope?.toAgentId || resolved.toAgentId);
+    const fromAgentId = normalizeText(
+      input.fromAgentId || rawEnvelope?.fromAgentId || state.agentId || defaultAgentId
+    );
+    const channel = normalizeText(input.channel || rawEnvelope?.channel || 'dm') || 'dm';
+    const hopIndex = Number.isFinite(Number(input.hopIndex))
+      ? Number(input.hopIndex)
+      : Number.isFinite(Number(rawEnvelope?.hopIndex))
+        ? Number(rawEnvelope.hopIndex)
+        : 1;
+    const envelope =
+      rawEnvelope
+        ? {
+            ...rawEnvelope,
+            fromAgentId: fromAgentId || normalizeText(rawEnvelope.fromAgentId || ''),
+            toAgentId: toAgentId || normalizeText(rawEnvelope.toAgentId || ''),
+            channel,
+            hopIndex
+          }
+        : null;
     const outboundBody = envelope ? JSON.stringify(envelope) : text;
     if (!outboundBody) {
       return {
@@ -421,7 +521,6 @@ export function createXmtpAgentRuntime(options = {}) {
       };
     }
 
-    const resolved = resolveAddress(input);
     if (!resolved.toAddress) {
       return {
         ok: false,
@@ -451,15 +550,20 @@ export function createXmtpAgentRuntime(options = {}) {
       const traceId = normalizeText((envelope && envelope.traceId) || input.traceId || '');
       const requestId = normalizeText((envelope && envelope.requestId) || input.requestId || '');
       const taskId = normalizeText((envelope && envelope.taskId) || input.taskId || '');
+      const kind = normalizeText((envelope && envelope.kind) || parsed?.kind || '');
 
       state.sentOutbound += 1;
       appendEvent({
         direction: 'outbound',
         event: 'dm_sent',
+        fromAgentId,
+        toAgentId: toAgentId || resolved.toAgentId,
+        kind,
+        channel,
+        hopIndex,
         conversationId: normalizeText(dm.id || ''),
         messageId,
         toAddress: resolved.toAddress,
-        toAgentId: resolved.toAgentId,
         traceId,
         requestId,
         taskId,
@@ -476,7 +580,11 @@ export function createXmtpAgentRuntime(options = {}) {
         conversationId: normalizeText(dm.id || ''),
         messageId,
         toAddress: resolved.toAddress,
-        toAgentId: resolved.toAgentId,
+        toAgentId: toAgentId || resolved.toAgentId,
+        fromAgentId,
+        kind,
+        channel,
+        hopIndex,
         traceId,
         requestId,
         taskId
