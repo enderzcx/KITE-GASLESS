@@ -97,6 +97,11 @@ const XMTP_RISK_AGENT_ADDRESS = String(process.env.XMTP_RISK_AGENT_ADDRESS || ''
 const XMTP_READER_AGENT_ADDRESS = String(process.env.XMTP_READER_AGENT_ADDRESS || '').trim();
 const XMTP_PRICE_AGENT_ADDRESS = String(process.env.XMTP_PRICE_AGENT_ADDRESS || '').trim();
 const XMTP_EXECUTOR_AGENT_ADDRESS = String(process.env.XMTP_EXECUTOR_AGENT_ADDRESS || '').trim();
+const XMTP_AUTO_NETWORK_ENABLED = /^(1|true|yes|on)$/i.test(String(process.env.XMTP_AUTO_NETWORK_ENABLED || '').trim());
+const XMTP_AUTO_NETWORK_INTERVAL_MS = Math.max(15_000, Number(process.env.XMTP_AUTO_NETWORK_INTERVAL_MS || 60_000));
+const XMTP_AUTO_NETWORK_SOURCE_AGENT_ID = String(process.env.XMTP_AUTO_NETWORK_SOURCE_AGENT_ID || 'router-agent').trim().toLowerCase();
+const XMTP_AUTO_NETWORK_TARGET_AGENT_IDS = String(process.env.XMTP_AUTO_NETWORK_TARGET_AGENT_IDS || 'risk-agent,reader-agent').trim();
+const XMTP_AUTO_NETWORK_CAPABILITY = String(process.env.XMTP_AUTO_NETWORK_CAPABILITY || 'network-heartbeat').trim();
 
 const ROLE_RANK = {
   viewer: 1,
@@ -137,6 +142,8 @@ const persistObjectCache = new Map();
 let persistenceInitDone = false;
 let autoBtcPriceTimer = null;
 let autoBtcPriceBusy = false;
+let autoXmtpNetworkTimer = null;
+let autoXmtpNetworkBusy = false;
 const autoBtcPriceState = {
   enabled: false,
   intervalMs: AUTO_BTC_PRICE_INTERVAL_MS,
@@ -150,6 +157,37 @@ const autoBtcPriceState = {
   lastTraceId: '',
   lastStatus: '',
   lastError: ''
+};
+
+function parseAgentIdList(input = '') {
+  if (Array.isArray(input)) {
+    return input
+      .map((item) => String(item || '').trim().toLowerCase())
+      .filter(Boolean);
+  }
+  return String(input || '')
+    .split(',')
+    .map((item) => String(item || '').trim().toLowerCase())
+    .filter(Boolean);
+}
+
+const autoXmtpNetworkState = {
+  enabled: false,
+  intervalMs: XMTP_AUTO_NETWORK_INTERVAL_MS,
+  sourceAgentId: XMTP_AUTO_NETWORK_SOURCE_AGENT_ID,
+  targetAgentIds: parseAgentIdList(XMTP_AUTO_NETWORK_TARGET_AGENT_IDS),
+  capability: XMTP_AUTO_NETWORK_CAPABILITY || 'network-heartbeat',
+  startedAt: '',
+  lastTickAt: '',
+  lastTraceId: '',
+  lastRequestId: '',
+  lastTaskId: '',
+  lastTargetAgentId: '',
+  lastStatus: '',
+  lastError: '',
+  sentCount: 0,
+  failedCount: 0,
+  cursor: 0
 };
 
 function authConfigured() {
@@ -354,6 +392,133 @@ function startAutoBtcPriceLoop(options = {}) {
 
   if (options.immediate !== false) {
     runAutoBtcPriceTick(options.reason || 'manual').catch(() => {});
+  }
+}
+
+function getAutoXmtpNetworkStatus() {
+  return {
+    ...autoXmtpNetworkState,
+    running: Boolean(autoXmtpNetworkTimer),
+    busy: autoXmtpNetworkBusy
+  };
+}
+
+function resolveAutoXmtpTargetAgentId() {
+  const ids = Array.isArray(autoXmtpNetworkState.targetAgentIds) ? autoXmtpNetworkState.targetAgentIds : [];
+  if (!ids.length) return '';
+  const total = ids.length;
+  const current = Math.max(0, Number(autoXmtpNetworkState.cursor || 0));
+  for (let i = 0; i < total; i += 1) {
+    const idx = (current + i) % total;
+    const candidate = String(ids[idx] || '').trim().toLowerCase();
+    if (!candidate) continue;
+    const row = findNetworkAgentById(candidate);
+    if (row?.active === false) continue;
+    autoXmtpNetworkState.cursor = (idx + 1) % total;
+    return candidate;
+  }
+  return '';
+}
+
+async function runAutoXmtpNetworkTick(reason = 'timer') {
+  if (autoXmtpNetworkBusy) return;
+  autoXmtpNetworkBusy = true;
+  autoXmtpNetworkState.lastTickAt = new Date().toISOString();
+  autoXmtpNetworkState.lastStatus = 'running';
+  autoXmtpNetworkState.lastError = '';
+
+  try {
+    if (!xmtpRuntime.getStatus().running) {
+      await xmtpRuntime.start();
+    }
+    if (!xmtpRuntime.getStatus().running) {
+      throw new Error(xmtpRuntime.getStatus().lastError || 'xmtp_runtime_not_running');
+    }
+
+    const toAgentId = resolveAutoXmtpTargetAgentId();
+    if (!toAgentId) throw new Error('no_active_target_agent');
+
+    const traceId = createTraceId('xmtp_auto_trace');
+    const requestId = createTraceId('xmtp_auto_req');
+    const taskId = createTraceId('xmtp_auto_task');
+    const envelope = {
+      kind: 'task-envelope',
+      protocolVersion: 'kite-agent-task-v1',
+      traceId,
+      requestId,
+      taskId,
+      mode: 'a2a',
+      capability: String(autoXmtpNetworkState.capability || 'network-heartbeat').trim(),
+      input: {
+        source: 'xmtp-auto-loop',
+        reason,
+        fromAgentId: String(autoXmtpNetworkState.sourceAgentId || '').trim(),
+        toAgentId,
+        tickAt: new Date().toISOString()
+      },
+      paymentIntent: {},
+      expectsReply: true,
+      timestamp: new Date().toISOString()
+    };
+
+    const sent = await xmtpRuntime.sendDm({
+      toAgentId,
+      envelope,
+      traceId,
+      requestId,
+      taskId
+    });
+    if (!sent?.ok) {
+      throw new Error(String(sent?.reason || sent?.error || 'xmtp_auto_send_failed').trim());
+    }
+
+    autoXmtpNetworkState.lastTraceId = traceId;
+    autoXmtpNetworkState.lastRequestId = requestId;
+    autoXmtpNetworkState.lastTaskId = taskId;
+    autoXmtpNetworkState.lastTargetAgentId = toAgentId;
+    autoXmtpNetworkState.lastStatus = 'success';
+    autoXmtpNetworkState.sentCount += 1;
+  } catch (error) {
+    autoXmtpNetworkState.lastStatus = 'failed';
+    autoXmtpNetworkState.lastError = String(error?.message || 'auto_xmtp_tick_failed').trim();
+    autoXmtpNetworkState.failedCount += 1;
+  } finally {
+    autoXmtpNetworkBusy = false;
+    if (reason === 'startup' || reason === 'manual') {
+      console.log(
+        `[auto-xmtp] tick ${autoXmtpNetworkState.lastStatus} target=${autoXmtpNetworkState.lastTargetAgentId || '-'} task=${autoXmtpNetworkState.lastTaskId || '-'}`
+      );
+    }
+  }
+}
+
+function stopAutoXmtpNetworkLoop() {
+  if (autoXmtpNetworkTimer) {
+    clearInterval(autoXmtpNetworkTimer);
+    autoXmtpNetworkTimer = null;
+  }
+  autoXmtpNetworkState.enabled = false;
+}
+
+function startAutoXmtpNetworkLoop(options = {}) {
+  const intervalMs = Math.max(15_000, Number(options.intervalMs || autoXmtpNetworkState.intervalMs || 60_000));
+  const targetAgentIds = parseAgentIdList(options.targetAgentIds || autoXmtpNetworkState.targetAgentIds.join(','));
+  autoXmtpNetworkState.intervalMs = intervalMs;
+  autoXmtpNetworkState.sourceAgentId = String(options.sourceAgentId || autoXmtpNetworkState.sourceAgentId || 'router-agent').trim().toLowerCase();
+  autoXmtpNetworkState.targetAgentIds = targetAgentIds;
+  autoXmtpNetworkState.capability = String(options.capability || autoXmtpNetworkState.capability || 'network-heartbeat').trim();
+  autoXmtpNetworkState.enabled = true;
+  autoXmtpNetworkState.startedAt = new Date().toISOString();
+  autoXmtpNetworkState.lastError = '';
+  autoXmtpNetworkState.lastStatus = '';
+
+  if (autoXmtpNetworkTimer) clearInterval(autoXmtpNetworkTimer);
+  autoXmtpNetworkTimer = setInterval(() => {
+    runAutoXmtpNetworkTick('timer').catch(() => {});
+  }, intervalMs);
+
+  if (options.immediate !== false) {
+    runAutoXmtpNetworkTick(options.reason || 'manual').catch(() => {});
   }
 }
 
@@ -1915,6 +2080,12 @@ function sanitizeNetworkAgentRecord(input = {}, existing = null) {
     : Array.isArray(fallback.capabilities)
       ? fallback.capabilities
       : [];
+  const active =
+    typeof source.active === 'boolean'
+      ? source.active
+      : typeof fallback.active === 'boolean'
+        ? fallback.active
+        : true;
   const capabilities = capabilitiesRaw
     .map((item) => String(item || '').trim().toLowerCase())
     .filter(Boolean)
@@ -1927,7 +2098,7 @@ function sanitizeNetworkAgentRecord(input = {}, existing = null) {
     xmtpAddress,
     description,
     capabilities,
-    active: source.active !== false && fallback.active !== false,
+    active,
     createdAt: String(fallback.createdAt || source.createdAt || now).trim() || now,
     updatedAt: String(source.updatedAt || fallback.updatedAt || now).trim() || now
   };
@@ -6658,6 +6829,47 @@ app.get('/api/network/agents', requireRole('viewer'), (req, res) => {
   });
 });
 
+app.post('/api/network/agents/publish', requireRole('admin'), (req, res) => {
+  const body = req.body || {};
+  const requestedId = String(body.id || '').trim().toLowerCase();
+  if (!requestedId) {
+    return res.status(400).json({
+      ok: false,
+      traceId: req.traceId || '',
+      error: 'agent_id_required',
+      reason: 'id is required.'
+    });
+  }
+  const rows = ensureNetworkAgents();
+  const idx = rows.findIndex((item) => String(item?.id || '').trim().toLowerCase() === requestedId);
+  const existing = idx >= 0 ? rows[idx] : null;
+  const record = sanitizeNetworkAgentRecord(
+    {
+      ...body,
+      id: requestedId,
+      active: body.active !== false
+    },
+    existing
+  );
+  if (!record.id) {
+    return res.status(400).json({
+      ok: false,
+      traceId: req.traceId || '',
+      error: 'agent_id_invalid',
+      reason: 'invalid id'
+    });
+  }
+  if (idx >= 0) rows[idx] = record;
+  else rows.unshift(record);
+  writeNetworkAgents(rows);
+  return res.json({
+    ok: true,
+    traceId: req.traceId || '',
+    mode: idx >= 0 ? 'updated' : 'created',
+    agent: record
+  });
+});
+
 app.get('/api/xmtp/status', requireRole('viewer'), (req, res) => {
   return res.json({
     ok: true,
@@ -6682,6 +6894,49 @@ app.post('/api/xmtp/stop', requireRole('admin'), async (req, res) => {
     ok: true,
     traceId: req.traceId || '',
     xmtp: status
+  });
+});
+
+app.get('/api/xmtp/automation/status', requireRole('viewer'), (req, res) => {
+  return res.json({
+    ok: true,
+    traceId: req.traceId || '',
+    automation: {
+      type: 'xmtp-network-self-talk',
+      ...getAutoXmtpNetworkStatus()
+    }
+  });
+});
+
+app.post('/api/xmtp/automation/start', requireRole('admin'), (req, res) => {
+  const body = req.body || {};
+  startAutoXmtpNetworkLoop({
+    intervalMs: body.intervalMs,
+    sourceAgentId: body.sourceAgentId,
+    targetAgentIds: body.targetAgentIds,
+    capability: body.capability,
+    immediate: body.immediate !== false,
+    reason: 'manual'
+  });
+  return res.json({
+    ok: true,
+    traceId: req.traceId || '',
+    automation: {
+      type: 'xmtp-network-self-talk',
+      ...getAutoXmtpNetworkStatus()
+    }
+  });
+});
+
+app.post('/api/xmtp/automation/stop', requireRole('admin'), (req, res) => {
+  stopAutoXmtpNetworkLoop();
+  return res.json({
+    ok: true,
+    traceId: req.traceId || '',
+    automation: {
+      type: 'xmtp-network-self-talk',
+      ...getAutoXmtpNetworkStatus()
+    }
   });
 });
 
@@ -7657,6 +7912,19 @@ async function startServer() {
     const status = await xmtpRuntime.start();
     if (status?.running) {
       console.log(`[xmtp] enabled env=${status.env} address=${status.address || '-'} inbox=${status.inboxId || '-'}`);
+      if (XMTP_AUTO_NETWORK_ENABLED) {
+        startAutoXmtpNetworkLoop({
+          intervalMs: XMTP_AUTO_NETWORK_INTERVAL_MS,
+          sourceAgentId: XMTP_AUTO_NETWORK_SOURCE_AGENT_ID,
+          targetAgentIds: XMTP_AUTO_NETWORK_TARGET_AGENT_IDS,
+          capability: XMTP_AUTO_NETWORK_CAPABILITY,
+          immediate: true,
+          reason: 'startup'
+        });
+        console.log(
+          `[auto-xmtp] enabled intervalMs=${XMTP_AUTO_NETWORK_INTERVAL_MS} source=${XMTP_AUTO_NETWORK_SOURCE_AGENT_ID} targets=${parseAgentIdList(XMTP_AUTO_NETWORK_TARGET_AGENT_IDS).join(',')}`
+        );
+      }
     } else {
       console.warn(`[xmtp] enabled but failed to start: ${status?.lastError || 'unknown_error'}`);
     }
@@ -7665,6 +7933,7 @@ async function startServer() {
 
 async function shutdownServer() {
   stopAutoBtcPriceLoop();
+  stopAutoXmtpNetworkLoop();
   await xmtpRuntime.stop();
   try {
     if (httpServer) {
