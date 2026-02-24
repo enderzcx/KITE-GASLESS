@@ -329,7 +329,10 @@ export function createXmtpAgentRuntime(options = {}) {
         receivedAt: toIsoNow()
       };
       const ackText = JSON.stringify(ackPayload);
-      const ackMessageId = await ctx.conversation.send(ackText);
+      const ackMessageId =
+        typeof ctx?.conversation?.sendText === 'function'
+          ? await ctx.conversation.sendText(ackText)
+          : await ctx.conversation.send(ackText);
       state.sentOutbound += 1;
       state.autoAckCount += 1;
       appendEvent({
@@ -545,7 +548,9 @@ export function createXmtpAgentRuntime(options = {}) {
 
     try {
       const dm = await agent.createDmWithAddress(resolved.toAddress);
-      const messageId = normalizeText(await dm.send(outboundBody));
+      const messageId = normalizeText(
+        typeof dm?.sendText === 'function' ? await dm.sendText(outboundBody) : await dm.send(outboundBody)
+      );
       const parsed = envelope || parseJsonObject(outboundBody);
       const traceId = normalizeText((envelope && envelope.traceId) || input.traceId || '');
       const requestId = normalizeText((envelope && envelope.requestId) || input.requestId || '');
