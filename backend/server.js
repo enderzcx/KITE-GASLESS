@@ -1382,7 +1382,7 @@ function normalizeXReaderParams(input = {}) {
   }
   const maxCharsRaw = Number(input.maxChars ?? input.maxLength ?? X_READER_MAX_CHARS_DEFAULT);
   const maxChars = Number.isFinite(maxCharsRaw)
-    ? Math.max(200, Math.min(Math.round(maxCharsRaw), 8000))
+    ? Math.max(200, Math.min(Math.round(maxCharsRaw), 20000))
     : X_READER_MAX_CHARS_DEFAULT;
 
   return {
@@ -1390,6 +1390,12 @@ function normalizeXReaderParams(input = {}) {
     mode: rawMode === 'xreader' ? 'auto' : rawMode,
     maxChars
   };
+}
+
+function parseExcerptMaxChars(input, fallback = 8000) {
+  const value = Number(input ?? fallback);
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(200, Math.min(Math.round(value), 20000));
 }
 
 async function fetchJsonWithTimeout(url, timeoutMs = 8000, options = {}) {
@@ -4719,6 +4725,103 @@ app.get('/api/receipt/:requestId', requireRole('viewer'), async (req, res) => {
     ok: true,
     traceId: req.traceId || '',
     receipt: receiptPayload
+  });
+});
+
+app.get('/api/receipt/:requestId/excerpt', requireRole('viewer'), async (req, res) => {
+  const requestId = String(req.params.requestId || '').trim();
+  if (!requestId) {
+    return res.status(400).json({ ok: false, error: 'requestId_required' });
+  }
+
+  const requests = readX402Requests();
+  const reqIndex = requests.findIndex((item) => String(item?.requestId || '').trim() === requestId);
+  if (reqIndex < 0) {
+    return res.status(404).json({ ok: false, error: 'request_not_found', requestId });
+  }
+
+  const reqItem = requests[reqIndex];
+  if (String(reqItem?.action || '').trim().toLowerCase() !== 'x-reader-feed') {
+    return res.status(400).json({
+      ok: false,
+      error: 'excerpt_not_supported',
+      reason: 'only x-reader-feed supports excerpt retrieval'
+    });
+  }
+
+  const state = String(reqItem?.status || '').trim().toLowerCase();
+  const isUnlocked = state === 'paid' || state === 'unlocked';
+  if (!isUnlocked) {
+    return res.status(409).json({
+      ok: false,
+      error: 'request_not_unlocked',
+      reason: `request state is ${state || 'pending'}`
+    });
+  }
+
+  const maxChars = parseExcerptMaxChars(req.query.maxChars, 8000);
+  const forceRefresh = /^(1|true|yes|refresh)$/i.test(String(req.query.refresh || '').trim());
+  const workflowByRequestId = buildLatestWorkflowByRequestId(readWorkflows());
+  const workflow = workflowByRequestId.get(requestId) || null;
+  const workflowReader =
+    workflow?.result?.reader && typeof workflow.result.reader === 'object'
+      ? workflow.result.reader
+      : null;
+  const storedReader =
+    reqItem?.result?.reader && typeof reqItem.result.reader === 'object'
+      ? reqItem.result.reader
+      : workflowReader;
+  const storedExcerpt = String(storedReader?.excerpt || '').trim();
+  const shouldRefresh = forceRefresh || !storedExcerpt || storedExcerpt.length < maxChars;
+
+  let reader = storedReader;
+  let source = 'stored';
+  if (shouldRefresh) {
+    try {
+      const normalizedTask = normalizeXReaderParams({
+        url: reqItem?.actionParams?.url || storedReader?.url || '',
+        mode: reqItem?.actionParams?.mode || storedReader?.mode || 'auto',
+        maxChars
+      });
+      reader = await fetchXReaderDigest(normalizedTask);
+      source = 'refreshed';
+      reqItem.actionParams = {
+        ...(reqItem.actionParams || {}),
+        ...normalizedTask
+      };
+      reqItem.result = {
+        ...(reqItem.result || {}),
+        summary: String(reqItem?.result?.summary || `x-reader digest unlocked by x402 payment: ${reader.title || reader.url}`).trim(),
+        reader
+      };
+      requests[reqIndex] = reqItem;
+      writeX402Requests(requests);
+    } catch (error) {
+      return res.status(502).json({
+        ok: false,
+        error: 'x_reader_fetch_failed',
+        reason: error?.message || 'x_reader_fetch_failed'
+      });
+    }
+  }
+
+  const excerpt = String(reader?.excerpt || '').trim();
+  return res.json({
+    ok: true,
+    traceId: req.traceId || '',
+    requestId,
+    excerpt: {
+      provider: String(reader?.provider || 'x-reader').trim() || 'x-reader',
+      url: String(reader?.url || reqItem?.actionParams?.url || '').trim(),
+      title: String(reader?.title || '').trim(),
+      mode: String(reader?.mode || reqItem?.actionParams?.mode || 'auto').trim(),
+      contentLength: Number(reader?.contentLength || excerpt.length || 0),
+      maxCharsRequested: maxChars,
+      capped: excerpt.length >= maxChars,
+      fetchedAt: String(reader?.fetchedAt || '').trim(),
+      source,
+      excerpt
+    }
   });
 });
 

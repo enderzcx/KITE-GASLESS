@@ -284,6 +284,8 @@ function App() {
   const [hoverIndex, setHoverIndex] = useState(-1);
   const [readerExpanded, setReaderExpanded] = useState(false);
   const [readerCopied, setReaderCopied] = useState(false);
+  const [readerFullExcerpt, setReaderFullExcerpt] = useState(null);
+  const [readerExcerptLoading, setReaderExcerptLoading] = useState(false);
   const [opsCopiedField, setOpsCopiedField] = useState('');
   const [services, setServices] = useState([]);
   const [selectedServiceId, setSelectedServiceId] = useState('');
@@ -373,6 +375,8 @@ function App() {
   useEffect(() => {
     setReaderExpanded(false);
     setReaderCopied(false);
+    setReaderFullExcerpt(null);
+    setReaderExcerptLoading(false);
     setOpsCopiedField('');
     if (readerCopyTimerRef.current) {
       clearTimeout(readerCopyTimerRef.current);
@@ -788,6 +792,32 @@ function App() {
     }
   }, []);
 
+  const loadFullReaderExcerpt = useCallback(async (requestIdRaw = '', refresh = false) => {
+    const requestId = String(requestIdRaw || '').trim();
+    if (!requestId) {
+      setErrorText('No requestId found for excerpt lookup.');
+      return;
+    }
+    setReaderExcerptLoading(true);
+    try {
+      setErrorText('');
+      const payload = await fetchJson(`/api/receipt/${encodeURIComponent(requestId)}/excerpt`, {
+        maxChars: 20000,
+        refresh: refresh ? 1 : undefined
+      });
+      const excerptPayload = payload?.excerpt || null;
+      if (!excerptPayload || !String(excerptPayload?.excerpt || '').trim()) {
+        throw new Error('excerpt missing');
+      }
+      setReaderFullExcerpt(excerptPayload);
+      setReaderExpanded(true);
+    } catch (error) {
+      setErrorText(error?.message || 'Failed to load full excerpt.');
+    } finally {
+      setReaderExcerptLoading(false);
+    }
+  }, []);
+
   const copyOpsField = useCallback(async (textRaw = '', field = 'value') => {
     const text = String(textRaw || '').trim();
     if (!text || text === '-') {
@@ -958,8 +988,9 @@ function App() {
   }, [agentReputationRows]);
   const quote = traceData?.workflow?.result?.quote || traceData?.request?.result?.quote || null;
   const readerResult = traceData?.workflow?.result?.reader || traceData?.request?.result?.reader || null;
-  const readerExcerpt = String(readerResult?.excerpt || '').trim();
-  const readerContentLength = Number(readerResult?.contentLength || readerExcerpt.length || 0);
+  const effectiveReader = readerFullExcerpt ? { ...(readerResult || {}), ...readerFullExcerpt } : readerResult;
+  const readerExcerpt = String(effectiveReader?.excerpt || '').trim();
+  const readerContentLength = Number(effectiveReader?.contentLength || readerExcerpt.length || 0);
   const readerPreviewText =
     readerExcerpt.length > 220 ? `${readerExcerpt.slice(0, 220)}...` : readerExcerpt || '-';
   const readerQuality =
@@ -1367,15 +1398,23 @@ function App() {
               <h3>API Result</h3>
               {readerResult ? (
                 <>
-                  <p>provider: {readerResult?.provider || '-'}</p>
-                  <p>url: {readerResult?.url || '-'}</p>
-                  <p>title: {readerResult?.title || '-'}</p>
+                  <p>provider: {effectiveReader?.provider || '-'}</p>
+                  <p>url: {effectiveReader?.url || '-'}</p>
+                  <p>title: {effectiveReader?.title || '-'}</p>
                   <p>digest quality: {readerQuality}</p>
                   <p>contentLength: {readerContentLength || '-'}</p>
                   <p className="reader-excerpt-label">excerpt:</p>
                   <p className="reader-excerpt-text">{readerExpanded ? readerExcerpt || '-' : readerPreviewText}</p>
                   {readerExcerpt ? (
                     <p className="reader-action-row">
+                      <button
+                        type="button"
+                        className="ghost-btn receipt-btn"
+                        onClick={() => void loadFullReaderExcerpt(currentRequestId, true)}
+                        disabled={!currentRequestId || readerExcerptLoading}
+                      >
+                        {readerExcerptLoading ? 'Loading excerpt...' : 'Refresh full excerpt'}
+                      </button>
                       <button
                         type="button"
                         className="ghost-btn receipt-btn"
@@ -1392,7 +1431,19 @@ function App() {
                       </button>
                     </p>
                   ) : null}
-                  <p>at: {formatTime(readerResult?.fetchedAt || '')}</p>
+                  {!readerExcerpt ? (
+                    <p className="reader-action-row">
+                      <button
+                        type="button"
+                        className="ghost-btn receipt-btn"
+                        onClick={() => void loadFullReaderExcerpt(currentRequestId)}
+                        disabled={!currentRequestId || readerExcerptLoading}
+                      >
+                        {readerExcerptLoading ? 'Loading excerpt...' : 'Load full excerpt'}
+                      </button>
+                    </p>
+                  ) : null}
+                  <p>at: {formatTime(effectiveReader?.fetchedAt || '')}</p>
                 </>
               ) : (
                 <>
@@ -1570,10 +1621,45 @@ function App() {
               <h3>API Result</h3>
               {readerResult ? (
                 <>
-                  <p>provider: {readerResult?.provider || '-'}</p>
-                  <p>url: {readerResult?.url || '-'}</p>
-                  <p>title: {readerResult?.title || '-'}</p>
+                  <p>provider: {effectiveReader?.provider || '-'}</p>
+                  <p>url: {effectiveReader?.url || '-'}</p>
+                  <p>title: {effectiveReader?.title || '-'}</p>
                   <p>quality: {readerQuality}</p>
+                  <p>contentLength: {readerContentLength || '-'}</p>
+                  <p className="reader-excerpt-label">excerpt:</p>
+                  <p className="reader-excerpt-text">{readerExpanded ? readerExcerpt || '-' : readerPreviewText}</p>
+                  <p className="reader-action-row">
+                    <button
+                      type="button"
+                      className="ghost-btn receipt-btn"
+                      onClick={() => void loadFullReaderExcerpt(currentRequestId, true)}
+                      disabled={!currentRequestId || readerExcerptLoading}
+                    >
+                      {readerExcerptLoading
+                        ? 'Loading excerpt...'
+                        : readerFullExcerpt
+                          ? 'Refresh full excerpt'
+                          : 'Load full excerpt'}
+                    </button>
+                    {readerExcerpt ? (
+                      <button
+                        type="button"
+                        className="ghost-btn receipt-btn"
+                        onClick={() => setReaderExpanded((prev) => !prev)}
+                      >
+                        {readerExpanded ? 'Hide full digest' : 'Show full digest'}
+                      </button>
+                    ) : null}
+                    {readerExcerpt ? (
+                      <button
+                        type="button"
+                        className="ghost-btn receipt-btn"
+                        onClick={() => void copyReaderDigest(readerExcerpt)}
+                      >
+                        {readerCopied ? 'Copied' : 'Copy Digest'}
+                      </button>
+                    ) : null}
+                  </p>
                 </>
               ) : (
                 <>
