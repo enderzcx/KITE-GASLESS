@@ -3,10 +3,10 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 [![Version](https://img.shields.io/badge/version-v1.8.0-blue)](./CHANGELOG.md)
 
-KiteTrace Platform: agent-native micropayment rails on Kite Testnet, using ERC8004 identity + x402 for verifiable ATAPI/A2A interactions.
+KiteTrace Platform: an Agent Network + Service Market on Kite Testnet, where ERC8004 identity and x402 settlement produce verifiable A2A/A2API evidence.
 
 **About**:
-- Enables agents to publish/consume services and settle per action with x402.
+- Builds an agent-first closed loop: discover service -> invoke -> pay -> unlock -> verify.
 - Uses ERC8004 identity and direct on-chain confirmation (`requestId`, `txHash`, `block`, `status`, explorer link).
 - BTCUSD minute-level loop is a live demo scenario; platform supports broader agent services.
 - Product surface follows Agent Network information architecture: `/`, `/market`, `/trace/:requestId`, `/ops`.
