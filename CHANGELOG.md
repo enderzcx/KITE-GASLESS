@@ -18,11 +18,22 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
   - `POST /api/workflow/x-reader/run`
   - `POST /api/a2a/tasks/x-reader`
   - market publish/invoke support with x402 settlement.
+- XMTP task result evidence for router-risk demo:
+  - risk runtime now replies with `task-result` (instead of ack-only) for `task-envelope`.
+  - `task-result` includes `status/result/error` and mock-bind fields:
+    - `payment.mode/requestId/txHash`
+    - `receiptRef.requestId/txHash/endpoint`.
+- Trace evidence API now includes XMTP hop payload:
+  - `GET /api/demo/trace/:traceId` returns `xmtp.total/xmtp.hops/xmtp.latestTaskResult`.
 
 ### Changed
 - Demo and Ops UI now provide `Download Receipt` action from API result panels.
 - Market form now supports x-reader fields (`url/mode/maxChars`) and service details render x-reader metadata.
 - Frontend removed SSE connection indicator and live event panel; polling-only UX for stable demos.
+- `POST /api/network/demo/router-risk/run` now waits for `task-result` and returns:
+  - `resultReceived/resultEvent/taskResult/payment/receiptRef`
+  - keeps `ackReceived/ackEvent` as compatibility fields.
+- Trace page (`/trace/:requestId`) now shows XMTP hop-by-hop evidence and task-result payment binding.
 
 ### Removed
 - Removed backend SSE stream endpoints:

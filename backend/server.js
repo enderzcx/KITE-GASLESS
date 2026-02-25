@@ -4863,6 +4863,86 @@ app.get('/api/workflow/:traceId', requireRole('viewer'), (req, res) => {
   });
 });
 
+function buildTraceXmtpEvidence({ traceId = '', requestId = '', taskId = '' } = {}) {
+  const normalizedTraceId = String(traceId || '').trim();
+  const normalizedRequestId = String(requestId || '').trim();
+  const normalizedTaskId = String(taskId || '').trim();
+
+  const query = { limit: 500 };
+  if (normalizedTraceId) query.traceId = normalizedTraceId;
+  else if (normalizedRequestId) query.requestId = normalizedRequestId;
+  else if (normalizedTaskId) query.taskId = normalizedTaskId;
+
+  const rows = xmtpRuntime.listEvents(query);
+  const allowedKinds = new Set(['task-envelope', 'task-result', 'task-ack']);
+  const hops = (Array.isArray(rows) ? rows : [])
+    .filter((row) => {
+      const kind = String(row?.kind || '').trim().toLowerCase();
+      if (!allowedKinds.has(kind)) return false;
+      if (normalizedTraceId && String(row?.traceId || '').trim() !== normalizedTraceId) return false;
+      if (normalizedRequestId && String(row?.requestId || '').trim() !== normalizedRequestId) return false;
+      if (normalizedTaskId && String(row?.taskId || '').trim() !== normalizedTaskId) return false;
+      return true;
+    })
+    .map((row) => {
+      const parsed = row?.parsed && typeof row.parsed === 'object' && !Array.isArray(row.parsed) ? row.parsed : null;
+      const payment = parsed?.payment && typeof parsed.payment === 'object' && !Array.isArray(parsed.payment) ? parsed.payment : null;
+      const receiptRef =
+        parsed?.receiptRef && typeof parsed.receiptRef === 'object' && !Array.isArray(parsed.receiptRef)
+          ? parsed.receiptRef
+          : null;
+      return {
+        id: String(row?.id || '').trim(),
+        createdAt: String(row?.createdAt || '').trim(),
+        runtimeName: String(row?.runtimeName || '').trim(),
+        direction: String(row?.direction || '').trim().toLowerCase(),
+        kind: String(row?.kind || '').trim().toLowerCase(),
+        fromAgentId: String(row?.fromAgentId || parsed?.fromAgentId || '').trim(),
+        toAgentId: String(row?.toAgentId || parsed?.toAgentId || '').trim(),
+        channel: String(row?.channel || parsed?.channel || '').trim(),
+        hopIndex: Number.isFinite(Number(row?.hopIndex)) ? Number(row.hopIndex) : null,
+        traceId: String(row?.traceId || parsed?.traceId || '').trim(),
+        requestId: String(row?.requestId || parsed?.requestId || '').trim(),
+        taskId: String(row?.taskId || parsed?.taskId || '').trim(),
+        conversationId: String(row?.conversationId || '').trim(),
+        messageId: String(row?.messageId || '').trim(),
+        status: String(parsed?.status || '').trim().toLowerCase(),
+        resultSummary: String(parsed?.result?.summary || '').trim(),
+        error: String(parsed?.error || row?.error || '').trim(),
+        payment: payment
+          ? {
+              mode: String(payment.mode || '').trim().toLowerCase(),
+              requestId: String(payment.requestId || '').trim(),
+              txHash: String(payment.txHash || '').trim()
+            }
+          : null,
+        receiptRef: receiptRef
+          ? {
+              requestId: String(receiptRef.requestId || '').trim(),
+              txHash: String(receiptRef.txHash || '').trim(),
+              endpoint: String(receiptRef.endpoint || '').trim()
+            }
+          : null
+      };
+    })
+    .sort((a, b) => Date.parse(a.createdAt || 0) - Date.parse(b.createdAt || 0));
+
+  const latestTaskResult = [...hops].reverse().find((row) => row.kind === 'task-result') || null;
+  return {
+    total: hops.length,
+    hops,
+    latestTaskResult: latestTaskResult
+      ? {
+          status: latestTaskResult.status || '',
+          resultSummary: latestTaskResult.resultSummary || '',
+          error: latestTaskResult.error || '',
+          payment: latestTaskResult.payment || null,
+          receiptRef: latestTaskResult.receiptRef || null
+        }
+      : null
+  };
+}
+
 app.get('/api/demo/trace/:traceId', requireRole('viewer'), (req, res) => {
   const traceId = String(req.params.traceId || '').trim();
   if (!traceId) {
@@ -4878,6 +4958,10 @@ app.get('/api/demo/trace/:traceId', requireRole('viewer'), (req, res) => {
   const reqItem = readX402Requests().find((item) => String(item.requestId || '') === String(workflow.requestId || ''));
   const mapped = reqItem ? mapX402Item(reqItem, workflow) : null;
   const receipt = reqItem?.a2a ? buildA2AReceipt(reqItem, workflow, { traceId }) : null;
+  const xmtpEvidence = buildTraceXmtpEvidence({
+    traceId,
+    requestId: String(workflow?.requestId || reqItem?.requestId || '').trim()
+  });
   const identityLatest = getLatestIdentityChallengeSnapshot();
 
   const hasIdentity = Boolean(reqItem?.identity?.registry || reqItem?.identity?.agentId);
@@ -4974,6 +5058,7 @@ app.get('/api/demo/trace/:traceId', requireRole('viewer'), (req, res) => {
     request: reqItem || null,
     mapped,
     receipt,
+    xmtp: xmtpEvidence,
     identityLatest,
     timeline
   });
@@ -7300,20 +7385,34 @@ app.post('/api/network/demo/router-risk/run', requireRole('agent'), async (req, 
 
   const waitMsLimit = Math.max(500, Math.min(Number(body.waitMs || 10_000), 20_000));
   const deadline = Date.now() + waitMsLimit;
+  let resultEvent = null;
   let ackEvent = null;
   while (Date.now() <= deadline) {
-    const hits = xmtpRuntime.listEvents({
+    const resultHits = xmtpRuntime.listEvents({
+      runtimeName: 'router-runtime',
+      direction: 'inbound',
+      kind: 'task-result',
+      taskId
+    });
+    if (Array.isArray(resultHits) && resultHits.length > 0) {
+      resultEvent = resultHits[0];
+      break;
+    }
+
+    const ackHits = xmtpRuntime.listEvents({
       runtimeName: 'router-runtime',
       direction: 'inbound',
       kind: 'task-ack',
       taskId
     });
-    if (Array.isArray(hits) && hits.length > 0) {
-      ackEvent = hits[0];
-      break;
+    if (!ackEvent && Array.isArray(ackHits) && ackHits.length > 0) {
+      ackEvent = ackHits[0];
     }
     await waitMs(350);
   }
+  const taskResult = resultEvent?.parsed && typeof resultEvent.parsed === 'object' ? resultEvent.parsed : null;
+  const resultPayment = taskResult?.payment && typeof taskResult.payment === 'object' ? taskResult.payment : null;
+  const resultReceiptRef = taskResult?.receiptRef && typeof taskResult.receiptRef === 'object' ? taskResult.receiptRef : null;
 
   return res.json({
     ok: true,
@@ -7328,6 +7427,11 @@ app.post('/api/network/demo/router-risk/run', requireRole('agent'), async (req, 
       hopIndex: 1
     },
     xmtp: sent,
+    resultReceived: Boolean(resultEvent),
+    resultEvent,
+    taskResult,
+    payment: resultPayment,
+    receiptRef: resultReceiptRef,
     ackReceived: Boolean(ackEvent),
     ackEvent,
     runtime: {

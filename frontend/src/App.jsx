@@ -1013,6 +1013,11 @@ function App() {
     currentWorkflow?.result?.summary ||
     currentRequest?.result?.summary ||
     (traceLoading ? 'Loading trace details...' : 'Waiting for workflow events...');
+  const xmtpEvidence = traceData?.xmtp || null;
+  const xmtpHops = Array.isArray(xmtpEvidence?.hops) ? xmtpEvidence.hops : [];
+  const latestTaskResult = xmtpEvidence?.latestTaskResult || null;
+  const latestTaskPayment = latestTaskResult?.payment || null;
+  const latestTaskReceiptRef = latestTaskResult?.receiptRef || null;
 
   const chartSeries = useMemo(() => normalizeSeriesPoints(series).slice(-CHART_POINT_LIMIT), [series]);
   const chartModel = useMemo(() => buildChartModel(chartSeries), [chartSeries]);
@@ -1513,7 +1518,7 @@ function App() {
         <div>
           <p className="header-kicker">KITE TESTNET / TRACE</p>
           <h1>Receipt & Evidence</h1>
-          <p className="header-subtitle">Lookup by requestId and inspect complete x402 + on-chain evidence.</p>
+          <p className="header-subtitle">Lookup by requestId and inspect x402, XMTP hops, and on-chain evidence.</p>
         </div>
         <div className="header-actions">
           <span className="sync-text">Last sync: {formatTime(lastSyncAt)}</span>
@@ -1618,6 +1623,16 @@ function App() {
               </p>
             </article>
             <article className="evidence-card">
+              <h3>XMTP Result Bind</h3>
+              <p>events: {xmtpEvidence?.total ?? xmtpHops.length}</p>
+              <p>status: {fullText(latestTaskResult?.status || '-')}</p>
+              <p>summary: {fullText(latestTaskResult?.resultSummary || '-')}</p>
+              <p>paymentMode: {fullText(latestTaskPayment?.mode || '-')}</p>
+              <p>payment.requestId: {fullText(latestTaskPayment?.requestId || latestTaskReceiptRef?.requestId || '-')}</p>
+              <p>payment.txHash: {fullText(latestTaskPayment?.txHash || latestTaskReceiptRef?.txHash || '-')}</p>
+              <p>receiptRef: {fullText(latestTaskReceiptRef?.endpoint || '-')}</p>
+            </article>
+            <article className="evidence-card">
               <h3>API Result</h3>
               {readerResult ? (
                 <>
@@ -1708,6 +1723,48 @@ function App() {
               </li>
             ))}
           </ol>
+        </section>
+
+        <section className="panel trace-timeline-panel">
+          <div className="panel-head">
+            <h2>XMTP Hops</h2>
+            <span className="panel-note">{xmtpHops.length} events</span>
+          </div>
+          {xmtpHops.length === 0 ? (
+            <p className="empty-text">No XMTP hop evidence for this trace yet.</p>
+          ) : (
+            <ol className="flow-step-list">
+              {xmtpHops.map((hop, idx) => {
+                const hopKind = String(hop?.kind || '').trim().toLowerCase();
+                const hopStatus = String(hop?.status || '').trim().toLowerCase();
+                const hopState = hopStatus === 'failed' || hop?.error ? 'failed' : 'success';
+                return (
+                  <li key={`xmtp_hop_${hop.id || idx}`} className={`flow-step-card ${hopState}`}>
+                    <div className="flow-step-top">
+                      <span className="flow-index">{idx + 1}</span>
+                      <strong>{hopKind || 'xmtp-event'}</strong>
+                      <span className={`status-pill mini ${hopState}`}>{hopStatus || hopState}</span>
+                    </div>
+                    <p className="flow-step-detail">
+                      {fullText(hop?.fromAgentId || '-')} {'->'} {fullText(hop?.toAgentId || '-')} | hop {hop?.hopIndex ?? '-'} |{' '}
+                      {formatTime(hop?.createdAt)}
+                    </p>
+                    <p className="flow-meta">taskId: {fullText(hop?.taskId || '-')}</p>
+                    <p className="flow-meta">requestId: {fullText(hop?.requestId || '-')}</p>
+                    <p className="flow-meta">conversationId: {fullText(hop?.conversationId || '-')}</p>
+                    <p className="flow-meta">messageId: {fullText(hop?.messageId || '-')}</p>
+                    {hopKind === 'task-result' ? (
+                      <>
+                        <p className="flow-meta">result: {fullText(hop?.resultSummary || '-')}</p>
+                        <p className="flow-meta">payment.requestId: {fullText(hop?.payment?.requestId || hop?.receiptRef?.requestId || '-')}</p>
+                        <p className="flow-meta">payment.txHash: {fullText(hop?.payment?.txHash || hop?.receiptRef?.txHash || '-')}</p>
+                      </>
+                    ) : null}
+                  </li>
+                );
+              })}
+            </ol>
+          )}
         </section>
       </main>
     </div>

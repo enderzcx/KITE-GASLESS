@@ -44,6 +44,19 @@ function parseJsonObject(text = '') {
   }
 }
 
+function sanitizeMockToken(value = '') {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]/g, '')
+    .slice(0, 40);
+}
+
+function buildMockTxHash(seed = '') {
+  const token = sanitizeMockToken(seed) || Date.now().toString(36);
+  return `mock_${token}`;
+}
+
 function rememberKey(set, key) {
   const normalized = normalizeText(key);
   if (!normalized) return;
@@ -209,6 +222,77 @@ export function createXmtpAgentRuntime(options = {}) {
     return kind === 'task-ack' || kind === 'ack';
   }
 
+  function buildAutoTaskResultPayload(taskEnvelope = {}) {
+    const sourceAgentId = normalizeText(taskEnvelope.fromAgentId || '');
+    const sourceTaskId = normalizeText(taskEnvelope.taskId || '');
+    const sourceTraceId = normalizeText(taskEnvelope.traceId || '');
+    const sourceRequestId = normalizeText(taskEnvelope.requestId || '');
+    const channel = normalizeText(taskEnvelope.channel || 'dm') || 'dm';
+    const mode = normalizeText(taskEnvelope.mode || 'a2a') || 'a2a';
+    const capability = normalizeText(taskEnvelope.capability || '');
+    const input =
+      taskEnvelope.input && typeof taskEnvelope.input === 'object' && !Array.isArray(taskEnvelope.input)
+        ? taskEnvelope.input
+        : {};
+    const paymentIntent =
+      taskEnvelope.paymentIntent && typeof taskEnvelope.paymentIntent === 'object' && !Array.isArray(taskEnvelope.paymentIntent)
+        ? taskEnvelope.paymentIntent
+        : {};
+    const paymentMode = normalizeText(paymentIntent.mode || 'mock').toLowerCase() || 'mock';
+    const mockTxHash = buildMockTxHash(sourceTaskId || sourceRequestId || sourceTraceId || capability || 'task_result');
+    const paymentTxHash = normalizeText(paymentIntent.txHash || '') || mockTxHash;
+
+    const symbol = normalizeText(input.symbol || '').toUpperCase() || 'BTCUSDT';
+    const horizonMinRaw = Number(input.horizonMin);
+    const horizonMin = Number.isFinite(horizonMinRaw) && horizonMinRaw > 0 ? Math.round(horizonMinRaw) : 60;
+    const source = normalizeText(input.source || '') || 'router-risk-demo';
+
+    const resultPayload =
+      capability === 'risk-score-feed'
+        ? {
+            summary: `Risk result ready for ${symbol} (${horizonMin}m).`,
+            symbol,
+            horizonMin,
+            source,
+            riskScore: 67,
+            confidence: 'medium',
+            signals: ['momentum_flat', 'volatility_moderate']
+          }
+        : {
+            summary: capability ? `${capability} task processed by ${state.agentId || defaultAgentId}.` : 'Task processed.',
+            capability,
+            source
+          };
+
+    return {
+      kind: 'task-result',
+      protocolVersion: 'kite-agent-task-v1',
+      traceId: sourceTraceId,
+      requestId: sourceRequestId,
+      taskId: sourceTaskId,
+      fromAgentId: state.agentId || defaultAgentId,
+      toAgentId: sourceAgentId,
+      channel,
+      hopIndex: Number.isFinite(Number(taskEnvelope.hopIndex)) ? Number(taskEnvelope.hopIndex) + 1 : 2,
+      mode,
+      capability,
+      status: 'done',
+      result: resultPayload,
+      error: '',
+      payment: {
+        mode: paymentMode,
+        requestId: sourceRequestId,
+        txHash: paymentTxHash
+      },
+      receiptRef: {
+        requestId: sourceRequestId,
+        txHash: paymentTxHash,
+        endpoint: sourceRequestId ? `/api/receipt/${sourceRequestId}` : ''
+      },
+      producedAt: toIsoNow()
+    };
+  }
+
   async function onIncomingMessage(ctx) {
     try {
       const message = ctx?.message;
@@ -313,43 +397,37 @@ export function createXmtpAgentRuntime(options = {}) {
         parsed
       });
 
-      const shouldAutoAck = autoAck && parsed && normalizeText(parsed?.kind || '').toLowerCase() === 'task-envelope' && !isAckPayload(parsed);
-      if (!shouldAutoAck) return;
+      const shouldAutoReply =
+        autoAck &&
+        parsed &&
+        normalizeText(parsed?.kind || '').toLowerCase() === 'task-envelope' &&
+        !isAckPayload(parsed);
+      if (!shouldAutoReply) return;
 
-      const ackPayload = {
-        kind: 'task-ack',
-        taskId,
-        traceId,
-        requestId,
-        fromAgentId: state.agentId || defaultAgentId,
-        toAgentId: fromAgentId,
-        hopIndex: Number.isFinite(Number(hopIndex)) ? Number(hopIndex) + 1 : 2,
-        channel,
-        from: state.address,
-        receivedAt: toIsoNow()
-      };
-      const ackText = JSON.stringify(ackPayload);
-      const ackMessageId =
+      const resultPayload = buildAutoTaskResultPayload(parsed);
+      const resultText = JSON.stringify(resultPayload);
+      const resultMessageId =
         typeof ctx?.conversation?.sendText === 'function'
-          ? await ctx.conversation.sendText(ackText)
-          : await ctx.conversation.send(ackText);
+          ? await ctx.conversation.sendText(resultText)
+          : await ctx.conversation.send(resultText);
       state.sentOutbound += 1;
       state.autoAckCount += 1;
       appendEvent({
         direction: 'outbound',
-        event: 'auto_ack_sent',
+        event: 'auto_task_result_sent',
         conversationId,
-        messageId: normalizeText(ackMessageId),
+        messageId: normalizeText(resultMessageId),
         toAddress: senderAddress,
         fromAgentId: state.agentId || defaultAgentId,
-        kind: 'task-ack',
+        toAgentId: fromAgentId,
+        kind: 'task-result',
         channel,
-        hopIndex: Number.isFinite(Number(ackPayload.hopIndex)) ? Number(ackPayload.hopIndex) : null,
+        hopIndex: Number.isFinite(Number(resultPayload.hopIndex)) ? Number(resultPayload.hopIndex) : null,
         taskId,
         traceId,
         requestId,
-        text: ackText,
-        parsed: ackPayload
+        text: resultText,
+        parsed: resultPayload
       });
     } catch (error) {
       state.lastError = normalizeText(error?.message || 'xmtp_incoming_handler_failed');
