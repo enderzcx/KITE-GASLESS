@@ -201,6 +201,14 @@ Reference docs:
 
 `Information architecture: / (Network Overview) + /market + /trace/:requestId + /ops`
 
+### Layered Agent Stack
+
+![Layered Agent Stack](docs/assets/layered-architecture.png)
+
+- `ERC8004` = identity + reputation + discovery (trust layer)
+- `XMTP` = communication + negotiation + coordination (messaging layer)
+- `x402` = pay-per-call settlement + proof (payment layer)
+
 ## Repository Structure (Minimal Kept Set)
 
 ```text
