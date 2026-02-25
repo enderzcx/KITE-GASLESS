@@ -105,6 +105,8 @@ export function createXmtpAgentRuntime(options = {}) {
   const writeEvents = typeof options.writeEvents === 'function' ? options.writeEvents : () => {};
   const resolveAgentById =
     typeof options.resolveAgentById === 'function' ? options.resolveAgentById : () => null;
+  const handleTaskEnvelope =
+    typeof options.handleTaskEnvelope === 'function' ? options.handleTaskEnvelope : null;
 
   const eventRetention = Math.max(50, Math.min(Number(options.eventRetention || 600), 5000));
   const autoAck = Boolean(options.autoAck);
@@ -251,7 +253,7 @@ export function createXmtpAgentRuntime(options = {}) {
     return kind === 'task-ack' || kind === 'ack';
   }
 
-  function buildAutoTaskResultPayload(taskEnvelope = {}) {
+  async function buildAutoTaskResultPayload(taskEnvelope = {}, runtimeContext = {}) {
     const sourceAgentId = normalizeText(taskEnvelope.fromAgentId || '');
     const sourceTaskId = normalizeText(taskEnvelope.taskId || '');
     const sourceTraceId = normalizeText(taskEnvelope.traceId || '');
@@ -280,7 +282,9 @@ export function createXmtpAgentRuntime(options = {}) {
     const horizonMin = Number.isFinite(horizonMinRaw) && horizonMinRaw > 0 ? Math.round(horizonMinRaw) : 60;
     const source = normalizeText(input.source || '') || 'router-risk-demo';
 
-    const resultPayload =
+    let status = 'done';
+    let errorText = '';
+    let resultPayload =
       capability === 'risk-score-feed'
         ? {
             summary: `Risk result ready for ${symbol} (${horizonMin}m).`,
@@ -296,6 +300,82 @@ export function createXmtpAgentRuntime(options = {}) {
             capability,
             source
           };
+    let paymentDetails = {
+      mode: paymentMode,
+      requestId: sourceRequestId,
+      txHash: paymentTxHash,
+      block: paymentBlock,
+      status: paymentStatus,
+      explorer: paymentExplorer,
+      verifiedAt: paymentVerifiedAt
+    };
+    let receiptRef = {
+      requestId: sourceRequestId,
+      txHash: paymentTxHash,
+      block: paymentBlock,
+      status: paymentStatus,
+      explorer: paymentExplorer,
+      verifiedAt: paymentVerifiedAt,
+      endpoint: sourceRequestId ? `/api/receipt/${sourceRequestId}` : ''
+    };
+
+    if (handleTaskEnvelope) {
+      try {
+        const handled = await handleTaskEnvelope({
+          envelope: taskEnvelope,
+          runtime: {
+            runtimeName,
+            agentId: state.agentId || defaultAgentId,
+            address: state.address,
+            env: state.env
+          },
+          context: runtimeContext
+        });
+        if (handled && typeof handled === 'object') {
+          const nextStatus = normalizeText(handled.status || '').toLowerCase();
+          if (nextStatus === 'failed') status = 'failed';
+          else if (nextStatus === 'done') status = 'done';
+          if (handled.result && typeof handled.result === 'object' && !Array.isArray(handled.result)) {
+            resultPayload = handled.result;
+          }
+          if (handled.error !== undefined) {
+            errorText = normalizeText(handled.error || '');
+            if (errorText) status = 'failed';
+          }
+          if (handled.payment && typeof handled.payment === 'object' && !Array.isArray(handled.payment)) {
+            paymentDetails = {
+              ...paymentDetails,
+              mode: normalizeText(handled.payment.mode || paymentDetails.mode).toLowerCase() || paymentDetails.mode,
+              requestId: normalizeText(handled.payment.requestId || paymentDetails.requestId),
+              txHash: normalizeText(handled.payment.txHash || paymentDetails.txHash),
+              block: Number.isFinite(Number(handled.payment.block))
+                ? Number(handled.payment.block)
+                : paymentDetails.block,
+              status: normalizeText(handled.payment.status || paymentDetails.status).toLowerCase(),
+              explorer: normalizeText(handled.payment.explorer || paymentDetails.explorer),
+              verifiedAt: normalizeText(handled.payment.verifiedAt || paymentDetails.verifiedAt)
+            };
+          }
+          if (handled.receiptRef && typeof handled.receiptRef === 'object' && !Array.isArray(handled.receiptRef)) {
+            receiptRef = {
+              ...receiptRef,
+              requestId: normalizeText(handled.receiptRef.requestId || receiptRef.requestId),
+              txHash: normalizeText(handled.receiptRef.txHash || receiptRef.txHash),
+              block: Number.isFinite(Number(handled.receiptRef.block))
+                ? Number(handled.receiptRef.block)
+                : receiptRef.block,
+              status: normalizeText(handled.receiptRef.status || receiptRef.status).toLowerCase(),
+              explorer: normalizeText(handled.receiptRef.explorer || receiptRef.explorer),
+              verifiedAt: normalizeText(handled.receiptRef.verifiedAt || receiptRef.verifiedAt),
+              endpoint: normalizeText(handled.receiptRef.endpoint || receiptRef.endpoint)
+            };
+          }
+        }
+      } catch (error) {
+        status = 'failed';
+        errorText = normalizeText(error?.message || 'task_handler_failed');
+      }
+    }
 
     return {
       kind: 'task-result',
@@ -309,27 +389,11 @@ export function createXmtpAgentRuntime(options = {}) {
       hopIndex: Number.isFinite(Number(taskEnvelope.hopIndex)) ? Number(taskEnvelope.hopIndex) + 1 : 2,
       mode,
       capability,
-      status: 'done',
+      status,
       result: resultPayload,
-      error: '',
-      payment: {
-        mode: paymentMode,
-        requestId: sourceRequestId,
-        txHash: paymentTxHash,
-        block: paymentBlock,
-        status: paymentStatus,
-        explorer: paymentExplorer,
-        verifiedAt: paymentVerifiedAt
-      },
-      receiptRef: {
-        requestId: sourceRequestId,
-        txHash: paymentTxHash,
-        block: paymentBlock,
-        status: paymentStatus,
-        explorer: paymentExplorer,
-        verifiedAt: paymentVerifiedAt,
-        endpoint: sourceRequestId ? `/api/receipt/${sourceRequestId}` : ''
-      },
+      error: errorText,
+      payment: paymentDetails,
+      receiptRef,
       producedAt: toIsoNow()
     };
   }
@@ -445,7 +509,13 @@ export function createXmtpAgentRuntime(options = {}) {
         !isAckPayload(parsed);
       if (!shouldAutoReply) return;
 
-      const resultPayload = buildAutoTaskResultPayload(parsed);
+      const resultPayload = await buildAutoTaskResultPayload(parsed, {
+        conversationId,
+        messageId,
+        senderInboxId: normalizeText(message?.senderInboxId || ''),
+        senderAddress,
+        text
+      });
       const resultText = JSON.stringify(resultPayload);
       const resultMessageId =
         typeof ctx?.conversation?.sendText === 'function'

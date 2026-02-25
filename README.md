@@ -191,6 +191,17 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-xmtp-router-risk-group-de
   -BindRealX402
 ```
 
+### XMTP Workers Capability Verify (Local)
+
+```powershell
+cd backend
+powershell -ExecutionPolicy Bypass -File .\scripts\run-xmtp-workers-capability-demo.ps1 `
+  -BaseUrl "http://127.0.0.1:3001" `
+  -AdminApiKey "<admin_key>" `
+  -AgentApiKey "<agent_key>" `
+  -ViewerApiKey "<viewer_key>"
+```
+
 ## Runtime Notes (Testnet)
 
 - Kite testnet RPC/bundler may occasionally return transient errors such as:

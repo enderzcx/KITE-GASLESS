@@ -35,6 +35,11 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
   - new optional runtimes: `reader-runtime`, `price-runtime`, `executor-runtime`
   - `POST /api/xmtp/start` and `POST /api/xmtp/stop` now include all runtimes in response.
   - `GET /api/xmtp/status` and `GET /api/network/agents` now expose all runtime states.
+- Added worker runtime task handlers (DM/group auto task-result):
+  - `risk-agent`: `risk-score-feed`, `volatility-snapshot`
+  - `price-agent`: `btc-price-feed`, `market-quote`
+  - `reader-agent`: `x-reader-feed`, `url-digest`
+  - `executor-agent`: `execute-plan`, `result-aggregation` (quote+risk+optional reader aggregation).
 - Router-risk demos now support real x402 payment binding:
   - request field: `bindRealX402=true`
   - when enabled, backend runs risk-score workflow and injects verified payment proof into task-result:

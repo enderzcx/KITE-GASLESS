@@ -2356,6 +2356,230 @@ function resolveAgentAddressesByIds(agentIds = []) {
   return uniqueByAddress;
 }
 
+function getTaskEnvelopeInput(envelope = {}) {
+  return envelope?.input && typeof envelope.input === 'object' && !Array.isArray(envelope.input)
+    ? envelope.input
+    : {};
+}
+
+function buildTaskPaymentFromIntent(envelope = {}) {
+  const paymentIntent =
+    envelope?.paymentIntent && typeof envelope.paymentIntent === 'object' && !Array.isArray(envelope.paymentIntent)
+      ? envelope.paymentIntent
+      : {};
+  const requestId = String(paymentIntent.requestId || envelope?.requestId || '').trim();
+  const txHash = String(paymentIntent.txHash || '').trim();
+  const block = Number.isFinite(Number(paymentIntent.block)) ? Number(paymentIntent.block) : null;
+  const status = String(paymentIntent.status || '').trim().toLowerCase();
+  const explorer = String(paymentIntent.explorer || '').trim();
+  const verifiedAt = String(paymentIntent.verifiedAt || '').trim();
+  return {
+    mode: String(paymentIntent.mode || 'mock').trim().toLowerCase() || 'mock',
+    requestId,
+    txHash,
+    block,
+    status,
+    explorer,
+    verifiedAt
+  };
+}
+
+function buildTaskReceiptRef(payment = {}) {
+  const requestId = String(payment?.requestId || '').trim();
+  const txHash = String(payment?.txHash || '').trim();
+  const block = Number.isFinite(Number(payment?.block)) ? Number(payment.block) : null;
+  const status = String(payment?.status || '').trim().toLowerCase();
+  const explorer = String(payment?.explorer || '').trim();
+  const verifiedAt = String(payment?.verifiedAt || '').trim();
+  return {
+    requestId,
+    txHash,
+    block,
+    status,
+    explorer,
+    verifiedAt,
+    endpoint: requestId ? `/api/receipt/${requestId}` : ''
+  };
+}
+
+async function handleRiskRuntimeTaskEnvelope({ envelope = {} } = {}) {
+  const capability = String(envelope?.capability || '').trim().toLowerCase();
+  const payment = buildTaskPaymentFromIntent(envelope);
+  const receiptRef = buildTaskReceiptRef(payment);
+  if (!['risk-score-feed', 'volatility-snapshot'].includes(capability)) {
+    return {
+      status: 'done',
+      result: {
+        summary: capability ? `Risk agent acknowledged capability ${capability}.` : 'Risk agent heartbeat ok.'
+      },
+      payment,
+      receiptRef
+    };
+  }
+  const input = getTaskEnvelopeInput(envelope);
+  const task = normalizeRiskScoreParams({
+    symbol: input.symbol || input.pair || 'BTCUSDT',
+    source: input.source || 'hyperliquid',
+    horizonMin: input.horizonMin ?? 60
+  });
+  const result = await runRiskScoreAnalysis(task);
+  return {
+    status: 'done',
+    result,
+    payment,
+    receiptRef
+  };
+}
+
+async function handleReaderRuntimeTaskEnvelope({ envelope = {} } = {}) {
+  const capability = String(envelope?.capability || '').trim().toLowerCase();
+  const payment = buildTaskPaymentFromIntent(envelope);
+  const receiptRef = buildTaskReceiptRef(payment);
+  if (!['x-reader-feed', 'url-digest'].includes(capability)) {
+    return {
+      status: 'done',
+      result: {
+        summary: capability ? `Reader agent acknowledged capability ${capability}.` : 'Reader agent heartbeat ok.'
+      },
+      payment,
+      receiptRef
+    };
+  }
+  const input = getTaskEnvelopeInput(envelope);
+  const task = normalizeXReaderParams({
+    url: input.url || input.resourceUrl || '',
+    mode: input.mode || input.source || 'auto',
+    maxChars: input.maxChars ?? X_READER_MAX_CHARS_DEFAULT
+  });
+  const reader = await fetchXReaderDigest(task);
+  return {
+    status: 'done',
+    result: {
+      summary: `x-reader digest ready: ${reader?.title || reader?.url || task.url}`,
+      reader
+    },
+    payment,
+    receiptRef
+  };
+}
+
+async function handlePriceRuntimeTaskEnvelope({ envelope = {} } = {}) {
+  const capability = String(envelope?.capability || '').trim().toLowerCase();
+  const payment = buildTaskPaymentFromIntent(envelope);
+  const receiptRef = buildTaskReceiptRef(payment);
+  if (!['btc-price-feed', 'market-quote'].includes(capability)) {
+    return {
+      status: 'done',
+      result: {
+        summary: capability ? `Price agent acknowledged capability ${capability}.` : 'Price agent heartbeat ok.'
+      },
+      payment,
+      receiptRef
+    };
+  }
+  const input = getTaskEnvelopeInput(envelope);
+  const task = normalizeBtcPriceParams({
+    pair: input.pair || input.symbol || 'BTCUSDT',
+    source: input.source || 'hyperliquid'
+  });
+  const quote = await fetchBtcPriceQuote(task);
+  return {
+    status: 'done',
+    result: {
+      summary: `BTC ${quote.pair} = $${quote.priceUsd} (${quote.provider})`,
+      quote
+    },
+    payment,
+    receiptRef
+  };
+}
+
+async function handleExecutorRuntimeTaskEnvelope({ envelope = {} } = {}) {
+  const capability = String(envelope?.capability || '').trim().toLowerCase();
+  const payment = buildTaskPaymentFromIntent(envelope);
+  const receiptRef = buildTaskReceiptRef(payment);
+  if (!['execute-plan', 'result-aggregation'].includes(capability)) {
+    return {
+      status: 'done',
+      result: {
+        summary: capability ? `Executor acknowledged capability ${capability}.` : 'Executor heartbeat ok.'
+      },
+      payment,
+      receiptRef
+    };
+  }
+  const input = getTaskEnvelopeInput(envelope);
+  const symbol = String(input.symbol || input.pair || 'BTCUSDT').trim().toUpperCase() || 'BTCUSDT';
+  const source = String(input.source || 'hyperliquid').trim().toLowerCase() || 'hyperliquid';
+  const horizonMin = Number.isFinite(Number(input.horizonMin)) ? Math.max(1, Math.round(Number(input.horizonMin))) : 60;
+  const includeQuote = input.includeQuote !== false;
+  const includeRisk = input.includeRisk !== false;
+  const includeReader = input.includeReader === true || Boolean(String(input.url || '').trim());
+  const warnings = [];
+
+  let quote = null;
+  let risk = null;
+  let reader = null;
+
+  if (includeQuote) {
+    try {
+      quote = await fetchBtcPriceQuote({ pair: symbol, source });
+    } catch (error) {
+      warnings.push(`quote_failed: ${error?.message || 'unknown'}`);
+    }
+  }
+  if (includeRisk) {
+    try {
+      risk = await runRiskScoreAnalysis({ symbol, source, horizonMin });
+    } catch (error) {
+      warnings.push(`risk_failed: ${error?.message || 'unknown'}`);
+    }
+  }
+  if (includeReader) {
+    const url = String(input.url || input.resourceUrl || '').trim();
+    if (!url) {
+      warnings.push('reader_skipped: missing url');
+    } else {
+      try {
+        reader = await fetchXReaderDigest({
+          url,
+          mode: input.mode || 'auto',
+          maxChars: input.maxChars ?? X_READER_MAX_CHARS_DEFAULT
+        });
+      } catch (error) {
+        warnings.push(`reader_failed: ${error?.message || 'unknown'}`);
+      }
+    }
+  }
+
+  const successCount = [quote, risk, reader].filter(Boolean).length;
+  const status = successCount > 0 ? 'done' : 'failed';
+  return {
+    status,
+    error: status === 'failed' ? 'executor_plan_failed' : '',
+    result: {
+      summary:
+        status === 'done'
+          ? `Executor plan completed (${successCount} result${successCount > 1 ? 's' : ''}).`
+          : 'Executor plan failed (no successful result).',
+      plan: {
+        symbol,
+        source,
+        horizonMin,
+        includeQuote,
+        includeRisk,
+        includeReader
+      },
+      quote,
+      risk,
+      reader,
+      warnings
+    },
+    payment,
+    receiptRef
+  };
+}
+
 const xmtpRuntime = createXmtpAgentRuntime({
   enabled: XMTP_ROUTER_RUNTIME_ENABLED,
   runtimeName: 'router-runtime',
@@ -2383,7 +2607,8 @@ const xmtpRiskRuntime = createXmtpAgentRuntime({
   eventRetention: XMTP_EVENT_RETENTION,
   readEvents: readXmtpEvents,
   writeEvents: writeXmtpEvents,
-  resolveAgentById: findNetworkAgentById
+  resolveAgentById: findNetworkAgentById,
+  handleTaskEnvelope: handleRiskRuntimeTaskEnvelope
 });
 
 const xmtpReaderRuntime = createXmtpAgentRuntime({
@@ -2398,7 +2623,8 @@ const xmtpReaderRuntime = createXmtpAgentRuntime({
   eventRetention: XMTP_EVENT_RETENTION,
   readEvents: readXmtpEvents,
   writeEvents: writeXmtpEvents,
-  resolveAgentById: findNetworkAgentById
+  resolveAgentById: findNetworkAgentById,
+  handleTaskEnvelope: handleReaderRuntimeTaskEnvelope
 });
 
 const xmtpPriceRuntime = createXmtpAgentRuntime({
@@ -2413,7 +2639,8 @@ const xmtpPriceRuntime = createXmtpAgentRuntime({
   eventRetention: XMTP_EVENT_RETENTION,
   readEvents: readXmtpEvents,
   writeEvents: writeXmtpEvents,
-  resolveAgentById: findNetworkAgentById
+  resolveAgentById: findNetworkAgentById,
+  handleTaskEnvelope: handlePriceRuntimeTaskEnvelope
 });
 
 const xmtpExecutorRuntime = createXmtpAgentRuntime({
@@ -2428,7 +2655,8 @@ const xmtpExecutorRuntime = createXmtpAgentRuntime({
   eventRetention: XMTP_EVENT_RETENTION,
   readEvents: readXmtpEvents,
   writeEvents: writeXmtpEvents,
-  resolveAgentById: findNetworkAgentById
+  resolveAgentById: findNetworkAgentById,
+  handleTaskEnvelope: handleExecutorRuntimeTaskEnvelope
 });
 
 function getAllXmtpRuntimeStatuses() {
