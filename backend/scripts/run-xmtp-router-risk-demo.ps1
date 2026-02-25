@@ -4,7 +4,8 @@ param(
   [string]$AgentApiKey = "",
   [string]$ViewerApiKey = "",
   [string]$Capability = "risk-score-feed",
-  [int]$WaitMs = 10000
+  [int]$WaitMs = 10000,
+  [switch]$BindRealX402
 )
 
 $ErrorActionPreference = "Stop"
@@ -38,6 +39,7 @@ $runBody = @{
   autoStart = $true
   capability = $Capability
   waitMs = $WaitMs
+  bindRealX402 = [bool]$BindRealX402
 }
 $run = Call-Api -Method "POST" -Path "/api/network/demo/router-risk/run" -Headers (New-Headers $AgentApiKey) -Body $runBody
 
@@ -57,6 +59,8 @@ $summary = [ordered]@{
   taskResult = $run.taskResult
   payment = $run.payment
   receiptRef = $run.receiptRef
+  paymentBinding = $run.paymentBinding
+  warnings = $run.warnings
   ackReceived = [bool]$run.ackReceived
   traceId = $traceId
   requestId = $requestId

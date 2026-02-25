@@ -270,6 +270,10 @@ export function createXmtpAgentRuntime(options = {}) {
     const paymentMode = normalizeText(paymentIntent.mode || 'mock').toLowerCase() || 'mock';
     const mockTxHash = buildMockTxHash(sourceTaskId || sourceRequestId || sourceTraceId || capability || 'task_result');
     const paymentTxHash = normalizeText(paymentIntent.txHash || '') || mockTxHash;
+    const paymentBlock = Number.isFinite(Number(paymentIntent.block)) ? Number(paymentIntent.block) : null;
+    const paymentStatus = normalizeText(paymentIntent.status || '');
+    const paymentExplorer = normalizeText(paymentIntent.explorer || '');
+    const paymentVerifiedAt = normalizeText(paymentIntent.verifiedAt || '');
 
     const symbol = normalizeText(input.symbol || '').toUpperCase() || 'BTCUSDT';
     const horizonMinRaw = Number(input.horizonMin);
@@ -311,11 +315,19 @@ export function createXmtpAgentRuntime(options = {}) {
       payment: {
         mode: paymentMode,
         requestId: sourceRequestId,
-        txHash: paymentTxHash
+        txHash: paymentTxHash,
+        block: paymentBlock,
+        status: paymentStatus,
+        explorer: paymentExplorer,
+        verifiedAt: paymentVerifiedAt
       },
       receiptRef: {
         requestId: sourceRequestId,
         txHash: paymentTxHash,
+        block: paymentBlock,
+        status: paymentStatus,
+        explorer: paymentExplorer,
+        verifiedAt: paymentVerifiedAt,
         endpoint: sourceRequestId ? `/api/receipt/${sourceRequestId}` : ''
       },
       producedAt: toIsoNow()

@@ -171,7 +171,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-xmtp-router-risk-demo.ps1
   -BaseUrl "http://127.0.0.1:3001" `
   -AdminApiKey "<admin_key>" `
   -AgentApiKey "<agent_key>" `
-  -ViewerApiKey "<viewer_key>"
+  -ViewerApiKey "<viewer_key>" `
+  -BindRealX402
 ```
 
 ### XMTP Router->Risk + Group Quick Verify (Local)
@@ -183,7 +184,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-xmtp-router-risk-group-de
   -AdminApiKey "<admin_key>" `
   -AgentApiKey "<agent_key>" `
   -ViewerApiKey "<viewer_key>" `
-  -GroupLabel "workers-group"
+  -GroupLabel "workers-group" `
+  -BindRealX402
 ```
 
 ## Runtime Notes (Testnet)

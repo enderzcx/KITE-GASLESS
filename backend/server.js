@@ -4955,6 +4955,194 @@ app.get('/api/workflow/:traceId', requireRole('viewer'), (req, res) => {
   });
 });
 
+function parseBooleanFlag(value, fallback = false) {
+  const text = String(value ?? '').trim().toLowerCase();
+  if (!text) return Boolean(fallback);
+  if (['1', 'true', 'yes', 'on'].includes(text)) return true;
+  if (['0', 'false', 'no', 'off'].includes(text)) return false;
+  return Boolean(fallback);
+}
+
+function buildInternalAgentHeaders() {
+  const headers = {
+    'Content-Type': 'application/json'
+  };
+  const key = String(API_KEY_ADMIN || API_KEY_AGENT || API_KEY_VIEWER || '').trim();
+  if (key) {
+    headers['x-api-key'] = key;
+  }
+  return headers;
+}
+
+function resolveX402EvidenceByRequestId(requestId = '', workflowByRequestId = null) {
+  const normalizedRequestId = String(requestId || '').trim();
+  if (!normalizedRequestId) return null;
+  const reqItem =
+    readX402Requests().find((item) => String(item?.requestId || '').trim() === normalizedRequestId) || null;
+  if (!reqItem) return null;
+
+  const workflowLookup =
+    workflowByRequestId instanceof Map ? workflowByRequestId : buildLatestWorkflowByRequestId(readWorkflows());
+  const workflow = workflowLookup.get(normalizedRequestId) || null;
+  const txHash = String(reqItem?.paymentTxHash || reqItem?.paymentProof?.txHash || workflow?.txHash || '').trim();
+  const blockRaw = reqItem?.proofVerification?.details?.blockNumber;
+  const block = Number.isFinite(Number(blockRaw)) ? Number(blockRaw) : null;
+  const proofStatus =
+    reqItem?.proofVerification
+      ? 'success'
+      : ['failed', 'error', 'expired', 'rejected'].includes(String(reqItem?.status || '').trim().toLowerCase())
+        ? 'failed'
+        : 'pending';
+  const explorer = txHash ? `https://testnet.kitescan.ai/tx/${txHash}` : '';
+  const verifiedAtRaw = Number(reqItem?.proofVerification?.verifiedAt || 0);
+  const verifiedAt = verifiedAtRaw > 0 ? new Date(verifiedAtRaw).toISOString() : '';
+  return {
+    mode: reqItem?.proofVerification ? 'x402' : 'mock',
+    requestId: normalizedRequestId,
+    txHash,
+    block,
+    status: proofStatus,
+    explorer,
+    verifiedAt,
+    receiptRef: {
+      requestId: normalizedRequestId,
+      txHash,
+      block,
+      status: proofStatus,
+      explorer,
+      verifiedAt,
+      endpoint: `/api/receipt/${normalizedRequestId}`
+    }
+  };
+}
+
+async function buildRiskScorePaymentIntentForTask({
+  body = {},
+  traceId = '',
+  fallbackRequestId = '',
+  defaultTask = { symbol: 'BTCUSDT', source: 'hyperliquid', horizonMin: 60 }
+} = {}) {
+  const inputTask =
+    body?.input && typeof body.input === 'object' && !Array.isArray(body.input)
+      ? body.input
+      : defaultTask;
+  const normalizedTask = normalizeRiskScoreParams({
+    symbol: inputTask?.symbol || inputTask?.pair || defaultTask.symbol || 'BTCUSDT',
+    source: inputTask?.source || defaultTask.source || 'hyperliquid',
+    horizonMin: inputTask?.horizonMin ?? defaultTask.horizonMin ?? 60
+  });
+  const rawIntent =
+    body?.paymentIntent && typeof body.paymentIntent === 'object' && !Array.isArray(body.paymentIntent)
+      ? body.paymentIntent
+      : {};
+  const bindRealX402 = parseBooleanFlag(body?.bindRealX402, false);
+  const strictBinding = parseBooleanFlag(body?.strictBinding, false);
+  const shouldBindRealX402 =
+    bindRealX402 ||
+    (String(rawIntent?.mode || '').trim().toLowerCase() === 'x402' &&
+      (!String(rawIntent?.requestId || '').trim() || !String(rawIntent?.txHash || '').trim()));
+
+  let paymentIntent = {
+    mode: String(rawIntent?.mode || 'mock').trim().toLowerCase() || 'mock',
+    requestId: String(rawIntent?.requestId || fallbackRequestId || '').trim(),
+    txHash: String(rawIntent?.txHash || '').trim(),
+    block: Number.isFinite(Number(rawIntent?.block)) ? Number(rawIntent.block) : null,
+    status: String(rawIntent?.status || '').trim().toLowerCase(),
+    explorer: String(rawIntent?.explorer || '').trim(),
+    verifiedAt: String(rawIntent?.verifiedAt || '').trim()
+  };
+
+  const warnings = [];
+  let workflowBinding = null;
+  if (shouldBindRealX402) {
+    try {
+      const payload = {
+        ...normalizedTask,
+        traceId: resolveWorkflowTraceId(body?.paymentTraceId || createTraceId('risk_bind')),
+        payer: normalizeAddress(body?.payer || ''),
+        sourceAgentId: String(body?.sourceAgentId || KITE_AGENT1_ID).trim(),
+        targetAgentId: String(body?.targetAgentId || KITE_AGENT2_ID).trim()
+      };
+      const resp = await fetch(`http://127.0.0.1:${PORT}/api/workflow/risk-score/run`, {
+        method: 'POST',
+        headers: buildInternalAgentHeaders(),
+        body: JSON.stringify(payload)
+      });
+      const result = await resp.json().catch(() => ({}));
+      if (!resp.ok || result?.ok === false) {
+        throw new Error(result?.reason || result?.error || `workflow/risk-score/run failed: HTTP ${resp.status}`);
+      }
+      const boundRequestId = String(result?.requestId || result?.workflow?.requestId || '').trim();
+      const evidence = resolveX402EvidenceByRequestId(boundRequestId);
+      if (!boundRequestId || !evidence?.txHash) {
+        throw new Error('x402 evidence missing after workflow run');
+      }
+      paymentIntent = {
+        mode: 'x402',
+        requestId: evidence.requestId,
+        txHash: evidence.txHash,
+        block: evidence.block,
+        status: evidence.status,
+        explorer: evidence.explorer,
+        verifiedAt: evidence.verifiedAt
+      };
+      workflowBinding = {
+        ok: true,
+        traceId: String(result?.traceId || result?.workflow?.traceId || '').trim(),
+        requestId: evidence.requestId,
+        txHash: evidence.txHash,
+        block: evidence.block,
+        status: evidence.status,
+        explorer: evidence.explorer
+      };
+    } catch (error) {
+      const reason = String(error?.message || 'bind_real_x402_failed').trim();
+      warnings.push(reason);
+      if (strictBinding) {
+        throw new Error(reason);
+      }
+    }
+  } else if (paymentIntent.mode === 'x402' && paymentIntent.requestId) {
+    const evidence = resolveX402EvidenceByRequestId(paymentIntent.requestId);
+    if (evidence?.txHash) {
+      paymentIntent = {
+        mode: 'x402',
+        requestId: evidence.requestId,
+        txHash: evidence.txHash,
+        block: evidence.block,
+        status: evidence.status,
+        explorer: evidence.explorer,
+        verifiedAt: evidence.verifiedAt
+      };
+    }
+  }
+
+  if (!paymentIntent.mode) paymentIntent.mode = 'mock';
+  if (!paymentIntent.requestId) paymentIntent.requestId = fallbackRequestId;
+  if (paymentIntent.mode === 'x402' && !paymentIntent.txHash) {
+    warnings.push('x402 evidence unavailable, fallback to mock payment intent');
+    paymentIntent.mode = 'mock';
+  }
+  if (!paymentIntent.txHash && paymentIntent.mode === 'mock') {
+    paymentIntent.txHash = `mock_${taskIdSafeToken(traceId || fallbackRequestId || 'risk')}`;
+  }
+
+  return {
+    paymentIntent,
+    normalizedTask,
+    workflowBinding,
+    warnings
+  };
+}
+
+function taskIdSafeToken(value = '') {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]/g, '')
+    .slice(0, 24);
+}
+
 function buildTraceXmtpEvidence({ traceId = '', requestId = '', taskId = '' } = {}) {
   const normalizedTraceId = String(traceId || '').trim();
   const normalizedRequestId = String(requestId || '').trim();
@@ -5007,13 +5195,21 @@ function buildTraceXmtpEvidence({ traceId = '', requestId = '', taskId = '' } = 
           ? {
               mode: String(payment.mode || '').trim().toLowerCase(),
               requestId: String(payment.requestId || '').trim(),
-              txHash: String(payment.txHash || '').trim()
+              txHash: String(payment.txHash || '').trim(),
+              block: Number.isFinite(Number(payment.block)) ? Number(payment.block) : null,
+              status: String(payment.status || '').trim().toLowerCase(),
+              explorer: String(payment.explorer || '').trim(),
+              verifiedAt: String(payment.verifiedAt || '').trim()
             }
           : null,
         receiptRef: receiptRef
           ? {
               requestId: String(receiptRef.requestId || '').trim(),
               txHash: String(receiptRef.txHash || '').trim(),
+              block: Number.isFinite(Number(receiptRef.block)) ? Number(receiptRef.block) : null,
+              status: String(receiptRef.status || '').trim().toLowerCase(),
+              explorer: String(receiptRef.explorer || '').trim(),
+              verifiedAt: String(receiptRef.verifiedAt || '').trim(),
               endpoint: String(receiptRef.endpoint || '').trim()
             }
           : null
@@ -7557,6 +7753,26 @@ app.post('/api/network/demo/router-risk/run', requireRole('agent'), async (req, 
   const requestId = String(body.requestId || createTraceId('router_risk_req')).trim();
   const taskId = String(body.taskId || createTraceId('router_risk_task')).trim();
   const capability = String(body.capability || 'risk-score-feed').trim();
+  let paymentPlan = null;
+  try {
+    paymentPlan = await buildRiskScorePaymentIntentForTask({
+      body,
+      traceId,
+      fallbackRequestId: requestId,
+      defaultTask: {
+        symbol: 'BTCUSDT',
+        source: 'router-risk-demo',
+        horizonMin: 60
+      }
+    });
+  } catch (error) {
+    return res.status(400).json({
+      ok: false,
+      traceId: req.traceId || '',
+      error: 'bind_real_x402_failed',
+      reason: error?.message || 'bind_real_x402_failed'
+    });
+  }
   const envelope = {
     kind: 'task-envelope',
     protocolVersion: 'kite-agent-task-v1',
@@ -7569,20 +7785,8 @@ app.post('/api/network/demo/router-risk/run', requireRole('agent'), async (req, 
     hopIndex: 1,
     mode: 'a2a',
     capability,
-    input:
-      body.input && typeof body.input === 'object' && !Array.isArray(body.input)
-        ? body.input
-        : {
-            symbol: 'BTCUSDT',
-            horizonMin: 60,
-            source: 'router-risk-demo'
-          },
-    paymentIntent:
-      body.paymentIntent && typeof body.paymentIntent === 'object' && !Array.isArray(body.paymentIntent)
-        ? body.paymentIntent
-        : {
-            mode: 'mock'
-          },
+    input: paymentPlan.normalizedTask,
+    paymentIntent: paymentPlan.paymentIntent,
     expectsReply: true,
     timestamp: new Date().toISOString()
   };
@@ -7638,6 +7842,26 @@ app.post('/api/network/demo/router-risk/run', requireRole('agent'), async (req, 
   const taskResult = resultEvent?.parsed && typeof resultEvent.parsed === 'object' ? resultEvent.parsed : null;
   const resultPayment = taskResult?.payment && typeof taskResult.payment === 'object' ? taskResult.payment : null;
   const resultReceiptRef = taskResult?.receiptRef && typeof taskResult.receiptRef === 'object' ? taskResult.receiptRef : null;
+  const boundEvidence =
+    resultPayment?.requestId && String(resultPayment?.mode || '').trim().toLowerCase() === 'x402'
+      ? resolveX402EvidenceByRequestId(resultPayment.requestId)
+      : null;
+  const finalPayment =
+    boundEvidence?.txHash
+      ? {
+          mode: 'x402',
+          requestId: boundEvidence.requestId,
+          txHash: boundEvidence.txHash,
+          block: boundEvidence.block,
+          status: boundEvidence.status,
+          explorer: boundEvidence.explorer,
+          verifiedAt: boundEvidence.verifiedAt
+        }
+      : resultPayment;
+  const finalReceiptRef =
+    boundEvidence?.receiptRef
+      ? boundEvidence.receiptRef
+      : resultReceiptRef;
 
   return res.json({
     ok: true,
@@ -7655,8 +7879,10 @@ app.post('/api/network/demo/router-risk/run', requireRole('agent'), async (req, 
     resultReceived: Boolean(resultEvent),
     resultEvent,
     taskResult,
-    payment: resultPayment,
-    receiptRef: resultReceiptRef,
+    payment: finalPayment,
+    receiptRef: finalReceiptRef,
+    paymentBinding: paymentPlan.workflowBinding,
+    warnings: paymentPlan.warnings,
     ackReceived: Boolean(ackEvent),
     ackEvent,
     runtime: {
@@ -7697,6 +7923,26 @@ app.post('/api/network/demo/router-risk-group/run', requireRole('agent'), async 
   const requestId = String(body.requestId || createTraceId('router_risk_req')).trim();
   const taskId = String(body.taskId || createTraceId('router_risk_task')).trim();
   const capability = String(body.capability || 'risk-score-feed').trim();
+  let paymentPlan = null;
+  try {
+    paymentPlan = await buildRiskScorePaymentIntentForTask({
+      body,
+      traceId,
+      fallbackRequestId: requestId,
+      defaultTask: {
+        symbol: 'BTCUSDT',
+        source: 'router-risk-group-demo',
+        horizonMin: 60
+      }
+    });
+  } catch (error) {
+    return res.status(400).json({
+      ok: false,
+      traceId: req.traceId || '',
+      error: 'bind_real_x402_failed',
+      reason: error?.message || 'bind_real_x402_failed'
+    });
+  }
   const groupLabel = String(body.groupLabel || XMTP_WORKERS_GROUP_LABEL || 'workers-group').trim();
   const existingGroup = findXmtpGroupRecord({ groupId: body.groupId, label: groupLabel });
   const workerIds = parseAgentIdList(
@@ -7782,20 +8028,8 @@ app.post('/api/network/demo/router-risk-group/run', requireRole('agent'), async 
     hopIndex: 1,
     mode: 'a2a',
     capability,
-    input:
-      body.input && typeof body.input === 'object' && !Array.isArray(body.input)
-        ? body.input
-        : {
-            symbol: 'BTCUSDT',
-            horizonMin: 60,
-            source: 'router-risk-group-demo'
-          },
-    paymentIntent:
-      body.paymentIntent && typeof body.paymentIntent === 'object' && !Array.isArray(body.paymentIntent)
-        ? body.paymentIntent
-        : {
-            mode: 'mock'
-          },
+    input: paymentPlan.normalizedTask,
+    paymentIntent: paymentPlan.paymentIntent,
     expectsReply: true,
     timestamp: new Date().toISOString()
   };
@@ -7857,6 +8091,26 @@ app.post('/api/network/demo/router-risk-group/run', requireRole('agent'), async 
   const taskResult = resultEvent?.parsed && typeof resultEvent.parsed === 'object' ? resultEvent.parsed : null;
   const resultPayment = taskResult?.payment && typeof taskResult.payment === 'object' ? taskResult.payment : null;
   const resultReceiptRef = taskResult?.receiptRef && typeof taskResult.receiptRef === 'object' ? taskResult.receiptRef : null;
+  const boundEvidence =
+    resultPayment?.requestId && String(resultPayment?.mode || '').trim().toLowerCase() === 'x402'
+      ? resolveX402EvidenceByRequestId(resultPayment.requestId)
+      : null;
+  const finalPayment =
+    boundEvidence?.txHash
+      ? {
+          mode: 'x402',
+          requestId: boundEvidence.requestId,
+          txHash: boundEvidence.txHash,
+          block: boundEvidence.block,
+          status: boundEvidence.status,
+          explorer: boundEvidence.explorer,
+          verifiedAt: boundEvidence.verifiedAt
+        }
+      : resultPayment;
+  const finalReceiptRef =
+    boundEvidence?.receiptRef
+      ? boundEvidence.receiptRef
+      : resultReceiptRef;
 
   if (resultEvent) {
     await sendPhase('done', 'done', taskResult?.result?.summary || 'task-result received');
@@ -7885,8 +8139,10 @@ app.post('/api/network/demo/router-risk-group/run', requireRole('agent'), async 
     resultReceived: Boolean(resultEvent),
     resultEvent,
     taskResult,
-    payment: resultPayment,
-    receiptRef: resultReceiptRef,
+    payment: finalPayment,
+    receiptRef: finalReceiptRef,
+    paymentBinding: paymentPlan.workflowBinding,
+    warnings: paymentPlan.warnings,
     ackReceived: Boolean(ackEvent),
     ackEvent,
     runtime: {

@@ -31,6 +31,11 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
   - `POST /api/xmtp/groups/send`
   - `POST /api/network/demo/router-risk-group/run`
   - flow rule: `DM task-envelope -> Group task-phase broadcast -> DM task-result`.
+- Router-risk demos now support real x402 payment binding:
+  - request field: `bindRealX402=true`
+  - when enabled, backend runs risk-score workflow and injects verified payment proof into task-result:
+    - `payment.mode/requestId/txHash/block/status/explorer/verifiedAt`
+    - `receiptRef.requestId/txHash/block/status/explorer/endpoint`.
 
 ### Changed
 - Demo and Ops UI now provide `Download Receipt` action from API result panels.
@@ -40,6 +45,9 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
   - `resultReceived/resultEvent/taskResult/payment/receiptRef`
   - keeps `ackReceived/ackEvent` as compatibility fields.
 - Trace page (`/trace/:requestId`) now shows XMTP hop-by-hop evidence and task-result payment binding.
+- Trace evidence mapping now includes x402 binding fields from XMTP task-result:
+  - `payment.block/status/explorer/verifiedAt`
+  - `receiptRef.block/status/explorer/verifiedAt`.
 
 ### Removed
 - Removed backend SSE stream endpoints:

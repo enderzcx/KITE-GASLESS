@@ -5,7 +5,8 @@ param(
   [string]$ViewerApiKey = "",
   [string]$Capability = "risk-score-feed",
   [string]$GroupLabel = "workers-group",
-  [int]$WaitMs = 12000
+  [int]$WaitMs = 12000,
+  [switch]$BindRealX402
 )
 
 $ErrorActionPreference = "Stop"
@@ -47,6 +48,7 @@ $runBody = @{
   capability = $Capability
   groupLabel = $GroupLabel
   waitMs = $WaitMs
+  bindRealX402 = [bool]$BindRealX402
 }
 $run = Call-Api -Method "POST" -Path "/api/network/demo/router-risk-group/run" -Headers (New-Headers $AgentApiKey) -Body $runBody
 
@@ -66,6 +68,8 @@ $summary = [ordered]@{
   taskResult = $run.taskResult
   payment = $run.payment
   receiptRef = $run.receiptRef
+  paymentBinding = $run.paymentBinding
+  warnings = $run.warnings
   phaseMessages = $run.xmtp.phaseMessages
   traceId = $traceId
   requestId = $requestId

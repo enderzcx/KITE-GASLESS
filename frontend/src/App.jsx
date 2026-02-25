@@ -1630,6 +1630,9 @@ function App() {
               <p>paymentMode: {fullText(latestTaskPayment?.mode || '-')}</p>
               <p>payment.requestId: {fullText(latestTaskPayment?.requestId || latestTaskReceiptRef?.requestId || '-')}</p>
               <p>payment.txHash: {fullText(latestTaskPayment?.txHash || latestTaskReceiptRef?.txHash || '-')}</p>
+              <p>payment.block: {latestTaskPayment?.block ?? latestTaskReceiptRef?.block ?? '-'}</p>
+              <p>payment.status: {fullText(latestTaskPayment?.status || latestTaskReceiptRef?.status || '-')}</p>
+              <p>payment.explorer: {fullText(latestTaskPayment?.explorer || latestTaskReceiptRef?.explorer || '-')}</p>
               <p>receiptRef: {fullText(latestTaskReceiptRef?.endpoint || '-')}</p>
             </article>
             <article className="evidence-card">
@@ -1764,6 +1767,8 @@ function App() {
                         <p className="flow-meta">result: {fullText(hop?.resultSummary || '-')}</p>
                         <p className="flow-meta">payment.requestId: {fullText(hop?.payment?.requestId || hop?.receiptRef?.requestId || '-')}</p>
                         <p className="flow-meta">payment.txHash: {fullText(hop?.payment?.txHash || hop?.receiptRef?.txHash || '-')}</p>
+                        <p className="flow-meta">payment.block: {hop?.payment?.block ?? hop?.receiptRef?.block ?? '-'}</p>
+                        <p className="flow-meta">payment.status: {fullText(hop?.payment?.status || hop?.receiptRef?.status || '-')}</p>
                       </>
                     ) : null}
                   </li>
