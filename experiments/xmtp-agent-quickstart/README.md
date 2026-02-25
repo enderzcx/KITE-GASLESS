@@ -16,6 +16,7 @@ Copy `.env.example` to `.env`, then fill:
 - `XMTP_WALLET_KEY=0x...` (agent wallet private key)
 - `XMTP_DB_ENCRYPTION_KEY=<64 hex chars>`
 - `XMTP_DB_DIRECTORY=.xmtp-db` (keep stable across restarts)
+- `AGENT_SELF_HEAL_ENABLED=1` (auto-restart on stream transport errors)
 
 ## 3) Start
 
@@ -46,3 +47,9 @@ Expected logs:
 3. Reuse one agent wallet instead of creating many installations.
 4. Inspect terminal `unhandledError` logs.
 
+## 6) Auto self-heal knobs
+
+- `AGENT_SELF_HEAL_ENABLED` default `1`
+- `AGENT_SELF_HEAL_COOLDOWN_MS` default `5000`
+- `AGENT_SELF_HEAL_WINDOW_MS` default `600000` (10 min)
+- `AGENT_SELF_HEAL_MAX_RESTARTS` default `8`
