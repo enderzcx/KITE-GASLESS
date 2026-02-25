@@ -31,6 +31,13 @@ function normalizeText(value = '') {
   return String(value || '').trim();
 }
 
+function normalizeOptionalUrl(value = '') {
+  const raw = normalizeText(value);
+  if (!raw) return '';
+  if (['null', 'none', 'disabled', 'off'].includes(raw.toLowerCase())) return 'null';
+  return raw;
+}
+
 function normalizePrivateKey(value = '') {
   const raw = normalizeText(value);
   if (!raw) return '';
@@ -111,11 +118,20 @@ export function createXmtpAgentRuntime(options = {}) {
   const eventRetention = Math.max(50, Math.min(Number(options.eventRetention || 600), 5000));
   const autoAck = Boolean(options.autoAck);
   const enabled = Boolean(options.enabled);
+  const recoveryDelayMs = Math.max(500, Math.min(Number(options.recoveryDelayMs || 1500), 30_000));
+  const recoveryCooldownMs = Math.max(2000, Math.min(Number(options.recoveryCooldownMs || 10_000), 120_000));
   const runtimeName = normalizeText(options.runtimeName || 'router-runtime') || 'router-runtime';
   const defaultAgentId = normalizeText(options.agentId || '');
   const configuredWalletKey = normalizePrivateKey(options.walletKey || '');
   const configuredDbEncryptionKey = normalizeHex(options.dbEncryptionKey || '');
   const configuredDbDirectory = normalizeText(options.dbDirectory || '');
+  const configuredApiUrl = normalizeOptionalUrl(options.apiUrl || process.env.XMTP_API_URL || '');
+  const configuredHistorySyncUrl = normalizeOptionalUrl(
+    options.historySyncUrl !== undefined ? options.historySyncUrl : process.env.XMTP_HISTORY_SYNC_URL || ''
+  );
+  const configuredGatewayHost = normalizeOptionalUrl(
+    options.gatewayHost || process.env.XMTP_GATEWAY_HOST || ''
+  );
 
   const state = {
     enabled,
@@ -132,12 +148,17 @@ export function createXmtpAgentRuntime(options = {}) {
     processedInbound: 0,
     ignoredInbound: 0,
     sentOutbound: 0,
-    autoAckCount: 0
+    autoAckCount: 0,
+    recovering: false,
+    recoveryCount: 0
   };
 
   const seenMessageIds = new Set();
   const seenTaskIds = new Set();
   let agent = null;
+  let recoveryTimer = null;
+  let recoveryInFlight = false;
+  let recoveryLastAt = 0;
 
   function appendEvent(input = {}) {
     const rows = Array.isArray(readEvents()) ? readEvents() : [];
@@ -178,8 +199,76 @@ export function createXmtpAgentRuntime(options = {}) {
       autoAck,
       eventRetention,
       runtimeName,
+      recoveryDelayMs,
+      recoveryCooldownMs,
+      apiUrl: configuredApiUrl && configuredApiUrl !== 'null' ? configuredApiUrl : '',
+      historySyncUrl: configuredHistorySyncUrl,
+      gatewayHost: configuredGatewayHost && configuredGatewayHost !== 'null' ? configuredGatewayHost : '',
       events: Array.isArray(readEvents()) ? readEvents().length : 0
     };
+  }
+
+  async function runRecovery(trigger = '', detail = '') {
+    if (!enabled || recoveryInFlight) return;
+    recoveryInFlight = true;
+    state.recovering = true;
+    state.recoveryCount += 1;
+    appendEvent({
+      direction: 'internal',
+      event: 'runtime_recovery_started',
+      error: normalizeText(detail),
+      meta: {
+        trigger: normalizeText(trigger),
+        recoveryCount: state.recoveryCount
+      }
+    });
+    try {
+      await stop();
+      const next = await start();
+      appendEvent({
+        direction: 'internal',
+        event: next?.running ? 'runtime_recovery_succeeded' : 'runtime_recovery_failed',
+        error: next?.running ? '' : normalizeText(next?.lastError || 'recovery_start_failed'),
+        meta: {
+          trigger: normalizeText(trigger),
+          running: Boolean(next?.running)
+        }
+      });
+    } catch (error) {
+      state.lastError = normalizeText(error?.message || 'runtime_recovery_failed');
+      appendEvent({
+        direction: 'internal',
+        event: 'runtime_recovery_failed',
+        error: state.lastError,
+        meta: {
+          trigger: normalizeText(trigger)
+        }
+      });
+    } finally {
+      recoveryLastAt = Date.now();
+      state.recovering = false;
+      recoveryInFlight = false;
+    }
+  }
+
+  function scheduleRecovery(trigger = '', detail = '') {
+    if (!enabled) return;
+    if (recoveryTimer || recoveryInFlight) return;
+    const now = Date.now();
+    if (recoveryLastAt && now - recoveryLastAt < recoveryCooldownMs) return;
+    recoveryTimer = setTimeout(() => {
+      recoveryTimer = null;
+      void runRecovery(trigger, detail);
+    }, recoveryDelayMs);
+    appendEvent({
+      direction: 'internal',
+      event: 'runtime_recovery_scheduled',
+      error: normalizeText(detail),
+      meta: {
+        trigger: normalizeText(trigger),
+        delayMs: recoveryDelayMs
+      }
+    });
   }
 
   function resolveAddress(input = {}) {
@@ -547,6 +636,7 @@ export function createXmtpAgentRuntime(options = {}) {
         event: 'incoming_handler_error',
         error: state.lastError
       });
+      scheduleRecovery('incoming_handler_error', state.lastError);
     }
   }
 
@@ -572,6 +662,15 @@ export function createXmtpAgentRuntime(options = {}) {
     const createOptions = {
       env: state.env
     };
+    if (configuredApiUrl && configuredApiUrl !== 'null') {
+      createOptions.apiUrl = configuredApiUrl;
+    }
+    if (configuredHistorySyncUrl) {
+      createOptions.historySyncUrl = configuredHistorySyncUrl === 'null' ? null : configuredHistorySyncUrl;
+    }
+    if (configuredGatewayHost && configuredGatewayHost !== 'null') {
+      createOptions.gatewayHost = configuredGatewayHost;
+    }
     if (dbEncryptionKey) createOptions.dbEncryptionKey = dbEncryptionKey;
     if (dbDirectory) {
       fs.mkdirSync(dbDirectory, { recursive: true, mode: 0o700 });
@@ -590,6 +689,7 @@ export function createXmtpAgentRuntime(options = {}) {
           event: 'unhandled_error',
           error: state.lastError
         });
+        scheduleRecovery('unhandled_error', state.lastError);
       });
       await agent.start();
 
@@ -624,6 +724,10 @@ export function createXmtpAgentRuntime(options = {}) {
   }
 
   async function stop() {
+    if (recoveryTimer) {
+      clearTimeout(recoveryTimer);
+      recoveryTimer = null;
+    }
     try {
       if (agent) {
         await agent.stop();

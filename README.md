@@ -59,7 +59,7 @@ Current Version: `v1.8.0`
 - Agent-to-agent and agent-to-api flow evidence in one console
 - Service directory MVP: publish service, discover service, invoke with per-call x402 settlement
 - Real A2A service in market: `risk-score-feed` (agent invokes agent capability with x402 settlement)
-- Real ATAPI service in market: `x-reader-feed` (pay-per-call URL digest via x-reader)
+- Real ATAPI service in market: `x-reader-feed` (legacy endpoint name, now backed by OpenAlice info analysis)
 - BTC quote loop is a sample scenario; platform model supports publishing and consuming arbitrary agent services
 - BTC demo summary wording uses `ATAPI` for the paid quote path to avoid A2A naming confusion.
 - Verifiable agent identity (registry-backed)
@@ -170,6 +170,53 @@ Upgrade authority remains with each proxy owner; this project does not grant per
 - `POST /api/automation/btc-price/stop`
 - `POST /api/policy/revoke`
 - `POST /api/policy/unrevoke`
+
+### XMTP Local Backend (xmtpd) Setup
+
+Reference source (local copy):
+- `xmtpd-1.1.1/doc/deploy.md`
+
+Prerequisites:
+- Docker (for chain/db/redis/validation)
+- Go (for running xmtpd node process)
+- Bash runtime on Windows (Git Bash or WSL)
+
+Start local dependencies and register a node:
+
+```powershell
+cd "G:\KKK\KITE GASLESS\xmtpd-1.1.1"
+bash ./dev/up single
+```
+
+Start the local xmtpd replication API node (`http://127.0.0.1:5050`):
+
+```powershell
+cd "G:\KKK\KITE GASLESS\xmtpd-1.1.1"
+bash ./dev/run
+```
+
+PowerShell wrapper (from repo root):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\backend\scripts\start-xmtp-local-env.ps1 -Profile single -StartNode
+```
+
+Then configure `backend/.env`:
+
+```env
+XMTP_ENV=local
+XMTP_API_URL=http://127.0.0.1:5050
+XMTP_HISTORY_SYNC_URL=null
+XMTP_GATEWAY_HOST=
+```
+
+`XMTP_HISTORY_SYNC_URL=null` is recommended for this minimal local stack, because `xmtpd` local setup does not expose the default SDK history sync port (`5558`).
+
+Stop local stack:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\backend\scripts\stop-xmtp-local-env.ps1
+```
 
 ### XMTP Router->Risk Quick Verify (Local)
 
@@ -356,7 +403,7 @@ OPENCLAW_MODEL=<your_model_id>
 # e.g. kimi-coding/k2p5 | qwen2.5-coder | deepseek-chat
 ```
 
-Optional OpenAlice sidecar (info + technical analysis provider):
+OpenAlice sidecar (required for full info + technical quality):
 
 ```env
 ANALYSIS_PROVIDER=openalice
@@ -370,6 +417,8 @@ Notes:
 - `OPENCLAW_CHAT_PROTOCOL` and `OPENCLAW_CHAT_PATH` must match your runtime API shape.
 - `OPENCLAW_MODEL` should be your local/remote model id (do not hardcode one contributor's model in shared deployments).
 - If `OPENCLAW_HEALTH_PATH=/v1/models` returns HTML instead of JSON, you likely hit a control UI route instead of an OpenAI-compatible API route.
+- Info analysis no longer uses Jina x-reader path; backend routes info tasks to OpenAlice adapter.
+- For XMTP local backend, you can additionally set `XMTP_API_URL/XMTP_HISTORY_SYNC_URL/XMTP_GATEWAY_HOST`.
 
 ## Tencent Lighthouse Web Deployment (Low Cost)
 

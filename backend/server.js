@@ -74,13 +74,7 @@ const OPENALICE_BASE_URL = String(process.env.OPENALICE_BASE_URL || '').trim();
 const OPENALICE_API_KEY = String(process.env.OPENALICE_API_KEY || '').trim();
 const OPENALICE_TIMEOUT_MS = Number(process.env.OPENALICE_TIMEOUT_MS || 12000);
 const OPENALICE_RETRY = Number(process.env.OPENALICE_RETRY || 1);
-const ANALYSIS_PROVIDER_RAW = String(process.env.ANALYSIS_PROVIDER || '').trim().toLowerCase();
-const ANALYSIS_PROVIDER =
-  ANALYSIS_PROVIDER_RAW === 'openalice' || ANALYSIS_PROVIDER_RAW === 'legacy'
-    ? ANALYSIS_PROVIDER_RAW
-    : OPENALICE_BASE_URL
-      ? 'openalice'
-      : 'legacy';
+const ANALYSIS_PROVIDER = 'openalice';
 const ERC8004_IDENTITY_REGISTRY = process.env.ERC8004_IDENTITY_REGISTRY || '';
 const ERC8004_AGENT_ID_RAW = process.env.ERC8004_AGENT_ID || '';
 const ERC8004_AGENT_ID = Number.isFinite(Number(ERC8004_AGENT_ID_RAW))
@@ -107,6 +101,9 @@ const XMTP_ENABLED = /^(1|true|yes|on)$/i.test(String(process.env.XMTP_ENABLED |
 const XMTP_AUTO_ACK = /^(1|true|yes|on)$/i.test(String(process.env.XMTP_AUTO_ACK || '').trim());
 const XMTP_EVENT_RETENTION = Math.max(50, Math.min(Number(process.env.XMTP_EVENT_RETENTION || 600), 5000));
 const XMTP_ENV = String(process.env.XMTP_ENV || 'dev').trim().toLowerCase() || 'dev';
+const XMTP_API_URL = String(process.env.XMTP_API_URL || '').trim();
+const XMTP_HISTORY_SYNC_URL = String(process.env.XMTP_HISTORY_SYNC_URL || '').trim();
+const XMTP_GATEWAY_HOST = String(process.env.XMTP_GATEWAY_HOST || '').trim();
 const XMTP_DB_ENCRYPTION_KEY = String(process.env.XMTP_DB_ENCRYPTION_KEY || '').trim();
 const XMTP_DB_DIRECTORY = String(process.env.XMTP_DB_DIRECTORY || './data/xmtp-db').trim();
 const XMTP_WALLET_KEY = String(process.env.XMTP_WALLET_KEY || '').trim();
@@ -1677,7 +1674,7 @@ function normalizeRiskScoreParams(input = {}) {
 function normalizeXReaderParams(input = {}) {
   const rawUrl = String(input.url || input.resourceUrl || input.targetUrl || '').trim();
   if (!rawUrl) {
-    throw new Error('x-reader task requires url.');
+    throw new Error('info-analysis task requires url.');
   }
   let normalizedUrl = '';
   try {
@@ -1687,12 +1684,16 @@ function normalizeXReaderParams(input = {}) {
     }
     normalizedUrl = parsed.toString();
   } catch {
-    throw new Error('x-reader task requires a valid http/https url.');
+    throw new Error('info-analysis task requires a valid http/https url.');
   }
 
-  const rawMode = String(input.mode || input.source || 'auto').trim().toLowerCase();
-  if (!['auto', 'jina', 'xreader'].includes(rawMode)) {
-    throw new Error('x-reader task mode must be one of auto/jina/xreader.');
+  const requestedMode = String(input.mode || input.source || 'openalice').trim().toLowerCase();
+  const rawMode =
+    requestedMode === 'jina' || requestedMode === 'xreader' || requestedMode === 'legacy'
+      ? 'openalice'
+      : requestedMode;
+  if (!['auto', 'openalice'].includes(rawMode)) {
+    throw new Error('info-analysis task mode must be one of auto/openalice.');
   }
   const maxCharsRaw = Number(input.maxChars ?? input.maxLength ?? X_READER_MAX_CHARS_DEFAULT);
   const maxChars = Number.isFinite(maxCharsRaw)
@@ -1701,7 +1702,7 @@ function normalizeXReaderParams(input = {}) {
 
   return {
     url: normalizedUrl,
-    mode: rawMode === 'xreader' ? 'auto' : rawMode,
+    mode: rawMode,
     maxChars
   };
 }
@@ -1789,25 +1790,6 @@ function extractXReaderDigest(rawText = '', maxChars = X_READER_MAX_CHARS_DEFAUL
   return {
     title: String(title || '').replace(/^title:\s*/i, '').trim(),
     excerpt
-  };
-}
-
-async function fetchXReaderFromJina(url = '', maxChars = X_READER_MAX_CHARS_DEFAULT) {
-  const target = String(url || '').trim().replace(/^https?:\/\//i, '');
-  const readerUrl = `https://r.jina.ai/http://${target}`;
-  const text = await fetchTextWithTimeout(readerUrl, X_READER_TIMEOUT_MS);
-  const digest = extractXReaderDigest(text, maxChars);
-  if (!digest.excerpt) {
-    throw new Error('empty x-reader response');
-  }
-  return {
-    provider: 'x-reader',
-    backend: 'jina',
-    url: String(url || '').trim(),
-    title: digest.title || '',
-    excerpt: digest.excerpt,
-    contentLength: digest.excerpt.length,
-    fetchedAt: new Date().toISOString()
   };
 }
 
@@ -1937,34 +1919,30 @@ function normalizeTechnicalAnalysisResult(raw = {}, task = {}) {
 
 async function runInfoAnalysis(params = {}) {
   const task = normalizeXReaderParams(params);
-  if (ANALYSIS_PROVIDER === 'openalice') {
-    const remote = await openAliceAdapter.analyzeInfo({
-      url: task.url,
-      mode: task.mode,
-      maxChars: task.maxChars,
-      traceId: String(params?.traceId || '').trim(),
-      topic: String(params?.topic || task.url).trim()
-    });
-    if (!remote?.ok) {
-      throw new Error(remote?.reason || remote?.error || 'openalice_info_failed');
-    }
+  const remote = await openAliceAdapter.analyzeInfo({
+    url: task.url,
+    mode: task.mode,
+    maxChars: task.maxChars,
+    traceId: String(params?.traceId || '').trim(),
+    topic: String(params?.topic || task.url).trim()
+  });
+  if (remote?.ok) {
     return normalizeInfoAnalysisResult(remote.data || {}, {
       ...task,
       traceId: String(params?.traceId || '').trim()
     });
   }
-
-  const reader = await fetchXReaderFromJina(task.url, task.maxChars);
+  const fallbackReason = String(remote?.reason || remote?.error || 'openalice_info_failed').trim();
   return normalizeInfoAnalysisResult(
     {
-      provider: 'legacy',
+      provider: 'openalice-fallback',
       topic: task.url,
       sentimentScore: 0,
-      confidence: 0.45,
-      headlines: reader.title ? [reader.title] : [],
-      keyFactors: reader.excerpt ? [reader.excerpt.slice(0, 180)] : [],
-      summary: reader.excerpt || reader.title || `x-reader digest ready for ${task.url}`,
-      asOf: reader.fetchedAt
+      confidence: 0.25,
+      headlines: [`OpenAlice unavailable`],
+      keyFactors: [fallbackReason.slice(0, 180)],
+      summary: `OpenAlice temporary unavailable, fallback summary for ${task.url}`,
+      asOf: new Date().toISOString()
     },
     task
   );
@@ -1980,8 +1958,8 @@ async function fetchXReaderDigest(params = {}) {
   const factor = Array.isArray(info.keyFactors) && info.keyFactors.length > 0 ? info.keyFactors[0] : '';
   const excerpt = String(info.summary || factor || headline || '').trim().slice(0, task.maxChars);
   return {
-    provider: info.provider || (ANALYSIS_PROVIDER === 'openalice' ? 'openalice' : 'x-reader'),
-    backend: ANALYSIS_PROVIDER === 'openalice' ? 'openalice' : 'jina',
+    provider: info.provider || 'openalice',
+    backend: 'openalice',
     url: task.url,
     title: String(headline || '').trim(),
     excerpt,
@@ -1990,7 +1968,7 @@ async function fetchXReaderDigest(params = {}) {
     mode: task.mode,
     maxChars: task.maxChars,
     sourceRequested: task.mode,
-    attemptedProviders: ANALYSIS_PROVIDER === 'openalice' ? ['openalice'] : ['jina'],
+    attemptedProviders: ['openalice'],
     analysis: info
   };
 }
@@ -2068,6 +2046,7 @@ function buildRiskScoreSummary(score, level, symbol, quote) {
 async function runRiskScoreAnalysis(input = {}) {
   const task = normalizeRiskScoreParams(input);
   let technical = null;
+  let openAliceFallbackReason = '';
 
   if (ANALYSIS_PROVIDER === 'openalice') {
     const remote = await openAliceAdapter.analyzeTechnical({
@@ -2077,14 +2056,17 @@ async function runRiskScoreAnalysis(input = {}) {
       horizonMin: task.horizonMin,
       traceId: String(input?.traceId || '').trim()
     });
-    if (!remote?.ok) {
-      throw new Error(remote?.reason || remote?.error || 'openalice_technical_failed');
+    if (remote?.ok) {
+      technical = normalizeTechnicalAnalysisResult(remote.data || {}, {
+        ...task,
+        traceId: String(input?.traceId || '').trim()
+      });
+    } else {
+      openAliceFallbackReason = String(remote?.reason || remote?.error || 'openalice_technical_failed').trim();
     }
-    technical = normalizeTechnicalAnalysisResult(remote.data || {}, {
-      ...task,
-      traceId: String(input?.traceId || '').trim()
-    });
-  } else {
+  }
+
+  if (!technical) {
     const quote = await fetchBtcPriceQuote({
       pair: task.symbol,
       source: task.sourceRequested
@@ -2133,6 +2115,11 @@ async function runRiskScoreAnalysis(input = {}) {
     technical.rangePct = Number(rangePct.toFixed(4));
     technical.deviationPct = Number(deviationPct.toFixed(4));
     technical.sampleSize = prices.length;
+    if (openAliceFallbackReason) {
+      technical.provider = 'openalice-fallback';
+      technical.summary = `${technical.summary} (fallback due to OpenAlice unavailable)`;
+      technical.fallbackReason = openAliceFallbackReason;
+    }
   }
 
   const quote =
@@ -3050,7 +3037,7 @@ async function handleReaderRuntimeTaskEnvelope({ envelope = {} } = {}) {
     result: {
       summary:
         String(reader?.analysis?.summary || '').trim() ||
-        `x-reader digest ready: ${reader?.title || reader?.url || task.url}`,
+        `info digest ready: ${reader?.title || reader?.url || task.url}`,
       analysisType: 'info',
       info: reader?.analysis || null,
       reader
@@ -3183,6 +3170,9 @@ const xmtpRuntime = createXmtpAgentRuntime({
   agentId: 'router-agent',
   walletKey: ROUTER_WALLET_KEY_NORMALIZED,
   env: XMTP_ENV,
+  apiUrl: XMTP_API_URL,
+  historySyncUrl: XMTP_HISTORY_SYNC_URL,
+  gatewayHost: XMTP_GATEWAY_HOST,
   dbEncryptionKey: XMTP_DB_ENCRYPTION_KEY,
   dbDirectory: XMTP_ROUTER_DB_DIRECTORY,
   autoAck: XMTP_AUTO_ACK,
@@ -3198,6 +3188,9 @@ const xmtpRiskRuntime = createXmtpAgentRuntime({
   agentId: 'risk-agent',
   walletKey: RISK_WALLET_KEY_NORMALIZED,
   env: XMTP_ENV,
+  apiUrl: XMTP_API_URL,
+  historySyncUrl: XMTP_HISTORY_SYNC_URL,
+  gatewayHost: XMTP_GATEWAY_HOST,
   dbEncryptionKey: XMTP_DB_ENCRYPTION_KEY,
   dbDirectory: XMTP_RISK_DB_DIRECTORY,
   autoAck: true,
@@ -3214,6 +3207,9 @@ const xmtpReaderRuntime = createXmtpAgentRuntime({
   agentId: 'reader-agent',
   walletKey: READER_WALLET_KEY_NORMALIZED,
   env: XMTP_ENV,
+  apiUrl: XMTP_API_URL,
+  historySyncUrl: XMTP_HISTORY_SYNC_URL,
+  gatewayHost: XMTP_GATEWAY_HOST,
   dbEncryptionKey: XMTP_DB_ENCRYPTION_KEY,
   dbDirectory: XMTP_READER_DB_DIRECTORY,
   autoAck: true,
@@ -3230,6 +3226,9 @@ const xmtpPriceRuntime = createXmtpAgentRuntime({
   agentId: 'price-agent',
   walletKey: PRICE_WALLET_KEY_NORMALIZED,
   env: XMTP_ENV,
+  apiUrl: XMTP_API_URL,
+  historySyncUrl: XMTP_HISTORY_SYNC_URL,
+  gatewayHost: XMTP_GATEWAY_HOST,
   dbEncryptionKey: XMTP_DB_ENCRYPTION_KEY,
   dbDirectory: XMTP_PRICE_DB_DIRECTORY,
   autoAck: true,
@@ -3246,6 +3245,9 @@ const xmtpExecutorRuntime = createXmtpAgentRuntime({
   agentId: 'executor-agent',
   walletKey: EXECUTOR_WALLET_KEY_NORMALIZED,
   env: XMTP_ENV,
+  apiUrl: XMTP_API_URL,
+  historySyncUrl: XMTP_HISTORY_SYNC_URL,
+  gatewayHost: XMTP_GATEWAY_HOST,
   dbEncryptionKey: XMTP_DB_ENCRYPTION_KEY,
   dbDirectory: XMTP_EXECUTOR_DB_DIRECTORY,
   autoAck: true,
@@ -8780,16 +8782,78 @@ app.post('/api/network/tasks/run', requireRole('agent'), async (req, res) => {
 app.post('/api/network/demo/router-info-technical/run', requireRole('agent'), async (req, res) => {
   const body = req.body || {};
   const autoStart = body.autoStart !== false;
+  const retryOnTimeout = body.retryOnTimeout !== false;
   if (autoStart) {
     await startXmtpRuntimes();
   }
+  const isRuntimeUnhealthy = (status = {}) => {
+    if (!status || typeof status !== 'object') return true;
+    if (!status.enabled) return true;
+    if (!status.configured) return true;
+    if (!status.running) return true;
+    const reason = String(status.lastError || '').trim().toLowerCase();
+    if (!reason) return false;
+    return (
+      reason.includes('conversation streaming') ||
+      reason.includes('streaming') ||
+      reason.includes('incoming_handler') ||
+      reason.includes('unhandled')
+    );
+  };
+  const healRuntime = async (runtime, runtimeLabel) => {
+    const before = runtime.getStatus();
+    if (!isRuntimeUnhealthy(before)) {
+      return {
+        label: runtimeLabel,
+        attempted: false,
+        recovered: true,
+        before,
+        after: before
+      };
+    }
+    await runtime.stop();
+    const after = await runtime.start();
+    return {
+      label: runtimeLabel,
+      attempted: true,
+      recovered: Boolean(after?.running),
+      before,
+      after
+    };
+  };
+  const recovery = [];
+  recovery.push(await healRuntime(xmtpRuntime, 'router'));
+  recovery.push(await healRuntime(xmtpReaderRuntime, 'reader'));
+  recovery.push(await healRuntime(xmtpRiskRuntime, 'risk'));
+
   const routerStatus = xmtpRuntime.getStatus();
+  const readerStatus = xmtpReaderRuntime.getStatus();
+  const riskStatus = xmtpRiskRuntime.getStatus();
   if (!routerStatus.running) {
     return res.status(400).json({
       ok: false,
       traceId: req.traceId || '',
       error: 'xmtp_router_not_running',
-      reason: routerStatus.lastError || 'router runtime is not running'
+      reason: routerStatus.lastError || 'router runtime is not running',
+      recovery
+    });
+  }
+  if (!readerStatus.running) {
+    return res.status(400).json({
+      ok: false,
+      traceId: req.traceId || '',
+      error: 'xmtp_reader_not_running',
+      reason: readerStatus.lastError || 'reader runtime is not running',
+      recovery
+    });
+  }
+  if (!riskStatus.running) {
+    return res.status(400).json({
+      ok: false,
+      traceId: req.traceId || '',
+      error: 'xmtp_risk_not_running',
+      reason: riskStatus.lastError || 'risk runtime is not running',
+      recovery
     });
   }
 
@@ -8944,23 +9008,112 @@ app.post('/api/network/demo/router-info-technical/run', requireRole('agent'), as
   }
 
   const waitTaskResultEvent = async (taskId, timeoutMs = 15000) => {
-    const deadline = Date.now() + Math.max(800, Math.min(Number(timeoutMs || 15000), 30000));
+    const deadline = Date.now() + Math.max(1000, Math.min(Number(timeoutMs || 15000), 30000));
     while (Date.now() <= deadline) {
       const hits = xmtpRuntime.listEvents({
-        runtimeName: 'router-runtime',
-        direction: 'inbound',
         kind: 'task-result',
         taskId
       });
-      if (Array.isArray(hits) && hits.length > 0) return hits[0];
+      const scoped = (Array.isArray(hits) ? hits : []).filter((row) => {
+        const rowTraceId = String(row?.traceId || '').trim();
+        const rowRequestId = String(row?.requestId || '').trim();
+        if (rowTraceId && rowTraceId !== traceId) return false;
+        if (rowRequestId && rowRequestId !== requestId) return false;
+        return true;
+      });
+      if (scoped.length > 0) {
+        const preferred =
+          scoped.find(
+            (row) =>
+              String(row?.runtimeName || '').trim() === 'router-runtime' &&
+              String(row?.direction || '').trim() === 'inbound'
+          ) ||
+          scoped.find((row) => {
+            const runtimeName = String(row?.runtimeName || '').trim();
+            const direction = String(row?.direction || '').trim();
+            return direction === 'outbound' && ['reader-runtime', 'risk-runtime'].includes(runtimeName);
+          }) ||
+          scoped[0];
+        return preferred || null;
+      }
       await waitMs(350);
     }
     return null;
   };
 
   const waitMsLimit = Math.max(1000, Math.min(Number(body.waitMs || 15000), 30000));
-  const infoEvent = await waitTaskResultEvent(infoTaskId, waitMsLimit);
-  const technicalEvent = await waitTaskResultEvent(technicalTaskId, waitMsLimit);
+  let [infoEvent, technicalEvent] = await Promise.all([
+    waitTaskResultEvent(infoTaskId, waitMsLimit),
+    waitTaskResultEvent(technicalTaskId, waitMsLimit)
+  ]);
+  let infoRetrySent = null;
+  let technicalRetrySent = null;
+  let infoRetryEvent = null;
+  let technicalRetryEvent = null;
+  let infoResolvedTaskId = infoTaskId;
+  let technicalResolvedTaskId = technicalTaskId;
+  const retryWarnings = [];
+
+  const retryWaitMs = Math.max(1200, Math.min(Math.round(waitMsLimit * 0.6), 12000));
+  if (retryOnTimeout && !infoEvent) {
+    const infoRetryTaskId = `${infoTaskId}_r1`;
+    const infoRetryEnvelope = {
+      ...infoEnvelope,
+      taskId: infoRetryTaskId,
+      timestamp: new Date().toISOString()
+    };
+    infoRetrySent = await xmtpRuntime.sendDm({
+      fromAgentId: 'router-agent',
+      toAgentId: infoRetryEnvelope.toAgentId,
+      toAddress: infoAddress,
+      channel: 'dm',
+      hopIndex: 1,
+      envelope: infoRetryEnvelope,
+      traceId,
+      requestId,
+      taskId: infoRetryTaskId
+    });
+    if (infoRetrySent?.ok) {
+      infoRetryEvent = await waitTaskResultEvent(infoRetryTaskId, retryWaitMs);
+      if (infoRetryEvent) {
+        infoEvent = infoRetryEvent;
+        infoResolvedTaskId = infoRetryTaskId;
+      }
+    } else {
+      retryWarnings.push(`info_retry_send_failed:${String(infoRetrySent?.reason || infoRetrySent?.error || 'unknown').trim()}`);
+    }
+  }
+
+  if (retryOnTimeout && !technicalEvent) {
+    const technicalRetryTaskId = `${technicalTaskId}_r1`;
+    const technicalRetryEnvelope = {
+      ...technicalEnvelope,
+      taskId: technicalRetryTaskId,
+      timestamp: new Date().toISOString()
+    };
+    technicalRetrySent = await xmtpRuntime.sendDm({
+      fromAgentId: 'router-agent',
+      toAgentId: technicalRetryEnvelope.toAgentId,
+      toAddress: technicalAddress,
+      channel: 'dm',
+      hopIndex: 1,
+      envelope: technicalRetryEnvelope,
+      traceId,
+      requestId,
+      taskId: technicalRetryTaskId
+    });
+    if (technicalRetrySent?.ok) {
+      technicalRetryEvent = await waitTaskResultEvent(technicalRetryTaskId, retryWaitMs);
+      if (technicalRetryEvent) {
+        technicalEvent = technicalRetryEvent;
+        technicalResolvedTaskId = technicalRetryTaskId;
+      }
+    } else {
+      retryWarnings.push(
+        `technical_retry_send_failed:${String(technicalRetrySent?.reason || technicalRetrySent?.error || 'unknown').trim()}`
+      );
+    }
+  }
 
   const infoTaskResult =
     infoEvent?.parsed && typeof infoEvent.parsed === 'object' && !Array.isArray(infoEvent.parsed)
@@ -8996,20 +9149,26 @@ app.post('/api/network/demo/router-info-technical/run', requireRole('agent'), as
     },
     tasks: {
       info: {
-        taskId: infoTaskId,
+        taskId: infoResolvedTaskId,
+        originalTaskId: infoTaskId,
         toAgentId: infoEnvelope.toAgentId,
         capability: infoEnvelope.capability,
         sent: infoSent,
         resultReceived: Boolean(infoEvent),
+        retrySent: infoRetrySent,
+        retryResultEvent: infoRetryEvent,
         resultEvent: infoEvent,
         taskResult: infoTaskResult
       },
       technical: {
-        taskId: technicalTaskId,
+        taskId: technicalResolvedTaskId,
+        originalTaskId: technicalTaskId,
         toAgentId: technicalEnvelope.toAgentId,
         capability: technicalEnvelope.capability,
         sent: technicalSent,
         resultReceived: Boolean(technicalEvent),
+        retrySent: technicalRetrySent,
+        retryResultEvent: technicalRetryEvent,
         resultEvent: technicalEvent,
         taskResult: technicalTaskResult
       }
@@ -9029,7 +9188,8 @@ app.post('/api/network/demo/router-info-technical/run', requireRole('agent'), as
     },
     warnings: [
       ...(Array.isArray(infoPaymentPlan.warnings) ? infoPaymentPlan.warnings : []),
-      ...(Array.isArray(technicalPaymentPlan.warnings) ? technicalPaymentPlan.warnings : [])
+      ...(Array.isArray(technicalPaymentPlan.warnings) ? technicalPaymentPlan.warnings : []),
+      ...retryWarnings
     ],
     runtime: getAllXmtpRuntimeStatuses()
   });

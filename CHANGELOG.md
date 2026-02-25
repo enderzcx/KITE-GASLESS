@@ -63,6 +63,10 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 ### Changed
 - Demo and Ops UI now provide `Download Receipt` action from API result panels.
 - Market form now supports x-reader fields (`url/mode/maxChars`) and service details render x-reader metadata.
+- Info-analysis runtime path is now OpenAlice-first only:
+  - `ANALYSIS_PROVIDER` is fixed to `openalice` in backend runtime.
+  - legacy Jina x-reader fetch path is removed from active execution.
+  - old `x-reader` mode values are treated as compatibility aliases to OpenAlice mode.
 - Frontend removed SSE connection indicator and live event panel; polling-only UX for stable demos.
 - `POST /api/network/demo/router-risk/run` now waits for `task-result` and returns:
   - `resultReceived/resultEvent/taskResult/payment/receiptRef`
@@ -73,6 +77,15 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
   - `receiptRef.block/status/explorer/verifiedAt`.
 - `reader-agent` now accepts `info-analysis-feed`; `risk-agent` now accepts `technical-analysis-feed`.
 - Network agents bootstrap now includes `technical-agent` facade (capability-level compatibility over risk/price internals).
+- `router-info-technical` now uses longer wait window (`30s` default, up to `60s`) and waits info/technical task results in parallel.
+- XMTP runtime now supports explicit network endpoint overrides:
+  - `XMTP_API_URL`
+  - `XMTP_HISTORY_SYNC_URL` (supports `null` to disable history sync endpoint)
+  - `XMTP_GATEWAY_HOST`
+- README now documents `xmtpd-1.1.1/doc/deploy.md` based local XMTP backend setup (`XMTP_ENV=local`).
+- Added local helper scripts:
+  - `backend/scripts/start-xmtp-local-env.ps1`
+  - `backend/scripts/stop-xmtp-local-env.ps1`
 
 ### Removed
 - Removed backend SSE stream endpoints:
