@@ -147,9 +147,13 @@ Upgrade authority remains with each proxy owner; this project does not grant per
 - `GET /api/network/agents`
 - `POST /api/network/tasks/run`
 - `POST /api/network/demo/router-risk/run`
+- `POST /api/network/demo/router-risk-group/run`
 - `GET /api/xmtp/status`
 - `POST /api/xmtp/start`
 - `POST /api/xmtp/stop`
+- `GET /api/xmtp/groups`
+- `POST /api/xmtp/groups/ensure`
+- `POST /api/xmtp/groups/send`
 - `GET /api/xmtp/events`
 - `GET /api/xmtp/can-message`
 - `POST /api/xmtp/dm/send`
@@ -168,6 +172,18 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-xmtp-router-risk-demo.ps1
   -AdminApiKey "<admin_key>" `
   -AgentApiKey "<agent_key>" `
   -ViewerApiKey "<viewer_key>"
+```
+
+### XMTP Router->Risk + Group Quick Verify (Local)
+
+```powershell
+cd backend
+powershell -ExecutionPolicy Bypass -File .\scripts\run-xmtp-router-risk-group-demo.ps1 `
+  -BaseUrl "http://127.0.0.1:3001" `
+  -AdminApiKey "<admin_key>" `
+  -AgentApiKey "<agent_key>" `
+  -ViewerApiKey "<viewer_key>" `
+  -GroupLabel "workers-group"
 ```
 
 ## Runtime Notes (Testnet)

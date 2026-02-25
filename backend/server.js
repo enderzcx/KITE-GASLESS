@@ -23,6 +23,7 @@ const servicesPath = path.resolve('data', 'services.json');
 const serviceInvocationsPath = path.resolve('data', 'service_invocations.json');
 const networkAgentsPath = path.resolve('data', 'network_agents.json');
 const xmtpEventsPath = path.resolve('data', 'xmtp_events.json');
+const xmtpGroupsPath = path.resolve('data', 'xmtp_groups.json');
 
 const SETTLEMENT_TOKEN =
   process.env.KITE_SETTLEMENT_TOKEN || '0x0fF5393387ad2f9f691FD6Fd28e07E3969e27e63';
@@ -119,6 +120,11 @@ const XMTP_AUTO_NETWORK_INTERVAL_MS = Math.max(15_000, Number(process.env.XMTP_A
 const XMTP_AUTO_NETWORK_SOURCE_AGENT_ID = String(process.env.XMTP_AUTO_NETWORK_SOURCE_AGENT_ID || 'router-agent').trim().toLowerCase();
 const XMTP_AUTO_NETWORK_TARGET_AGENT_IDS = String(process.env.XMTP_AUTO_NETWORK_TARGET_AGENT_IDS || 'risk-agent,reader-agent').trim();
 const XMTP_AUTO_NETWORK_CAPABILITY = String(process.env.XMTP_AUTO_NETWORK_CAPABILITY || 'network-heartbeat').trim();
+const XMTP_WORKERS_GROUP_LABEL = String(process.env.XMTP_WORKERS_GROUP_LABEL || 'workers-group').trim();
+const XMTP_WORKERS_GROUP_NAME = String(process.env.XMTP_WORKERS_GROUP_NAME || 'Agent001 + Workers').trim();
+const XMTP_WORKERS_GROUP_AGENT_IDS = String(
+  process.env.XMTP_WORKERS_GROUP_AGENT_IDS || 'risk-agent,reader-agent,price-agent,executor-agent'
+).trim();
 
 const ROLE_RANK = {
   viewer: 1,
@@ -151,7 +157,8 @@ const PERSIST_ARRAY_PATHS = [
   servicesPath,
   serviceInvocationsPath,
   networkAgentsPath,
-  xmtpEventsPath
+  xmtpEventsPath,
+  xmtpGroupsPath
 ];
 const PERSIST_OBJECT_PATHS = [policyConfigPath, sessionRuntimePath];
 const persistArrayCache = new Map();
@@ -891,6 +898,14 @@ function readXmtpEvents() {
 
 function writeXmtpEvents(records) {
   writeJsonArray(xmtpEventsPath, records);
+}
+
+function readXmtpGroups() {
+  return readJsonArray(xmtpGroupsPath);
+}
+
+function writeXmtpGroups(records) {
+  writeJsonArray(xmtpGroupsPath, records);
 }
 
 function upsertWorkflow(workflow) {
@@ -2236,6 +2251,83 @@ function findNetworkAgentById(agentId = '') {
   const id = String(agentId || '').trim().toLowerCase();
   if (!id) return null;
   return ensureNetworkAgents().find((item) => String(item?.id || '').trim().toLowerCase() === id) || null;
+}
+
+function sanitizeXmtpGroupRecord(input = {}, existing = null) {
+  const source = input && typeof input === 'object' ? input : {};
+  const prev = existing && typeof existing === 'object' ? existing : {};
+  const now = new Date().toISOString();
+  const groupId = String(source.groupId || prev.groupId || '').trim();
+  const label = String(source.label || prev.label || '').trim();
+  const groupName = String(source.groupName || prev.groupName || '').trim();
+  const description = String(source.description || prev.description || '').trim();
+  const runtimeName = String(source.runtimeName || prev.runtimeName || 'router-runtime').trim();
+  const memberAgentIds = parseAgentIdList(source.memberAgentIds || prev.memberAgentIds || []);
+  const memberAddresses = normalizeAddresses(source.memberAddresses || prev.memberAddresses || []);
+  const createdAt = String(prev.createdAt || source.createdAt || now).trim() || now;
+  const updatedAt = String(source.updatedAt || now).trim() || now;
+  const lastUsedAt = String(source.lastUsedAt || prev.lastUsedAt || updatedAt).trim() || updatedAt;
+  return {
+    groupId,
+    label,
+    groupName,
+    description,
+    runtimeName,
+    memberAgentIds,
+    memberAddresses,
+    createdAt,
+    updatedAt,
+    lastUsedAt
+  };
+}
+
+function upsertXmtpGroupRecord(input = {}) {
+  const rows = readXmtpGroups();
+  const groupId = String(input?.groupId || '').trim();
+  const label = String(input?.label || '').trim().toLowerCase();
+  const idx = rows.findIndex((item) => {
+    if (groupId && String(item?.groupId || '').trim() === groupId) return true;
+    if (label && String(item?.label || '').trim().toLowerCase() === label) return true;
+    return false;
+  });
+  const current = idx >= 0 ? rows[idx] : null;
+  const record = sanitizeXmtpGroupRecord(input, current);
+  if (idx >= 0) rows[idx] = record;
+  else rows.unshift(record);
+  writeXmtpGroups(rows);
+  return record;
+}
+
+function findXmtpGroupRecord({ groupId = '', label = '' } = {}) {
+  const normalizedGroupId = String(groupId || '').trim();
+  const normalizedLabel = String(label || '').trim().toLowerCase();
+  return (
+    readXmtpGroups().find((item) => {
+      if (normalizedGroupId && String(item?.groupId || '').trim() === normalizedGroupId) return true;
+      if (normalizedLabel && String(item?.label || '').trim().toLowerCase() === normalizedLabel) return true;
+      return false;
+    }) || null
+  );
+}
+
+function resolveAgentAddressesByIds(agentIds = []) {
+  const normalizedIds = parseAgentIdList(agentIds);
+  const resolved = [];
+  for (const id of normalizedIds) {
+    const row = findNetworkAgentById(id);
+    const address = normalizeAddress(row?.xmtpAddress || '');
+    if (!address) continue;
+    resolved.push({
+      agentId: id,
+      address
+    });
+  }
+  const uniqueByAddress = [];
+  for (const item of resolved) {
+    if (uniqueByAddress.some((row) => row.address === item.address)) continue;
+    uniqueByAddress.push(item);
+  }
+  return uniqueByAddress;
 }
 
 const xmtpRuntime = createXmtpAgentRuntime({
@@ -4874,7 +4966,7 @@ function buildTraceXmtpEvidence({ traceId = '', requestId = '', taskId = '' } = 
   else if (normalizedTaskId) query.taskId = normalizedTaskId;
 
   const rows = xmtpRuntime.listEvents(query);
-  const allowedKinds = new Set(['task-envelope', 'task-result', 'task-ack']);
+  const allowedKinds = new Set(['task-envelope', 'task-result', 'task-ack', 'task-phase']);
   const hops = (Array.isArray(rows) ? rows : [])
     .filter((row) => {
       const kind = String(row?.kind || '').trim().toLowerCase();
@@ -4907,6 +4999,8 @@ function buildTraceXmtpEvidence({ traceId = '', requestId = '', taskId = '' } = 
         conversationId: String(row?.conversationId || '').trim(),
         messageId: String(row?.messageId || '').trim(),
         status: String(parsed?.status || '').trim().toLowerCase(),
+        phase: String(parsed?.phase || '').trim().toLowerCase(),
+        detail: String(parsed?.detail || '').trim(),
         resultSummary: String(parsed?.result?.summary || '').trim(),
         error: String(parsed?.error || row?.error || '').trim(),
         payment: payment
@@ -7136,6 +7230,137 @@ app.post('/api/xmtp/automation/stop', requireRole('admin'), (req, res) => {
   });
 });
 
+app.get('/api/xmtp/groups', requireRole('viewer'), (req, res) => {
+  const limit = Math.max(1, Math.min(Number(req.query.limit || 80), 300));
+  const rows = readXmtpGroups()
+    .map((item) => sanitizeXmtpGroupRecord(item))
+    .filter((item) => item.groupId || item.label)
+    .sort((a, b) => Date.parse(b?.updatedAt || 0) - Date.parse(a?.updatedAt || 0))
+    .slice(0, limit);
+  return res.json({
+    ok: true,
+    traceId: req.traceId || '',
+    total: rows.length,
+    items: rows
+  });
+});
+
+app.post('/api/xmtp/groups/ensure', requireRole('admin'), async (req, res) => {
+  const body = req.body || {};
+  if (!xmtpRuntime.getStatus().running && body.autoStart !== false) {
+    await startXmtpRuntimes();
+  }
+  if (!xmtpRuntime.getStatus().running) {
+    return res.status(400).json({
+      ok: false,
+      traceId: req.traceId || '',
+      error: 'xmtp_router_not_running',
+      reason: xmtpRuntime.getStatus().lastError || 'router runtime is not running'
+    });
+  }
+
+  const label = String(body.label || XMTP_WORKERS_GROUP_LABEL || 'workers-group').trim();
+  const existing = findXmtpGroupRecord({
+    groupId: body.groupId,
+    label
+  });
+  const memberAgentIds = parseAgentIdList(
+    body.memberAgentIds || existing?.memberAgentIds || XMTP_WORKERS_GROUP_AGENT_IDS
+  );
+  const resolvedMembers = resolveAgentAddressesByIds(memberAgentIds);
+  const memberAddresses = resolvedMembers.map((item) => item.address);
+  const ensured = await xmtpRuntime.ensureGroup({
+    groupId: String(body.groupId || existing?.groupId || '').trim(),
+    groupName: String(body.groupName || existing?.groupName || XMTP_WORKERS_GROUP_NAME).trim(),
+    groupDescription: String(body.description || existing?.description || 'Agent001 workers collaboration channel').trim(),
+    memberAddresses
+  });
+  if (!ensured?.ok) {
+    return res.status(400).json({
+      ok: false,
+      traceId: req.traceId || '',
+      error: ensured?.error || 'xmtp_group_ensure_failed',
+      reason: ensured?.reason || 'xmtp_group_ensure_failed',
+      details: ensured
+    });
+  }
+
+  const record = upsertXmtpGroupRecord({
+    groupId: ensured.groupId,
+    label,
+    groupName: ensured.groupName,
+    description: String(body.description || existing?.description || '').trim(),
+    runtimeName: 'router-runtime',
+    memberAgentIds,
+    memberAddresses: ensured.memberAddresses || memberAddresses,
+    updatedAt: new Date().toISOString(),
+    lastUsedAt: new Date().toISOString()
+  });
+  return res.json({
+    ok: true,
+    traceId: req.traceId || '',
+    group: record,
+    resolvedMembers,
+    ensured
+  });
+});
+
+app.post('/api/xmtp/groups/send', requireRole('agent'), async (req, res) => {
+  const body = req.body || {};
+  if (!xmtpRuntime.getStatus().running && body.autoStart === true) {
+    await startXmtpRuntimes();
+  }
+  const label = String(body.label || '').trim();
+  const known = findXmtpGroupRecord({
+    groupId: body.groupId,
+    label
+  });
+  const groupId = String(body.groupId || known?.groupId || '').trim();
+  const result = await xmtpRuntime.sendGroup({
+    groupId,
+    createIfMissing: body.createIfMissing === true,
+    groupName: body.groupName || known?.groupName || XMTP_WORKERS_GROUP_NAME,
+    groupDescription: body.description || known?.description || 'Agent001 workers collaboration channel',
+    memberAddresses: normalizeAddresses(body.memberAddresses || known?.memberAddresses || []),
+    fromAgentId: body.fromAgentId || 'router-agent',
+    channel: body.channel || 'group',
+    hopIndex: body.hopIndex,
+    text: body.text,
+    envelope: body.envelope,
+    traceId: body.traceId,
+    requestId: body.requestId,
+    taskId: body.taskId
+  });
+  if (!result?.ok) {
+    return res.status(400).json({
+      ok: false,
+      traceId: req.traceId || '',
+      error: result?.error || 'xmtp_group_send_failed',
+      reason: result?.reason || 'xmtp_group_send_failed',
+      details: result
+    });
+  }
+  if (label || known) {
+    upsertXmtpGroupRecord({
+      ...(known || {}),
+      groupId: result.groupId || groupId,
+      label: label || known?.label || '',
+      groupName: body.groupName || known?.groupName || '',
+      runtimeName: 'router-runtime',
+      memberAgentIds: parseAgentIdList(body.memberAgentIds || known?.memberAgentIds || []),
+      memberAddresses: normalizeAddresses(body.memberAddresses || known?.memberAddresses || []),
+      updatedAt: new Date().toISOString(),
+      lastUsedAt: new Date().toISOString()
+    });
+  }
+  return res.json({
+    ok: true,
+    traceId: req.traceId || '',
+    groupId: result.groupId || groupId,
+    message: result
+  });
+});
+
 app.get('/api/xmtp/events', requireRole('viewer'), (req, res) => {
   const items = xmtpRuntime.listEvents({
     limit: req.query.limit,
@@ -7427,6 +7652,236 @@ app.post('/api/network/demo/router-risk/run', requireRole('agent'), async (req, 
       hopIndex: 1
     },
     xmtp: sent,
+    resultReceived: Boolean(resultEvent),
+    resultEvent,
+    taskResult,
+    payment: resultPayment,
+    receiptRef: resultReceiptRef,
+    ackReceived: Boolean(ackEvent),
+    ackEvent,
+    runtime: {
+      router: xmtpRuntime.getStatus(),
+      risk: xmtpRiskRuntime.getStatus()
+    }
+  });
+});
+
+app.post('/api/network/demo/router-risk-group/run', requireRole('agent'), async (req, res) => {
+  const body = req.body || {};
+  const autoStart = body.autoStart !== false;
+  if (autoStart) {
+    await startXmtpRuntimes();
+  }
+  const routerStatus = xmtpRuntime.getStatus();
+  if (!routerStatus.running) {
+    return res.status(400).json({
+      ok: false,
+      traceId: req.traceId || '',
+      error: 'xmtp_router_not_running',
+      reason: routerStatus.lastError || 'router runtime is not running'
+    });
+  }
+
+  const riskAgent = findNetworkAgentById('risk-agent');
+  const riskAddress = normalizeAddress(body.toAddress || riskAgent?.xmtpAddress || XMTP_RISK_RESOLVED_ADDRESS);
+  if (!riskAddress) {
+    return res.status(400).json({
+      ok: false,
+      traceId: req.traceId || '',
+      error: 'risk_agent_address_missing',
+      reason: 'Set XMTP_RISK_AGENT_ADDRESS or XMTP_RISK_WALLET_KEY and ensure mapping exists.'
+    });
+  }
+
+  const traceId = String(body.traceId || createTraceId('router_risk_trace')).trim();
+  const requestId = String(body.requestId || createTraceId('router_risk_req')).trim();
+  const taskId = String(body.taskId || createTraceId('router_risk_task')).trim();
+  const capability = String(body.capability || 'risk-score-feed').trim();
+  const groupLabel = String(body.groupLabel || XMTP_WORKERS_GROUP_LABEL || 'workers-group').trim();
+  const existingGroup = findXmtpGroupRecord({ groupId: body.groupId, label: groupLabel });
+  const workerIds = parseAgentIdList(
+    body.workerAgentIds || existingGroup?.memberAgentIds || XMTP_WORKERS_GROUP_AGENT_IDS
+  );
+  const workerMembers = resolveAgentAddressesByIds(workerIds);
+  const groupEnsure = await xmtpRuntime.ensureGroup({
+    groupId: String(body.groupId || existingGroup?.groupId || '').trim(),
+    groupName: String(body.groupName || existingGroup?.groupName || XMTP_WORKERS_GROUP_NAME).trim(),
+    groupDescription: String(body.groupDescription || existingGroup?.description || 'Agent001 workers collaboration channel').trim(),
+    memberAddresses: workerMembers.map((item) => item.address)
+  });
+  if (!groupEnsure?.ok) {
+    return res.status(400).json({
+      ok: false,
+      traceId: req.traceId || '',
+      error: groupEnsure?.error || 'workers_group_ensure_failed',
+      reason: groupEnsure?.reason || 'workers_group_ensure_failed',
+      details: groupEnsure
+    });
+  }
+  const groupRecord = upsertXmtpGroupRecord({
+    groupId: groupEnsure.groupId,
+    label: groupLabel,
+    groupName: groupEnsure.groupName || XMTP_WORKERS_GROUP_NAME,
+    description: String(body.groupDescription || existingGroup?.description || '').trim(),
+    runtimeName: 'router-runtime',
+    memberAgentIds: workerIds,
+    memberAddresses: groupEnsure.memberAddresses || workerMembers.map((item) => item.address),
+    updatedAt: new Date().toISOString(),
+    lastUsedAt: new Date().toISOString()
+  });
+
+  const phaseMessages = [];
+  const sendPhase = async (phase, status, detail = '') => {
+    const envelope = {
+      kind: 'task-phase',
+      protocolVersion: 'kite-agent-task-v1',
+      traceId,
+      requestId,
+      taskId,
+      fromAgentId: 'router-agent',
+      toAgentId: groupLabel || 'workers-group',
+      channel: 'group',
+      hopIndex: 1,
+      mode: 'a2a',
+      capability,
+      phase,
+      status,
+      detail: String(detail || '').trim(),
+      timestamp: new Date().toISOString()
+    };
+    const sentGroup = await xmtpRuntime.sendGroup({
+      groupId: groupEnsure.groupId,
+      fromAgentId: 'router-agent',
+      channel: 'group',
+      hopIndex: 1,
+      envelope,
+      traceId,
+      requestId,
+      taskId
+    });
+    phaseMessages.push({
+      phase,
+      status,
+      ok: Boolean(sentGroup?.ok),
+      message: sentGroup
+    });
+    return sentGroup;
+  };
+
+  await sendPhase('started', 'running', 'router dispatching DM task to risk-agent');
+
+  const envelope = {
+    kind: 'task-envelope',
+    protocolVersion: 'kite-agent-task-v1',
+    traceId,
+    requestId,
+    taskId,
+    fromAgentId: 'router-agent',
+    toAgentId: 'risk-agent',
+    channel: 'dm',
+    hopIndex: 1,
+    mode: 'a2a',
+    capability,
+    input:
+      body.input && typeof body.input === 'object' && !Array.isArray(body.input)
+        ? body.input
+        : {
+            symbol: 'BTCUSDT',
+            horizonMin: 60,
+            source: 'router-risk-group-demo'
+          },
+    paymentIntent:
+      body.paymentIntent && typeof body.paymentIntent === 'object' && !Array.isArray(body.paymentIntent)
+        ? body.paymentIntent
+        : {
+            mode: 'mock'
+          },
+    expectsReply: true,
+    timestamp: new Date().toISOString()
+  };
+
+  const sentDm = await xmtpRuntime.sendDm({
+    fromAgentId: 'router-agent',
+    toAgentId: 'risk-agent',
+    toAddress: riskAddress,
+    channel: 'dm',
+    hopIndex: 1,
+    envelope,
+    traceId,
+    requestId,
+    taskId
+  });
+  if (!sentDm?.ok) {
+    await sendPhase('failed', 'failed', sentDm?.reason || sentDm?.error || 'router_risk_send_failed');
+    return res.status(400).json({
+      ok: false,
+      traceId: req.traceId || '',
+      error: sentDm?.error || 'router_risk_send_failed',
+      reason: sentDm?.reason || 'router_risk_send_failed',
+      task: {
+        traceId,
+        requestId,
+        taskId
+      },
+      group: groupRecord,
+      phaseMessages
+    });
+  }
+
+  await sendPhase('running', 'running', 'risk-agent is processing task-envelope');
+
+  const waitMsLimit = Math.max(500, Math.min(Number(body.waitMs || 12_000), 30_000));
+  const deadline = Date.now() + waitMsLimit;
+  let resultEvent = null;
+  let ackEvent = null;
+  while (Date.now() <= deadline) {
+    const resultHits = xmtpRuntime.listEvents({
+      runtimeName: 'router-runtime',
+      direction: 'inbound',
+      kind: 'task-result',
+      taskId
+    });
+    if (Array.isArray(resultHits) && resultHits.length > 0) {
+      resultEvent = resultHits[0];
+      break;
+    }
+    const ackHits = xmtpRuntime.listEvents({
+      runtimeName: 'router-runtime',
+      direction: 'inbound',
+      kind: 'task-ack',
+      taskId
+    });
+    if (!ackEvent && Array.isArray(ackHits) && ackHits.length > 0) ackEvent = ackHits[0];
+    await waitMs(350);
+  }
+  const taskResult = resultEvent?.parsed && typeof resultEvent.parsed === 'object' ? resultEvent.parsed : null;
+  const resultPayment = taskResult?.payment && typeof taskResult.payment === 'object' ? taskResult.payment : null;
+  const resultReceiptRef = taskResult?.receiptRef && typeof taskResult.receiptRef === 'object' ? taskResult.receiptRef : null;
+
+  if (resultEvent) {
+    await sendPhase('done', 'done', taskResult?.result?.summary || 'task-result received');
+  } else {
+    await sendPhase('failed', 'failed', `task-result timeout after ${waitMsLimit}ms`);
+  }
+
+  return res.json({
+    ok: true,
+    traceId: req.traceId || '',
+    task: {
+      traceId,
+      requestId,
+      taskId,
+      fromAgentId: 'router-agent',
+      toAgentId: 'risk-agent',
+      capability,
+      hopIndex: 1
+    },
+    group: groupRecord,
+    workers: workerMembers,
+    xmtp: {
+      dm: sentDm,
+      phaseMessages
+    },
     resultReceived: Boolean(resultEvent),
     resultEvent,
     taskResult,

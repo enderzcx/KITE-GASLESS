@@ -1753,6 +1753,12 @@ function App() {
                     <p className="flow-meta">requestId: {fullText(hop?.requestId || '-')}</p>
                     <p className="flow-meta">conversationId: {fullText(hop?.conversationId || '-')}</p>
                     <p className="flow-meta">messageId: {fullText(hop?.messageId || '-')}</p>
+                    {hopKind === 'task-phase' ? (
+                      <>
+                        <p className="flow-meta">phase: {fullText(hop?.phase || '-')}</p>
+                        <p className="flow-meta">detail: {fullText(hop?.detail || '-')}</p>
+                      </>
+                    ) : null}
                     {hopKind === 'task-result' ? (
                       <>
                         <p className="flow-meta">result: {fullText(hop?.resultSummary || '-')}</p>

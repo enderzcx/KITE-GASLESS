@@ -10,6 +10,23 @@ function normalizeAddress(value = '') {
   return text.toLowerCase();
 }
 
+function normalizeAddressList(values = []) {
+  const source = Array.isArray(values)
+    ? values
+    : String(values || '')
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean);
+  const out = [];
+  for (const raw of source) {
+    const normalized = normalizeAddress(raw);
+    if (!normalized) continue;
+    if (out.includes(normalized)) continue;
+    out.push(normalized);
+  }
+  return out;
+}
+
 function normalizeText(value = '') {
   return String(value || '').trim();
 }
@@ -214,6 +231,18 @@ export function createXmtpAgentRuntime(options = {}) {
         reason: normalizeText(error?.message || 'can_message_failed'),
         details: {}
       };
+    }
+  }
+
+  async function resolveGroupConversation(groupId = '') {
+    const normalizedGroupId = normalizeText(groupId);
+    if (!normalizedGroupId || !agent?.client?.conversations) return null;
+    try {
+      const conversation = await agent.client.conversations.getConversationById(normalizedGroupId);
+      if (!conversation || !filter.isGroup(conversation)) return null;
+      return conversation;
+    } catch {
+      return null;
     }
   }
 
@@ -690,10 +719,224 @@ export function createXmtpAgentRuntime(options = {}) {
     }
   }
 
+  async function ensureGroup(input = {}) {
+    const requestedGroupId = normalizeText(input.groupId);
+    const groupName = normalizeText(input.groupName || '');
+    const groupDescription = normalizeText(input.groupDescription || '');
+    const memberAddresses = normalizeAddressList(input.memberAddresses || []);
+
+    if (!state.running || !agent) {
+      return {
+        ok: false,
+        error: 'xmtp_not_running',
+        reason: state.lastError || 'XMTP runtime is not running.'
+      };
+    }
+
+    let group = await resolveGroupConversation(requestedGroupId);
+    let created = false;
+    if (!group) {
+      if (memberAddresses.length === 0) {
+        return {
+          ok: false,
+          error: 'xmtp_group_member_required',
+          reason: 'Provide valid `memberAddresses` to create a group.'
+        };
+      }
+      try {
+        group = await agent.createGroupWithAddresses(memberAddresses);
+        created = true;
+      } catch (error) {
+        const reason = normalizeText(error?.message || 'xmtp_group_create_failed');
+        state.lastError = reason;
+        appendEvent({
+          direction: 'internal',
+          event: 'group_create_failed',
+          error: reason
+        });
+        return {
+          ok: false,
+          error: 'xmtp_group_create_failed',
+          reason
+        };
+      }
+    }
+
+    const memberSyncErrors = [];
+    if (memberAddresses.length > 0) {
+      try {
+        await agent.addMembersWithAddresses(group, memberAddresses);
+      } catch (error) {
+        const reason = normalizeText(error?.message || 'xmtp_group_add_members_failed');
+        memberSyncErrors.push(reason);
+      }
+    }
+
+    if (groupName) {
+      try {
+        await group.updateName(groupName);
+      } catch {
+        // ignore metadata update errors
+      }
+    }
+    if (groupDescription) {
+      try {
+        await group.updateDescription(groupDescription);
+      } catch {
+        // ignore metadata update errors
+      }
+    }
+
+    const members = await group.members().catch(() => []);
+    const memberInboxIds = Array.isArray(members)
+      ? members.map((item) => normalizeText(item?.inboxId || '')).filter(Boolean)
+      : [];
+    const groupId = normalizeText(group?.id || requestedGroupId);
+
+    appendEvent({
+      direction: 'internal',
+      event: created ? 'group_created' : 'group_reused',
+      kind: 'group',
+      channel: 'group',
+      conversationId: groupId,
+      fromAgentId: state.agentId || defaultAgentId,
+      parsed: {
+        groupId,
+        groupName,
+        memberAddresses,
+        memberInboxIds,
+        created
+      },
+      meta: {
+        memberSyncErrors
+      }
+    });
+
+    return {
+      ok: true,
+      created,
+      groupId,
+      groupName: normalizeText(group?.name || groupName),
+      groupDescription: normalizeText(group?.description || groupDescription),
+      memberAddresses,
+      memberInboxIds,
+      memberSyncErrors
+    };
+  }
+
+  async function sendGroup(input = {}) {
+    const rawEnvelope =
+      input?.envelope && typeof input.envelope === 'object' && !Array.isArray(input.envelope)
+        ? input.envelope
+        : null;
+    const text = normalizeText(input.text || '');
+    const payload = rawEnvelope ? JSON.stringify(rawEnvelope) : text;
+    if (!payload) {
+      return {
+        ok: false,
+        error: 'xmtp_message_required',
+        reason: 'Either `text` or `envelope` is required.'
+      };
+    }
+    if (!state.running || !agent) {
+      return {
+        ok: false,
+        error: 'xmtp_not_running',
+        reason: state.lastError || 'XMTP runtime is not running.'
+      };
+    }
+
+    let group = await resolveGroupConversation(input.groupId);
+    if (!group && input.createIfMissing) {
+      const ensured = await ensureGroup({
+        groupId: input.groupId,
+        groupName: input.groupName,
+        groupDescription: input.groupDescription,
+        memberAddresses: input.memberAddresses
+      });
+      if (!ensured.ok || !ensured.groupId) return ensured;
+      group = await resolveGroupConversation(ensured.groupId);
+    }
+    if (!group) {
+      return {
+        ok: false,
+        error: 'xmtp_group_not_found',
+        reason: 'Provide valid `groupId` or enable `createIfMissing` with `memberAddresses`.'
+      };
+    }
+
+    const fromAgentId = normalizeText(
+      input.fromAgentId || rawEnvelope?.fromAgentId || state.agentId || defaultAgentId
+    );
+    const channel = normalizeText(input.channel || rawEnvelope?.channel || 'group') || 'group';
+    const hopIndex = Number.isFinite(Number(input.hopIndex))
+      ? Number(input.hopIndex)
+      : Number.isFinite(Number(rawEnvelope?.hopIndex))
+        ? Number(rawEnvelope.hopIndex)
+        : 1;
+
+    const parsed = rawEnvelope || parseJsonObject(payload);
+    const traceId = normalizeText((rawEnvelope && rawEnvelope.traceId) || input.traceId || '');
+    const requestId = normalizeText((rawEnvelope && rawEnvelope.requestId) || input.requestId || '');
+    const taskId = normalizeText((rawEnvelope && rawEnvelope.taskId) || input.taskId || '');
+    const kind = normalizeText((rawEnvelope && rawEnvelope.kind) || parsed?.kind || '');
+
+    try {
+      const messageId = normalizeText(
+        typeof group?.sendText === 'function' ? await group.sendText(payload) : await group.send(payload)
+      );
+      state.sentOutbound += 1;
+      appendEvent({
+        direction: 'outbound',
+        event: 'group_sent',
+        fromAgentId,
+        kind,
+        channel,
+        hopIndex,
+        conversationId: normalizeText(group.id || ''),
+        messageId,
+        traceId,
+        requestId,
+        taskId,
+        text: payload,
+        parsed
+      });
+      return {
+        ok: true,
+        sentAt: toIsoNow(),
+        groupId: normalizeText(group.id || ''),
+        messageId,
+        fromAgentId,
+        kind,
+        channel,
+        hopIndex,
+        traceId,
+        requestId,
+        taskId
+      };
+    } catch (error) {
+      const reason = normalizeText(error?.message || 'xmtp_group_send_failed');
+      state.lastError = reason;
+      appendEvent({
+        direction: 'internal',
+        event: 'group_send_failed',
+        conversationId: normalizeText(group.id || ''),
+        error: reason
+      });
+      return {
+        ok: false,
+        error: 'xmtp_group_send_failed',
+        reason
+      };
+    }
+  }
+
   return {
     start,
     stop,
     sendDm,
+    ensureGroup,
+    sendGroup,
     canMessageAddress,
     listEvents,
     getStatus

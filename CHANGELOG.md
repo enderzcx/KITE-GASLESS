@@ -25,6 +25,12 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
     - `receiptRef.requestId/txHash/endpoint`.
 - Trace evidence API now includes XMTP hop payload:
   - `GET /api/demo/trace/:traceId` returns `xmtp.total/xmtp.hops/xmtp.latestTaskResult`.
+- Added XMTP workers-group runtime APIs:
+  - `GET /api/xmtp/groups`
+  - `POST /api/xmtp/groups/ensure`
+  - `POST /api/xmtp/groups/send`
+  - `POST /api/network/demo/router-risk-group/run`
+  - flow rule: `DM task-envelope -> Group task-phase broadcast -> DM task-result`.
 
 ### Changed
 - Demo and Ops UI now provide `Download Receipt` action from API result panels.
