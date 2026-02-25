@@ -175,6 +175,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-xmtp-router-risk-demo.ps1
   -BindRealX402
 ```
 
+`GET /api/xmtp/status` now returns runtime states for:
+`router`, `risk`, `reader`, `price`, `executor`.
+
 ### XMTP Router->Risk + Group Quick Verify (Local)
 
 ```powershell

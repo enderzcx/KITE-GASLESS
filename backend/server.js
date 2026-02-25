@@ -99,6 +99,9 @@ const XMTP_DB_DIRECTORY = String(process.env.XMTP_DB_DIRECTORY || './data/xmtp-d
 const XMTP_WALLET_KEY = String(process.env.XMTP_WALLET_KEY || '').trim();
 const XMTP_ROUTER_WALLET_KEY = String(process.env.XMTP_ROUTER_WALLET_KEY || XMTP_WALLET_KEY).trim();
 const XMTP_RISK_WALLET_KEY = String(process.env.XMTP_RISK_WALLET_KEY || '').trim();
+const XMTP_READER_WALLET_KEY = String(process.env.XMTP_READER_WALLET_KEY || '').trim();
+const XMTP_PRICE_WALLET_KEY = String(process.env.XMTP_PRICE_WALLET_KEY || '').trim();
+const XMTP_EXECUTOR_WALLET_KEY = String(process.env.XMTP_EXECUTOR_WALLET_KEY || '').trim();
 const XMTP_ROUTER_AGENT_ADDRESS = String(process.env.XMTP_ROUTER_AGENT_ADDRESS || '').trim();
 const XMTP_RISK_AGENT_ADDRESS = String(process.env.XMTP_RISK_AGENT_ADDRESS || '').trim();
 const XMTP_READER_AGENT_ADDRESS = String(process.env.XMTP_READER_AGENT_ADDRESS || '').trim();
@@ -114,6 +117,15 @@ const XMTP_ROUTER_RUNTIME_ENABLED = /^(1|true|yes|on)$/i.test(
 );
 const XMTP_RISK_RUNTIME_ENABLED = /^(1|true|yes|on)$/i.test(
   String(process.env.XMTP_RISK_RUNTIME_ENABLED || (XMTP_ENABLED && XMTP_RISK_WALLET_KEY ? '1' : '0')).trim()
+);
+const XMTP_READER_RUNTIME_ENABLED = /^(1|true|yes|on)$/i.test(
+  String(process.env.XMTP_READER_RUNTIME_ENABLED || (XMTP_ENABLED && XMTP_READER_WALLET_KEY ? '1' : '0')).trim()
+);
+const XMTP_PRICE_RUNTIME_ENABLED = /^(1|true|yes|on)$/i.test(
+  String(process.env.XMTP_PRICE_RUNTIME_ENABLED || (XMTP_ENABLED && XMTP_PRICE_WALLET_KEY ? '1' : '0')).trim()
+);
+const XMTP_EXECUTOR_RUNTIME_ENABLED = /^(1|true|yes|on)$/i.test(
+  String(process.env.XMTP_EXECUTOR_RUNTIME_ENABLED || (XMTP_ENABLED && XMTP_EXECUTOR_WALLET_KEY ? '1' : '0')).trim()
 );
 const XMTP_AUTO_NETWORK_ENABLED = /^(1|true|yes|on)$/i.test(String(process.env.XMTP_AUTO_NETWORK_ENABLED || '').trim());
 const XMTP_AUTO_NETWORK_INTERVAL_MS = Math.max(15_000, Number(process.env.XMTP_AUTO_NETWORK_INTERVAL_MS || 60_000));
@@ -216,12 +228,26 @@ const autoXmtpNetworkState = {
 
 const ROUTER_WALLET_KEY_NORMALIZED = normalizePrivateKey(XMTP_ROUTER_WALLET_KEY);
 const RISK_WALLET_KEY_NORMALIZED = normalizePrivateKey(XMTP_RISK_WALLET_KEY);
+const READER_WALLET_KEY_NORMALIZED = normalizePrivateKey(XMTP_READER_WALLET_KEY);
+const PRICE_WALLET_KEY_NORMALIZED = normalizePrivateKey(XMTP_PRICE_WALLET_KEY);
+const EXECUTOR_WALLET_KEY_NORMALIZED = normalizePrivateKey(XMTP_EXECUTOR_WALLET_KEY);
 const XMTP_ROUTER_DERIVED_ADDRESS = deriveAddressFromPrivateKey(ROUTER_WALLET_KEY_NORMALIZED);
 const XMTP_RISK_DERIVED_ADDRESS = deriveAddressFromPrivateKey(RISK_WALLET_KEY_NORMALIZED);
+const XMTP_READER_DERIVED_ADDRESS = deriveAddressFromPrivateKey(READER_WALLET_KEY_NORMALIZED);
+const XMTP_PRICE_DERIVED_ADDRESS = deriveAddressFromPrivateKey(PRICE_WALLET_KEY_NORMALIZED);
+const XMTP_EXECUTOR_DERIVED_ADDRESS = deriveAddressFromPrivateKey(EXECUTOR_WALLET_KEY_NORMALIZED);
 const XMTP_ROUTER_RESOLVED_ADDRESS = normalizeAddress(XMTP_ROUTER_AGENT_ADDRESS || XMTP_ROUTER_DERIVED_ADDRESS || '');
 const XMTP_RISK_RESOLVED_ADDRESS = normalizeAddress(XMTP_RISK_AGENT_ADDRESS || XMTP_RISK_DERIVED_ADDRESS || '');
+const XMTP_READER_RESOLVED_ADDRESS = normalizeAddress(XMTP_READER_AGENT_ADDRESS || XMTP_READER_DERIVED_ADDRESS || '');
+const XMTP_PRICE_RESOLVED_ADDRESS = normalizeAddress(XMTP_PRICE_AGENT_ADDRESS || XMTP_PRICE_DERIVED_ADDRESS || '');
+const XMTP_EXECUTOR_RESOLVED_ADDRESS = normalizeAddress(
+  XMTP_EXECUTOR_AGENT_ADDRESS || XMTP_EXECUTOR_DERIVED_ADDRESS || ''
+);
 const XMTP_ROUTER_DB_DIRECTORY = path.resolve(XMTP_DB_DIRECTORY, 'router-agent');
 const XMTP_RISK_DB_DIRECTORY = path.resolve(XMTP_DB_DIRECTORY, 'risk-agent');
+const XMTP_READER_DB_DIRECTORY = path.resolve(XMTP_DB_DIRECTORY, 'reader-agent');
+const XMTP_PRICE_DB_DIRECTORY = path.resolve(XMTP_DB_DIRECTORY, 'price-agent');
+const XMTP_EXECUTOR_DB_DIRECTORY = path.resolve(XMTP_DB_DIRECTORY, 'executor-agent');
 
 function authConfigured() {
   return Boolean(API_KEY_ADMIN || API_KEY_AGENT || API_KEY_VIEWER);
@@ -2202,7 +2228,7 @@ function createDefaultNetworkAgents() {
       name: 'Reader Agent',
       role: 'provider',
       mode: 'a2api',
-      xmtpAddress: XMTP_READER_AGENT_ADDRESS,
+      xmtpAddress: XMTP_READER_RESOLVED_ADDRESS,
       aaAddress: XMTP_READER_AGENT_AA_ADDRESS,
       description: 'Runs x-reader digest for URLs via ATAPI adapter.',
       capabilities: ['x-reader-feed', 'url-digest']
@@ -2212,7 +2238,7 @@ function createDefaultNetworkAgents() {
       name: 'Price Agent',
       role: 'provider',
       mode: 'a2api',
-      xmtpAddress: XMTP_PRICE_AGENT_ADDRESS,
+      xmtpAddress: XMTP_PRICE_RESOLVED_ADDRESS,
       aaAddress: XMTP_PRICE_AGENT_AA_ADDRESS,
       description: 'Fetches BTC/market quote feeds.',
       capabilities: ['btc-price-feed', 'market-quote']
@@ -2222,7 +2248,7 @@ function createDefaultNetworkAgents() {
       name: 'Executor Agent',
       role: 'executor',
       mode: 'a2a',
-      xmtpAddress: XMTP_EXECUTOR_AGENT_ADDRESS,
+      xmtpAddress: XMTP_EXECUTOR_RESOLVED_ADDRESS,
       aaAddress: XMTP_EXECUTOR_AGENT_AA_ADDRESS,
       description: 'Executes final orchestration and result aggregation.',
       capabilities: ['execute-plan', 'result-aggregation']
@@ -2360,19 +2386,89 @@ const xmtpRiskRuntime = createXmtpAgentRuntime({
   resolveAgentById: findNetworkAgentById
 });
 
+const xmtpReaderRuntime = createXmtpAgentRuntime({
+  enabled: XMTP_READER_RUNTIME_ENABLED,
+  runtimeName: 'reader-runtime',
+  agentId: 'reader-agent',
+  walletKey: READER_WALLET_KEY_NORMALIZED,
+  env: XMTP_ENV,
+  dbEncryptionKey: XMTP_DB_ENCRYPTION_KEY,
+  dbDirectory: XMTP_READER_DB_DIRECTORY,
+  autoAck: true,
+  eventRetention: XMTP_EVENT_RETENTION,
+  readEvents: readXmtpEvents,
+  writeEvents: writeXmtpEvents,
+  resolveAgentById: findNetworkAgentById
+});
+
+const xmtpPriceRuntime = createXmtpAgentRuntime({
+  enabled: XMTP_PRICE_RUNTIME_ENABLED,
+  runtimeName: 'price-runtime',
+  agentId: 'price-agent',
+  walletKey: PRICE_WALLET_KEY_NORMALIZED,
+  env: XMTP_ENV,
+  dbEncryptionKey: XMTP_DB_ENCRYPTION_KEY,
+  dbDirectory: XMTP_PRICE_DB_DIRECTORY,
+  autoAck: true,
+  eventRetention: XMTP_EVENT_RETENTION,
+  readEvents: readXmtpEvents,
+  writeEvents: writeXmtpEvents,
+  resolveAgentById: findNetworkAgentById
+});
+
+const xmtpExecutorRuntime = createXmtpAgentRuntime({
+  enabled: XMTP_EXECUTOR_RUNTIME_ENABLED,
+  runtimeName: 'executor-runtime',
+  agentId: 'executor-agent',
+  walletKey: EXECUTOR_WALLET_KEY_NORMALIZED,
+  env: XMTP_ENV,
+  dbEncryptionKey: XMTP_DB_ENCRYPTION_KEY,
+  dbDirectory: XMTP_EXECUTOR_DB_DIRECTORY,
+  autoAck: true,
+  eventRetention: XMTP_EVENT_RETENTION,
+  readEvents: readXmtpEvents,
+  writeEvents: writeXmtpEvents,
+  resolveAgentById: findNetworkAgentById
+});
+
+function getAllXmtpRuntimeStatuses() {
+  return {
+    router: xmtpRuntime.getStatus(),
+    risk: xmtpRiskRuntime.getStatus(),
+    reader: xmtpReaderRuntime.getStatus(),
+    price: xmtpPriceRuntime.getStatus(),
+    executor: xmtpExecutorRuntime.getStatus()
+  };
+}
+
 async function startXmtpRuntimes() {
   const router = await xmtpRuntime.start();
   let risk = xmtpRiskRuntime.getStatus();
   if (XMTP_RISK_RUNTIME_ENABLED) {
     risk = await xmtpRiskRuntime.start();
   }
-  return { router, risk };
+  let reader = xmtpReaderRuntime.getStatus();
+  if (XMTP_READER_RUNTIME_ENABLED) {
+    reader = await xmtpReaderRuntime.start();
+  }
+  let price = xmtpPriceRuntime.getStatus();
+  if (XMTP_PRICE_RUNTIME_ENABLED) {
+    price = await xmtpPriceRuntime.start();
+  }
+  let executor = xmtpExecutorRuntime.getStatus();
+  if (XMTP_EXECUTOR_RUNTIME_ENABLED) {
+    executor = await xmtpExecutorRuntime.start();
+  }
+  return { router, risk, reader, price, executor };
 }
 
 async function stopXmtpRuntimes() {
   const router = await xmtpRuntime.stop();
   const risk = await xmtpRiskRuntime.stop();
-  return { router, risk };
+  const reader = await xmtpReaderRuntime.stop();
+  const price = await xmtpPriceRuntime.stop();
+  const executor = await xmtpExecutorRuntime.stop();
+  return { router, risk, reader, price, executor };
 }
 
 function upsertServiceInvocation(invocation = {}) {
@@ -7285,8 +7381,12 @@ app.get('/api/network/agents', requireRole('viewer'), (req, res) => {
   const rows = ensureNetworkAgents()
     .filter((item) => (activeOnly ? item?.active !== false : true))
     .slice(0, limit);
-  const routerStatus = xmtpRuntime.getStatus();
-  const riskStatus = xmtpRiskRuntime.getStatus();
+  const runtimeStatuses = getAllXmtpRuntimeStatuses();
+  const routerStatus = runtimeStatuses.router;
+  const riskStatus = runtimeStatuses.risk;
+  const readerStatus = runtimeStatuses.reader;
+  const priceStatus = runtimeStatuses.price;
+  const executorStatus = runtimeStatuses.executor;
   return res.json({
     ok: true,
     traceId: req.traceId || '',
@@ -7301,6 +7401,18 @@ app.get('/api/network/agents', requireRole('viewer'), (req, res) => {
         risk: {
           enabled: riskStatus.enabled,
           running: riskStatus.running
+        },
+        reader: {
+          enabled: readerStatus.enabled,
+          running: readerStatus.running
+        },
+        price: {
+          enabled: priceStatus.enabled,
+          running: priceStatus.running
+        },
+        executor: {
+          enabled: executorStatus.enabled,
+          running: executorStatus.running
         }
       }
     },
@@ -7350,15 +7462,14 @@ app.post('/api/network/agents/publish', requireRole('admin'), (req, res) => {
 });
 
 app.get('/api/xmtp/status', requireRole('viewer'), (req, res) => {
-  const router = xmtpRuntime.getStatus();
-  const risk = xmtpRiskRuntime.getStatus();
+  const statuses = getAllXmtpRuntimeStatuses();
+  const router = statuses.router;
   return res.json({
     ok: true,
     traceId: req.traceId || '',
     xmtp: {
       env: router.env || XMTP_ENV,
-      router,
-      risk
+      ...statuses
     }
   });
 });
@@ -7885,10 +7996,7 @@ app.post('/api/network/demo/router-risk/run', requireRole('agent'), async (req, 
     warnings: paymentPlan.warnings,
     ackReceived: Boolean(ackEvent),
     ackEvent,
-    runtime: {
-      router: xmtpRuntime.getStatus(),
-      risk: xmtpRiskRuntime.getStatus()
-    }
+    runtime: getAllXmtpRuntimeStatuses()
   });
 });
 
@@ -8145,10 +8253,7 @@ app.post('/api/network/demo/router-risk-group/run', requireRole('agent'), async 
     warnings: paymentPlan.warnings,
     ackReceived: Boolean(ackEvent),
     ackEvent,
-    runtime: {
-      router: xmtpRuntime.getStatus(),
-      risk: xmtpRiskRuntime.getStatus()
-    }
+    runtime: getAllXmtpRuntimeStatuses()
   });
 });
 

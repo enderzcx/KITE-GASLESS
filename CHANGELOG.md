@@ -31,6 +31,10 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
   - `POST /api/xmtp/groups/send`
   - `POST /api/network/demo/router-risk-group/run`
   - flow rule: `DM task-envelope -> Group task-phase broadcast -> DM task-result`.
+- Added 5-agent XMTP runtime bootstrap support:
+  - new optional runtimes: `reader-runtime`, `price-runtime`, `executor-runtime`
+  - `POST /api/xmtp/start` and `POST /api/xmtp/stop` now include all runtimes in response.
+  - `GET /api/xmtp/status` and `GET /api/network/agents` now expose all runtime states.
 - Router-risk demos now support real x402 payment binding:
   - request field: `bindRealX402=true`
   - when enabled, backend runs risk-score workflow and injects verified payment proof into task-result:
