@@ -272,6 +272,10 @@ Reference docs:
 - `XMTP` = communication + negotiation + coordination (messaging layer)
 - `x402` = pay-per-call settlement + proof (payment layer)
 
+### Agent Collaboration and Payment Flow (English)
+
+![Agent Collaboration and Payment Flow (English)](docs/assets/agent-collaboration-payment-flow-en.png)
+
 ## Repository Structure (Minimal Kept Set)
 
 ```text
