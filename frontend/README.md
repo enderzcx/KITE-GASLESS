@@ -1,17 +1,14 @@
 ﻿# KITE GASLESS Frontend
 
-This frontend demonstrates an agent-native payment flow on KiteAI Testnet using Account Abstraction (ERC-4337), x402-style paid actions, and verifiable identity display.
+This frontend demonstrates an agent-native network flow on KiteAI Testnet using ERC8004 identity, XMTP evidence, and x402 settlement.
 
 ## What it includes
 
-- Wallet login and AA wallet derivation
-- One-time Authentication UX
-- Transfer page (x402 challenge + on-chain pay + proof verify)
-- Vault management (create, deposit, withdraw, spending rules)
-- Agent payment settings
-- Transfer records viewer
-- On-chain confirmation page
-- Abuse/limit graceful-failure page
+- Network overview page (`/`)
+- Service market page (`/market`)
+- Trace evidence page (`/trace/:requestId`)
+- Ops page (`/ops`)
+- Agent settings panel for runtime/session operations
 
 ## Setup
 
@@ -46,26 +43,15 @@ npm run dev
 
 Frontend default URL: `http://localhost:5173`
 
-## Funding prerequisites (important)
+## Runtime notes
 
-Before using the demo, prepare test balances:
-
-1. Add `KITE` to your owner EOA wallet first.
-   - This is needed for first-time setup/deployment related transactions.
-2. Connect wallet once to derive the AA wallet address.
-3. Fund the derived AA wallet with:
-   - `KITE`
-   - `USDT` (settlement token used by this demo)
-4. Use KiteAI official testnet faucet/token channels to get test assets.
-   - KITE faucet: https://faucet.gokite.ai/
-5. After creating Vault, transfer some `USDT` into the Vault.
-   - Faucet -> Vault address may not always deliver USDT reliably.
-   - Best practice: claim USDT to EOA first, then manually transfer USDT to Vault address.
-   - Or test AA gasless transfer from AA wallet to Vault address.
+- This frontend relies on backend APIs under `/api/*`.
+- Use testnet-only wallets and funds.
+- Do not commit `.env`.
 
 ## Backend dependency
 
-This frontend expects `/api/records` from the backend service in `../backend`.
+This frontend expects backend service in `../backend`.
 
 Start backend:
 
@@ -77,7 +63,7 @@ npm start
 
 Use two terminals:
 - Terminal A: frontend (`npm run dev`) -> open `http://localhost:5173`
-- Terminal B: backend (`npm start`) -> API at `http://localhost:3001/api/records`
+- Terminal B: backend (`npm start`) -> API at `http://localhost:3001`
 
 ## Notes
 
