@@ -24,6 +24,7 @@ const serviceInvocationsPath = path.resolve('data', 'service_invocations.json');
 const networkAgentsPath = path.resolve('data', 'network_agents.json');
 const xmtpEventsPath = path.resolve('data', 'xmtp_events.json');
 const xmtpGroupsPath = path.resolve('data', 'xmtp_groups.json');
+const networkCommandsPath = path.resolve('data', 'network_commands.json');
 
 const SETTLEMENT_TOKEN =
   process.env.KITE_SETTLEMENT_TOKEN || '0x0fF5393387ad2f9f691FD6Fd28e07E3969e27e63';
@@ -170,7 +171,8 @@ const PERSIST_ARRAY_PATHS = [
   serviceInvocationsPath,
   networkAgentsPath,
   xmtpEventsPath,
-  xmtpGroupsPath
+  xmtpGroupsPath,
+  networkCommandsPath
 ];
 const PERSIST_OBJECT_PATHS = [policyConfigPath, sessionRuntimePath];
 const persistArrayCache = new Map();
@@ -932,6 +934,14 @@ function readXmtpGroups() {
 
 function writeXmtpGroups(records) {
   writeJsonArray(xmtpGroupsPath, records);
+}
+
+function readNetworkCommands() {
+  return readJsonArray(networkCommandsPath);
+}
+
+function writeNetworkCommands(records) {
+  writeJsonArray(networkCommandsPath, records);
 }
 
 function upsertWorkflow(workflow) {
@@ -2354,6 +2364,297 @@ function resolveAgentAddressesByIds(agentIds = []) {
     uniqueByAddress.push(item);
   }
   return uniqueByAddress;
+}
+
+function normalizeNetworkCommandType(value = '') {
+  const type = String(value || '').trim().toLowerCase();
+  if (!type) return 'router-risk-group';
+  if (['router-risk-group', 'router-risk'].includes(type)) return type;
+  throw new Error('Unsupported command type. Supported: router-risk-group, router-risk.');
+}
+
+function createCommandId() {
+  return createTraceId('cmd');
+}
+
+function appendNetworkCommandEvent(command = {}, status = '', step = '', message = '', meta = null) {
+  const events = Array.isArray(command?.events) ? [...command.events] : [];
+  events.push({
+    at: new Date().toISOString(),
+    status: String(status || '').trim().toLowerCase(),
+    step: String(step || '').trim().toLowerCase(),
+    message: String(message || '').trim(),
+    meta: meta && typeof meta === 'object' && !Array.isArray(meta) ? meta : null
+  });
+  if (events.length > 120) {
+    events.splice(0, events.length - 120);
+  }
+  return events;
+}
+
+function sanitizeNetworkCommandRecord(input = {}, existing = null) {
+  const source = input && typeof input === 'object' ? input : {};
+  const prev = existing && typeof existing === 'object' ? existing : {};
+  const now = new Date().toISOString();
+  const commandId = String(source.commandId || prev.commandId || createCommandId()).trim();
+  const type = normalizeNetworkCommandType(source.type || prev.type || 'router-risk-group');
+  const label = String(source.label || prev.label || type).trim();
+  const statusRaw = String(source.status || prev.status || 'queued').trim().toLowerCase();
+  const status = ['queued', 'running', 'done', 'failed'].includes(statusRaw) ? statusRaw : 'queued';
+  const payload =
+    source.payload && typeof source.payload === 'object' && !Array.isArray(source.payload)
+      ? source.payload
+      : prev.payload && typeof prev.payload === 'object' && !Array.isArray(prev.payload)
+        ? prev.payload
+        : {};
+  const result =
+    source.result && typeof source.result === 'object' && !Array.isArray(source.result)
+      ? source.result
+      : prev.result && typeof prev.result === 'object' && !Array.isArray(prev.result)
+        ? prev.result
+        : null;
+  const error = String(source.error || prev.error || '').trim();
+  const attemptsRaw = Number(source.attempts ?? prev.attempts ?? 0);
+  const attempts = Number.isFinite(attemptsRaw) && attemptsRaw > 0 ? Math.round(attemptsRaw) : 0;
+  const createdAt = String(prev.createdAt || source.createdAt || now).trim() || now;
+  const updatedAt = String(source.updatedAt || now).trim() || now;
+  const startedAt = String(source.startedAt || prev.startedAt || '').trim();
+  const finishedAt = String(source.finishedAt || prev.finishedAt || '').trim();
+  const lastRunAt = String(source.lastRunAt || prev.lastRunAt || '').trim();
+  const traceId = String(source.traceId || prev.traceId || '').trim();
+  const requestId = String(source.requestId || prev.requestId || '').trim();
+  const taskId = String(source.taskId || prev.taskId || '').trim();
+  const eventsSource = Array.isArray(source.events) ? source.events : Array.isArray(prev.events) ? prev.events : [];
+  const events = eventsSource
+    .map((item) => ({
+      at: String(item?.at || '').trim(),
+      status: String(item?.status || '').trim().toLowerCase(),
+      step: String(item?.step || '').trim().toLowerCase(),
+      message: String(item?.message || '').trim(),
+      meta: item?.meta && typeof item.meta === 'object' && !Array.isArray(item.meta) ? item.meta : null
+    }))
+    .filter((item) => item.at || item.status || item.step || item.message)
+    .slice(-120);
+
+  return {
+    commandId,
+    type,
+    label,
+    status,
+    payload,
+    result,
+    error,
+    attempts,
+    traceId,
+    requestId,
+    taskId,
+    createdAt,
+    updatedAt,
+    startedAt,
+    finishedAt,
+    lastRunAt,
+    events
+  };
+}
+
+function findNetworkCommandById(commandId = '') {
+  const id = String(commandId || '').trim();
+  if (!id) return null;
+  return (
+    readNetworkCommands().find((item) => String(item?.commandId || '').trim() === id) || null
+  );
+}
+
+function upsertNetworkCommandRecord(input = {}) {
+  const rows = readNetworkCommands();
+  const commandId = String(input?.commandId || '').trim();
+  const idx = rows.findIndex((item) => String(item?.commandId || '').trim() === commandId);
+  const existing = idx >= 0 ? rows[idx] : null;
+  const record = sanitizeNetworkCommandRecord(input, existing);
+  if (idx >= 0) rows[idx] = record;
+  else rows.unshift(record);
+  rows.sort((a, b) => Date.parse(b?.updatedAt || 0) - Date.parse(a?.updatedAt || 0));
+  writeNetworkCommands(rows);
+  return record;
+}
+
+function parseNetworkCommandFilterList(input = '') {
+  return String(input || '')
+    .split(',')
+    .map((item) => String(item || '').trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function normalizeNetworkCommandPayload(input = {}) {
+  return input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+}
+
+function extractNetworkCommandRefs(result = {}, fallback = {}) {
+  const task = result?.task && typeof result.task === 'object' ? result.task : {};
+  const group = result?.group && typeof result.group === 'object' ? result.group : {};
+  return {
+    traceId: String(task.traceId || result.traceId || fallback.traceId || '').trim(),
+    requestId: String(task.requestId || result.requestId || fallback.requestId || '').trim(),
+    taskId: String(task.taskId || result.taskId || fallback.taskId || '').trim(),
+    groupId: String(group.groupId || fallback.groupId || '').trim()
+  };
+}
+
+async function invokeNetworkCommandTarget({ type = 'router-risk-group', payload = {} } = {}) {
+  const commandType = normalizeNetworkCommandType(type);
+  const endpoint =
+    commandType === 'router-risk-group'
+      ? '/api/network/demo/router-risk-group/run'
+      : '/api/network/demo/router-risk/run';
+  const internalApiKey = getInternalAgentApiKey();
+  const headers = { 'Content-Type': 'application/json' };
+  if (internalApiKey) headers['x-api-key'] = internalApiKey;
+  const resp = await fetch(`http://127.0.0.1:${PORT}${endpoint}`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(payload)
+  });
+  const body = await resp.json().catch(() => ({}));
+  if (!resp.ok || !body?.ok) {
+    const reason = String(body?.reason || body?.error || `HTTP ${resp.status}`).trim();
+    const error = new Error(reason || 'network command invoke failed');
+    error.statusCode = resp.status;
+    error.errorCode = String(body?.error || 'network_command_invoke_failed').trim();
+    error.responseBody = body;
+    error.endpoint = endpoint;
+    throw error;
+  }
+  return {
+    endpoint,
+    statusCode: resp.status,
+    body
+  };
+}
+
+async function executeNetworkCommand(command = {}, options = {}) {
+  const existing = command && typeof command === 'object' ? command : null;
+  if (!existing?.commandId) {
+    return {
+      ok: false,
+      statusCode: 400,
+      error: 'command_not_found',
+      reason: 'command not found'
+    };
+  }
+  if (String(existing.status || '').trim().toLowerCase() === 'running') {
+    return {
+      ok: false,
+      statusCode: 409,
+      error: 'command_running',
+      reason: 'command is already running'
+    };
+  }
+
+  const now = new Date().toISOString();
+  const payloadOverride = normalizeNetworkCommandPayload(options.payload || null);
+  const basePayload = normalizeNetworkCommandPayload(existing.payload);
+  const payload = { ...basePayload, ...payloadOverride };
+  const preRunEvents = appendNetworkCommandEvent(
+    existing,
+    'running',
+    'dispatch',
+    `run ${existing.type} command`,
+    {
+      source: String(options.source || 'api').trim(),
+      payloadOverride: Object.keys(payloadOverride).length > 0
+    }
+  );
+  let running = upsertNetworkCommandRecord({
+    ...existing,
+    payload,
+    status: 'running',
+    error: '',
+    result: null,
+    attempts: Number(existing.attempts || 0) + 1,
+    startedAt: now,
+    finishedAt: '',
+    lastRunAt: now,
+    updatedAt: now,
+    events: preRunEvents
+  });
+
+  try {
+    const invokeResult = await invokeNetworkCommandTarget({
+      type: running.type,
+      payload
+    });
+    const refs = extractNetworkCommandRefs(invokeResult.body, running);
+    const doneEvents = appendNetworkCommandEvent(
+      running,
+      'done',
+      'complete',
+      `command done via ${invokeResult.endpoint}`,
+      {
+        statusCode: invokeResult.statusCode,
+        resultReceived: Boolean(invokeResult.body?.resultReceived)
+      }
+    );
+    const finishedAt = new Date().toISOString();
+    const done = upsertNetworkCommandRecord({
+      ...running,
+      status: 'done',
+      result: invokeResult.body,
+      error: '',
+      traceId: refs.traceId,
+      requestId: refs.requestId,
+      taskId: refs.taskId,
+      finishedAt,
+      updatedAt: finishedAt,
+      events: doneEvents
+    });
+    return {
+      ok: true,
+      statusCode: 200,
+      command: done,
+      execution: {
+        endpoint: invokeResult.endpoint,
+        statusCode: invokeResult.statusCode,
+        resultReceived: Boolean(invokeResult.body?.resultReceived)
+      }
+    };
+  } catch (error) {
+    const failedAt = new Date().toISOString();
+    const reason = String(error?.message || 'network command failed').trim();
+    const failEvents = appendNetworkCommandEvent(
+      running,
+      'failed',
+      'complete',
+      reason,
+      {
+        endpoint: String(error?.endpoint || '').trim(),
+        statusCode: Number(error?.statusCode || 0) || null
+      }
+    );
+    const failResult =
+      error?.responseBody && typeof error.responseBody === 'object' && !Array.isArray(error.responseBody)
+        ? {
+            endpoint: String(error?.endpoint || '').trim(),
+            statusCode: Number(error?.statusCode || 0) || 0,
+            response: error.responseBody
+          }
+        : null;
+    const failed = upsertNetworkCommandRecord({
+      ...running,
+      status: 'failed',
+      error: reason,
+      result: failResult,
+      finishedAt: failedAt,
+      updatedAt: failedAt,
+      events: failEvents
+    });
+    return {
+      ok: false,
+      statusCode: Number(error?.statusCode || 502),
+      error: String(error?.errorCode || 'network_command_failed').trim(),
+      reason,
+      command: failed
+    };
+  }
 }
 
 function getTaskEnvelopeInput(envelope = {}) {
@@ -8058,6 +8359,173 @@ app.post('/api/network/tasks/run', requireRole('agent'), async (req, res) => {
       capability
     },
     xmtp: result
+  });
+});
+
+app.get('/api/network/commands', requireRole('viewer'), (req, res) => {
+  const limit = Math.max(1, Math.min(Number(req.query.limit || 50), 200));
+  const statusFilters = parseNetworkCommandFilterList(req.query.status);
+  const typeFilters = parseNetworkCommandFilterList(req.query.type);
+  let rows = readNetworkCommands();
+  if (statusFilters.length > 0) {
+    rows = rows.filter((item) => statusFilters.includes(String(item?.status || '').trim().toLowerCase()));
+  }
+  if (typeFilters.length > 0) {
+    rows = rows.filter((item) => typeFilters.includes(String(item?.type || '').trim().toLowerCase()));
+  }
+  rows.sort((a, b) => Date.parse(b?.updatedAt || 0) - Date.parse(a?.updatedAt || 0));
+  const items = rows.slice(0, limit);
+  return res.json({
+    ok: true,
+    traceId: req.traceId || '',
+    total: rows.length,
+    items
+  });
+});
+
+app.get('/api/network/commands/:commandId', requireRole('viewer'), (req, res) => {
+  const commandId = String(req.params.commandId || '').trim();
+  if (!commandId) {
+    return res.status(400).json({
+      ok: false,
+      error: 'commandId_required',
+      reason: 'commandId is required.',
+      traceId: req.traceId || ''
+    });
+  }
+  const command = findNetworkCommandById(commandId);
+  if (!command) {
+    return res.status(404).json({
+      ok: false,
+      error: 'command_not_found',
+      reason: 'command not found',
+      commandId,
+      traceId: req.traceId || ''
+    });
+  }
+  return res.json({
+    ok: true,
+    traceId: req.traceId || '',
+    command
+  });
+});
+
+app.post('/api/network/commands', requireRole('agent'), async (req, res) => {
+  try {
+    const body = req.body || {};
+    const type = normalizeNetworkCommandType(body.type || 'router-risk-group');
+    const label = String(body.label || '').trim() || type;
+    const payload = normalizeNetworkCommandPayload(body.payload);
+    const createdAt = new Date().toISOString();
+    const commandId = String(body.commandId || createCommandId()).trim();
+    const existing = findNetworkCommandById(commandId);
+    const mode = existing ? 'updated' : 'created';
+    const queuedEvents = appendNetworkCommandEvent(
+      existing || {},
+      'queued',
+      existing ? 'updated' : 'created',
+      existing ? `command updated: ${type}` : `command created: ${type}`,
+      {
+        source: 'api',
+        runNow: body.runNow === true
+      }
+    );
+    let command = upsertNetworkCommandRecord({
+      ...existing,
+      commandId,
+      type,
+      label,
+      payload,
+      status: existing?.status === 'running' ? 'running' : 'queued',
+      error: existing?.status === 'running' ? existing.error || '' : '',
+      result: existing?.status === 'running' ? existing.result || null : null,
+      traceId: String(body.traceId || existing?.traceId || '').trim(),
+      requestId: String(body.requestId || existing?.requestId || '').trim(),
+      taskId: String(body.taskId || existing?.taskId || '').trim(),
+      createdAt: existing?.createdAt || createdAt,
+      updatedAt: createdAt,
+      events: queuedEvents
+    });
+
+    if (body.runNow !== true) {
+      return res.json({
+        ok: true,
+        traceId: req.traceId || '',
+        mode,
+        command
+      });
+    }
+
+    const runResult = await executeNetworkCommand(command, {
+      source: 'api-create',
+      payload: normalizeNetworkCommandPayload(body.runPayload)
+    });
+    if (!runResult.ok) {
+      return res.status(runResult.statusCode || 502).json({
+        ok: false,
+        traceId: req.traceId || '',
+        error: runResult.error || 'network_command_run_failed',
+        reason: runResult.reason || 'network_command_run_failed',
+        mode,
+        command: runResult.command || command
+      });
+    }
+    return res.json({
+      ok: true,
+      traceId: req.traceId || '',
+      mode,
+      command: runResult.command,
+      execution: runResult.execution
+    });
+  } catch (error) {
+    return res.status(400).json({
+      ok: false,
+      traceId: req.traceId || '',
+      error: 'invalid_network_command',
+      reason: error?.message || 'invalid network command payload'
+    });
+  }
+});
+
+app.post('/api/network/commands/:commandId/run', requireRole('agent'), async (req, res) => {
+  const commandId = String(req.params.commandId || '').trim();
+  if (!commandId) {
+    return res.status(400).json({
+      ok: false,
+      error: 'commandId_required',
+      reason: 'commandId is required.',
+      traceId: req.traceId || ''
+    });
+  }
+  const command = findNetworkCommandById(commandId);
+  if (!command) {
+    return res.status(404).json({
+      ok: false,
+      error: 'command_not_found',
+      reason: 'command not found',
+      commandId,
+      traceId: req.traceId || ''
+    });
+  }
+
+  const runResult = await executeNetworkCommand(command, {
+    source: 'api-run',
+    payload: normalizeNetworkCommandPayload(req.body?.payload)
+  });
+  if (!runResult.ok) {
+    return res.status(runResult.statusCode || 502).json({
+      ok: false,
+      traceId: req.traceId || '',
+      error: runResult.error || 'network_command_run_failed',
+      reason: runResult.reason || 'network_command_run_failed',
+      command: runResult.command || command
+    });
+  }
+  return res.json({
+    ok: true,
+    traceId: req.traceId || '',
+    command: runResult.command,
+    execution: runResult.execution
   });
 });
 

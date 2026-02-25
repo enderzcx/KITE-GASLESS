@@ -45,6 +45,12 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
   - when enabled, backend runs risk-score workflow and injects verified payment proof into task-result:
     - `payment.mode/requestId/txHash/block/status/explorer/verifiedAt`
     - `receiptRef.requestId/txHash/block/status/explorer/endpoint`.
+- Added persistent network command orchestration state machine (`data/network_commands.json`):
+  - `POST /api/network/commands`
+  - `POST /api/network/commands/:commandId/run`
+  - `GET /api/network/commands`
+  - `GET /api/network/commands/:commandId`
+  - command status flow: `queued -> running -> done|failed`, with `attempts/events` and task refs (`traceId/requestId/taskId`).
 
 ### Changed
 - Demo and Ops UI now provide `Download Receipt` action from API result panels.

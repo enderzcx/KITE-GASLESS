@@ -148,6 +148,10 @@ Upgrade authority remains with each proxy owner; this project does not grant per
 - `POST /api/network/tasks/run`
 - `POST /api/network/demo/router-risk/run`
 - `POST /api/network/demo/router-risk-group/run`
+- `GET /api/network/commands`
+- `GET /api/network/commands/:commandId`
+- `POST /api/network/commands`
+- `POST /api/network/commands/:commandId/run`
 - `GET /api/xmtp/status`
 - `POST /api/xmtp/start`
 - `POST /api/xmtp/stop`
@@ -201,6 +205,33 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-xmtp-workers-capability-d
   -AgentApiKey "<agent_key>" `
   -ViewerApiKey "<viewer_key>"
 ```
+
+### Network Commands Quick Verify (Local)
+
+Create a queued command:
+
+```powershell
+curl.exe -sS -X POST "http://127.0.0.1:3001/api/network/commands" `
+  -H "Content-Type: application/json" `
+  --data-binary "{\"type\":\"router-risk\",\"label\":\"demo-router-risk\",\"payload\":{\"autoStart\":false,\"waitMs\":1200}}"
+```
+
+Run an existing command:
+
+```powershell
+curl.exe -sS -X POST "http://127.0.0.1:3001/api/network/commands/<commandId>/run" `
+  -H "Content-Type: application/json" `
+  --data-binary "{}"
+```
+
+Query command timeline:
+
+```powershell
+curl.exe -sS "http://127.0.0.1:3001/api/network/commands?limit=20"
+curl.exe -sS "http://127.0.0.1:3001/api/network/commands/<commandId>"
+```
+
+Status model: `queued -> running -> done|failed`, each command keeps `attempts` and `events`.
 
 ## Runtime Notes (Testnet)
 
