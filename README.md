@@ -389,6 +389,24 @@ npm start
 ```
 Backend URL: `http://localhost:3001`
 
+### XMTP Standalone Quickstart Sandbox
+Use this when you want to verify XMTP agent basics without touching the main backend:
+
+```powershell
+cd experiments/xmtp-agent-quickstart
+npm install
+$env:XMTP_ENV="dev"
+$env:WALLET_KEY="0x<your_private_key>"
+npm start
+```
+
+Expected logs:
+- `Agent started`
+- `Address`
+- `Inbox ID`
+- `Test URL`
+- `Waiting for messages...`
+
 ## OpenClaw Runtime Configuration (Recommended)
 
 Set in `backend/.env`:

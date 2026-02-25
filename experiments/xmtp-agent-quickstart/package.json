@@ -1,0 +1,26 @@
+{
+  "name": "xmtp-agent-quickstart",
+  "version": "1.0.0",
+  "description": "Standalone XMTP agent quickstart sandbox",
+  "scripts": {
+    "start": "tsx src/agent.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "xmtp",
+    "agent",
+    "sandbox"
+  ],
+  "author": "",
+  "license": "MIT",
+  "type": "module",
+  "dependencies": {
+    "@xmtp/agent-sdk": "^2.2.0",
+    "viem": "^2.46.3"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}

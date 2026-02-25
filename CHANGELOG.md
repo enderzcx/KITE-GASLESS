@@ -59,6 +59,7 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 - Added XMTP info+technical orchestration demo endpoint:
   - `POST /api/network/demo/router-info-technical/run`
   - supports dual task dispatch (`info-analysis-feed` + `technical-analysis-feed`) and aggregated summary output.
+- Added isolated XMTP quickstart sandbox (`experiments/xmtp-agent-quickstart`) to run the official Build-an-Agent flow independently from project backend.
 
 ### Changed
 - Demo and Ops UI now provide `Download Receipt` action from API result panels.
