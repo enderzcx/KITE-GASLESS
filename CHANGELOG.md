@@ -51,6 +51,14 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
   - `GET /api/network/commands`
   - `GET /api/network/commands/:commandId`
   - command status flow: `queued -> running -> done|failed`, with `attempts/events` and task refs (`traceId/requestId/taskId`).
+- Added OpenAlice sidecar analysis integration (info + technical):
+  - `GET /api/openalice/health`
+  - `POST /api/analysis/info/run`
+  - `POST /api/analysis/technical/run`
+  - new env flags: `ANALYSIS_PROVIDER`, `OPENALICE_*`.
+- Added XMTP info+technical orchestration demo endpoint:
+  - `POST /api/network/demo/router-info-technical/run`
+  - supports dual task dispatch (`info-analysis-feed` + `technical-analysis-feed`) and aggregated summary output.
 
 ### Changed
 - Demo and Ops UI now provide `Download Receipt` action from API result panels.
@@ -63,6 +71,8 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 - Trace evidence mapping now includes x402 binding fields from XMTP task-result:
   - `payment.block/status/explorer/verifiedAt`
   - `receiptRef.block/status/explorer/verifiedAt`.
+- `reader-agent` now accepts `info-analysis-feed`; `risk-agent` now accepts `technical-analysis-feed`.
+- Network agents bootstrap now includes `technical-agent` facade (capability-level compatibility over risk/price internals).
 
 ### Removed
 - Removed backend SSE stream endpoints:

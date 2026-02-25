@@ -148,10 +148,14 @@ Upgrade authority remains with each proxy owner; this project does not grant per
 - `POST /api/network/tasks/run`
 - `POST /api/network/demo/router-risk/run`
 - `POST /api/network/demo/router-risk-group/run`
+- `POST /api/network/demo/router-info-technical/run`
 - `GET /api/network/commands`
 - `GET /api/network/commands/:commandId`
 - `POST /api/network/commands`
 - `POST /api/network/commands/:commandId/run`
+- `GET /api/openalice/health`
+- `POST /api/analysis/info/run`
+- `POST /api/analysis/technical/run`
 - `GET /api/xmtp/status`
 - `POST /api/xmtp/start`
 - `POST /api/xmtp/stop`
@@ -206,6 +210,32 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-xmtp-workers-capability-d
   -ViewerApiKey "<viewer_key>"
 ```
 
+### OpenAlice Info/Technical Verify (Local)
+
+```powershell
+curl.exe -sS "http://127.0.0.1:3001/api/openalice/health" `
+  -H "x-api-key: <viewer_key>"
+
+curl.exe -sS -X POST "http://127.0.0.1:3001/api/analysis/info/run" `
+  -H "x-api-key: <agent_key>" `
+  -H "Content-Type: application/json" `
+  --data-binary "{\"url\":\"https://x.com/Kite_AI\",\"mode\":\"auto\",\"maxChars\":1200}"
+
+curl.exe -sS -X POST "http://127.0.0.1:3001/api/analysis/technical/run" `
+  -H "x-api-key: <agent_key>" `
+  -H "Content-Type: application/json" `
+  --data-binary "{\"symbol\":\"BTCUSDT\",\"source\":\"hyperliquid\",\"horizonMin\":60}"
+```
+
+### XMTP Router->Info+Technical Verify (Local)
+
+```powershell
+curl.exe -sS -X POST "http://127.0.0.1:3001/api/network/demo/router-info-technical/run" `
+  -H "x-api-key: <agent_key>" `
+  -H "Content-Type: application/json" `
+  --data-binary "{\"autoStart\":true,\"bindRealX402\":false,\"infoInput\":{\"url\":\"https://x.com/Kite_AI\"},\"technicalInput\":{\"symbol\":\"BTCUSDT\",\"horizonMin\":60}}"
+```
+
 ### Network Commands Quick Verify (Local)
 
 Create a queued command:
@@ -215,6 +245,8 @@ curl.exe -sS -X POST "http://127.0.0.1:3001/api/network/commands" `
   -H "Content-Type: application/json" `
   --data-binary "{\"type\":\"router-risk\",\"label\":\"demo-router-risk\",\"payload\":{\"autoStart\":false,\"waitMs\":1200}}"
 ```
+
+Use `type="router-info-technical"` to orchestrate info + technical analysis in one command.
 
 Run an existing command:
 
@@ -322,6 +354,16 @@ OPENCLAW_HEALTH_PATH=/v1/models
 OPENCLAW_TIMEOUT_MS=12000
 OPENCLAW_MODEL=<your_model_id>
 # e.g. kimi-coding/k2p5 | qwen2.5-coder | deepseek-chat
+```
+
+Optional OpenAlice sidecar (info + technical analysis provider):
+
+```env
+ANALYSIS_PROVIDER=openalice
+OPENALICE_BASE_URL=http://127.0.0.1:18100
+OPENALICE_API_KEY=
+OPENALICE_TIMEOUT_MS=12000
+OPENALICE_RETRY=1
 ```
 
 Notes:

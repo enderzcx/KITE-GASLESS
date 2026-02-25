@@ -7,6 +7,7 @@ import crypto from 'crypto';
 import { ethers } from 'ethers';
 import { GokiteAASDK } from '../frontend/src/gokite-aa-sdk.js';
 import { createOpenClawAdapter } from './services/openclawAdapter.js';
+import { createOpenAliceAdapter } from './services/openAliceAdapter.js';
 import { createPersistenceStore } from './services/persistenceStore.js';
 import { createXmtpAgentRuntime } from './services/xmtpAgentRuntime.js';
 
@@ -69,6 +70,17 @@ const OPENCLAW_TIMEOUT_MS = Number(process.env.OPENCLAW_TIMEOUT_MS || 12_000);
 const OPENCLAW_CHAT_PROTOCOL = String(process.env.OPENCLAW_CHAT_PROTOCOL || 'auto').trim().toLowerCase();
 const OPENCLAW_MODEL = String(process.env.OPENCLAW_MODEL || '').trim();
 const OPENCLAW_SYSTEM_PROMPT = String(process.env.OPENCLAW_SYSTEM_PROMPT || '').trim();
+const OPENALICE_BASE_URL = String(process.env.OPENALICE_BASE_URL || '').trim();
+const OPENALICE_API_KEY = String(process.env.OPENALICE_API_KEY || '').trim();
+const OPENALICE_TIMEOUT_MS = Number(process.env.OPENALICE_TIMEOUT_MS || 12000);
+const OPENALICE_RETRY = Number(process.env.OPENALICE_RETRY || 1);
+const ANALYSIS_PROVIDER_RAW = String(process.env.ANALYSIS_PROVIDER || '').trim().toLowerCase();
+const ANALYSIS_PROVIDER =
+  ANALYSIS_PROVIDER_RAW === 'openalice' || ANALYSIS_PROVIDER_RAW === 'legacy'
+    ? ANALYSIS_PROVIDER_RAW
+    : OPENALICE_BASE_URL
+      ? 'openalice'
+      : 'legacy';
 const ERC8004_IDENTITY_REGISTRY = process.env.ERC8004_IDENTITY_REGISTRY || '';
 const ERC8004_AGENT_ID_RAW = process.env.ERC8004_AGENT_ID || '';
 const ERC8004_AGENT_ID = Number.isFinite(Number(ERC8004_AGENT_ID_RAW))
@@ -154,6 +166,13 @@ const openclawAdapter = createOpenClawAdapter({
   protocol: OPENCLAW_CHAT_PROTOCOL,
   model: OPENCLAW_MODEL,
   systemPrompt: OPENCLAW_SYSTEM_PROMPT
+});
+
+const openAliceAdapter = createOpenAliceAdapter({
+  baseUrl: OPENALICE_BASE_URL,
+  apiKey: OPENALICE_API_KEY,
+  timeoutMs: OPENALICE_TIMEOUT_MS,
+  retry: OPENALICE_RETRY
 });
 
 const persistenceStore = createPersistenceStore({
@@ -1792,34 +1811,188 @@ async function fetchXReaderFromJina(url = '', maxChars = X_READER_MAX_CHARS_DEFA
   };
 }
 
+function clampNumber(value, min, max, fallback = 0) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.min(max, Math.max(min, numeric));
+}
+
+function normalizeStringArray(values = [], limit = 12) {
+  const source = Array.isArray(values)
+    ? values
+    : String(values || '')
+        .split('\n')
+        .map((item) => String(item || '').trim())
+        .filter(Boolean);
+  return source
+    .map((item) => String(item || '').trim())
+    .filter(Boolean)
+    .slice(0, Math.max(1, Number(limit) || 12));
+}
+
+function normalizeInfoAnalysisResult(raw = {}, task = {}) {
+  const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const candidateHeadlines = normalizeStringArray(
+    source.headlines || source.news || source.items || source.facts || []
+  );
+  const candidateFactors = normalizeStringArray(source.keyFactors || source.factors || source.signals || []);
+  const summary =
+    String(source.summary || source.excerpt || source.text || source.digest || '').trim() ||
+    candidateFactors[0] ||
+    candidateHeadlines[0] ||
+    `Info analysis ready for ${String(task.url || task.topic || 'resource').trim()}`;
+  const topic = String(source.topic || task.topic || task.url || '').trim() || 'market-context';
+  const confidence = clampNumber(source.confidence, 0, 1, 0.5);
+  const sentimentScore = clampNumber(source.sentimentScore ?? source.sentiment ?? 0, -1, 1, 0);
+  return {
+    provider: String(source.provider || (ANALYSIS_PROVIDER === 'openalice' ? 'openalice' : 'legacy')).trim() || 'legacy',
+    traceId: String(source.traceId || task.traceId || '').trim(),
+    topic,
+    sentimentScore: Number(sentimentScore.toFixed(4)),
+    confidence: Number(confidence.toFixed(4)),
+    headlines: candidateHeadlines,
+    keyFactors: candidateFactors,
+    summary,
+    asOf: String(source.asOf || source.timestamp || source.fetchedAt || '').trim() || new Date().toISOString()
+  };
+}
+
+function normalizeTechnicalAnalysisResult(raw = {}, task = {}) {
+  const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const quoteSource = source.quote && typeof source.quote === 'object' && !Array.isArray(source.quote) ? source.quote : {};
+  const symbol = String(source.symbol || source.pair || task.symbol || 'BTCUSDT').trim().toUpperCase() || 'BTCUSDT';
+  const timeframe =
+    String(source.timeframe || source.interval || '').trim() || `${Math.max(5, Number(task.horizonMin || 60))}m`;
+  const confidence = clampNumber(source.confidence, 0, 1, 0.5);
+  const defaultBias = confidence >= 0.65 ? 'bullish' : confidence <= 0.35 ? 'bearish' : 'neutral';
+  const indicatorsSource =
+    source.indicators && typeof source.indicators === 'object' && !Array.isArray(source.indicators)
+      ? source.indicators
+      : {};
+  const signalsSource =
+    source.signals && typeof source.signals === 'object' && !Array.isArray(source.signals)
+      ? source.signals
+      : {};
+  const riskBandSource =
+    source.riskBand && typeof source.riskBand === 'object' && !Array.isArray(source.riskBand)
+      ? source.riskBand
+      : {};
+  const summary =
+    String(source.summary || source.text || source.digest || '').trim() ||
+    `Technical analysis ready for ${symbol} (${timeframe}).`;
+  const riskScoreRaw = Number(source.riskScore ?? source.score ?? source?.risk?.score ?? NaN);
+  const riskScore = Number.isFinite(riskScoreRaw) ? Math.max(5, Math.min(95, Math.round(riskScoreRaw))) : null;
+
+  const quotePriceRaw = Number(quoteSource.priceUsd ?? source.priceUsd ?? source.price ?? NaN);
+  const quotePair = String(quoteSource.pair || symbol).trim().toUpperCase() || symbol;
+  const quoteProvider =
+    String(quoteSource.provider || source.quoteProvider || source.provider || (ANALYSIS_PROVIDER === 'openalice' ? 'openalice' : 'legacy'))
+      .trim()
+      .toLowerCase() || 'legacy';
+  const quote =
+    Number.isFinite(quotePriceRaw) && quotePriceRaw > 0
+      ? {
+          provider: quoteProvider,
+          pair: quotePair,
+          priceUsd: Number(quotePriceRaw.toFixed(6)),
+          fetchedAt: String(quoteSource.fetchedAt || source.asOf || source.timestamp || '').trim() || new Date().toISOString(),
+          sourceRequested: String(task.sourceRequested || task.source || '').trim().toLowerCase() || 'auto',
+          attemptedProviders: normalizeStringArray(quoteSource.attemptedProviders || [quoteProvider], 6)
+        }
+      : null;
+
+  return {
+    provider: String(source.provider || (ANALYSIS_PROVIDER === 'openalice' ? 'openalice' : 'legacy')).trim() || 'legacy',
+    traceId: String(source.traceId || task.traceId || '').trim(),
+    symbol,
+    timeframe,
+    indicators: {
+      rsi: Number.isFinite(Number(indicatorsSource.rsi)) ? Number(indicatorsSource.rsi) : null,
+      macd: Number.isFinite(Number(indicatorsSource.macd)) ? Number(indicatorsSource.macd) : null,
+      emaFast: Number.isFinite(Number(indicatorsSource.emaFast)) ? Number(indicatorsSource.emaFast) : null,
+      emaSlow: Number.isFinite(Number(indicatorsSource.emaSlow)) ? Number(indicatorsSource.emaSlow) : null,
+      atr: Number.isFinite(Number(indicatorsSource.atr)) ? Number(indicatorsSource.atr) : null
+    },
+    signals: {
+      trend: String(signalsSource.trend || 'sideways').trim().toLowerCase() || 'sideways',
+      momentum: String(signalsSource.momentum || 'neutral').trim().toLowerCase() || 'neutral',
+      volatility: String(signalsSource.volatility || 'normal').trim().toLowerCase() || 'normal',
+      bias: String(signalsSource.bias || defaultBias).trim().toLowerCase() || defaultBias
+    },
+    confidence: Number(confidence.toFixed(4)),
+    riskBand: {
+      stopLossPct: Number(
+        clampNumber(riskBandSource.stopLossPct, 0.1, 30, Number.isFinite(Number(task.stopLossPct)) ? Number(task.stopLossPct) : 1.5).toFixed(4)
+      ),
+      takeProfitPct: Number(
+        clampNumber(riskBandSource.takeProfitPct, 0.1, 60, Number.isFinite(Number(task.takeProfitPct)) ? Number(task.takeProfitPct) : 3).toFixed(4)
+      )
+    },
+    riskScore,
+    summary,
+    asOf: String(source.asOf || source.timestamp || source.fetchedAt || '').trim() || new Date().toISOString(),
+    quote
+  };
+}
+
+async function runInfoAnalysis(params = {}) {
+  const task = normalizeXReaderParams(params);
+  if (ANALYSIS_PROVIDER === 'openalice') {
+    const remote = await openAliceAdapter.analyzeInfo({
+      url: task.url,
+      mode: task.mode,
+      maxChars: task.maxChars,
+      traceId: String(params?.traceId || '').trim(),
+      topic: String(params?.topic || task.url).trim()
+    });
+    if (!remote?.ok) {
+      throw new Error(remote?.reason || remote?.error || 'openalice_info_failed');
+    }
+    return normalizeInfoAnalysisResult(remote.data || {}, {
+      ...task,
+      traceId: String(params?.traceId || '').trim()
+    });
+  }
+
+  const reader = await fetchXReaderFromJina(task.url, task.maxChars);
+  return normalizeInfoAnalysisResult(
+    {
+      provider: 'legacy',
+      topic: task.url,
+      sentimentScore: 0,
+      confidence: 0.45,
+      headlines: reader.title ? [reader.title] : [],
+      keyFactors: reader.excerpt ? [reader.excerpt.slice(0, 180)] : [],
+      summary: reader.excerpt || reader.title || `x-reader digest ready for ${task.url}`,
+      asOf: reader.fetchedAt
+    },
+    task
+  );
+}
+
 async function fetchXReaderDigest(params = {}) {
   const task = normalizeXReaderParams(params);
-  const attemptedProviders = [];
-  const failures = [];
-  const providers = ['jina'];
-
-  for (const provider of providers) {
-    attemptedProviders.push(provider);
-    try {
-      let reader = null;
-      if (provider === 'jina') {
-        reader = await fetchXReaderFromJina(task.url, task.maxChars);
-      }
-      if (!reader?.excerpt) {
-        throw new Error('empty excerpt');
-      }
-      return {
-        ...reader,
-        mode: task.mode,
-        maxChars: task.maxChars,
-        sourceRequested: task.mode,
-        attemptedProviders
-      };
-    } catch (error) {
-      failures.push(`${provider}:${error?.message || 'failed'}`);
-    }
-  }
-  throw new Error(`x_reader_unavailable (${failures.join(', ') || 'no provider'})`);
+  const info = await runInfoAnalysis({
+    ...task,
+    traceId: String(params?.traceId || '').trim()
+  });
+  const headline = Array.isArray(info.headlines) && info.headlines.length > 0 ? info.headlines[0] : '';
+  const factor = Array.isArray(info.keyFactors) && info.keyFactors.length > 0 ? info.keyFactors[0] : '';
+  const excerpt = String(info.summary || factor || headline || '').trim().slice(0, task.maxChars);
+  return {
+    provider: info.provider || (ANALYSIS_PROVIDER === 'openalice' ? 'openalice' : 'x-reader'),
+    backend: ANALYSIS_PROVIDER === 'openalice' ? 'openalice' : 'jina',
+    url: task.url,
+    title: String(headline || '').trim(),
+    excerpt,
+    contentLength: excerpt.length,
+    fetchedAt: info.asOf || new Date().toISOString(),
+    mode: task.mode,
+    maxChars: task.maxChars,
+    sourceRequested: task.mode,
+    attemptedProviders: ANALYSIS_PROVIDER === 'openalice' ? ['openalice'] : ['jina'],
+    analysis: info
+  };
 }
 
 async function fetchBtcFromHyperliquid() {
@@ -1894,37 +2067,109 @@ function buildRiskScoreSummary(score, level, symbol, quote) {
 
 async function runRiskScoreAnalysis(input = {}) {
   const task = normalizeRiskScoreParams(input);
-  const quote = await fetchBtcPriceQuote({
-    pair: task.symbol,
-    source: task.sourceRequested
-  });
+  let technical = null;
 
-  const horizonPoints = Math.max(3, Math.min(task.horizonMin, 60));
-  const series = buildDemoPriceSeries(horizonPoints).series;
-  const prices = series.map((item) => Number(item.priceUsd)).filter((item) => Number.isFinite(item) && item > 0);
-  const avgPrice = prices.length > 0 ? prices.reduce((sum, value) => sum + value, 0) / prices.length : Number(quote.priceUsd);
-  const minPrice = prices.length > 0 ? Math.min(...prices) : Number(quote.priceUsd);
-  const maxPrice = prices.length > 0 ? Math.max(...prices) : Number(quote.priceUsd);
-  const rangePct = avgPrice > 0 ? ((maxPrice - minPrice) / avgPrice) * 100 : 0;
+  if (ANALYSIS_PROVIDER === 'openalice') {
+    const remote = await openAliceAdapter.analyzeTechnical({
+      symbol: task.symbol,
+      source: task.sourceRequested,
+      timeframe: `${task.horizonMin}m`,
+      horizonMin: task.horizonMin,
+      traceId: String(input?.traceId || '').trim()
+    });
+    if (!remote?.ok) {
+      throw new Error(remote?.reason || remote?.error || 'openalice_technical_failed');
+    }
+    technical = normalizeTechnicalAnalysisResult(remote.data || {}, {
+      ...task,
+      traceId: String(input?.traceId || '').trim()
+    });
+  } else {
+    const quote = await fetchBtcPriceQuote({
+      pair: task.symbol,
+      source: task.sourceRequested
+    });
+    const horizonPoints = Math.max(3, Math.min(task.horizonMin, 60));
+    const series = buildDemoPriceSeries(horizonPoints).series;
+    const prices = series.map((item) => Number(item.priceUsd)).filter((item) => Number.isFinite(item) && item > 0);
+    const avgPrice = prices.length > 0 ? prices.reduce((sum, value) => sum + value, 0) / prices.length : Number(quote.priceUsd);
+    const minPrice = prices.length > 0 ? Math.min(...prices) : Number(quote.priceUsd);
+    const maxPrice = prices.length > 0 ? Math.max(...prices) : Number(quote.priceUsd);
+    const rangePct = avgPrice > 0 ? ((maxPrice - minPrice) / avgPrice) * 100 : 0;
+    const deviationPct = avgPrice > 0 ? (Math.abs(Number(quote.priceUsd) - avgPrice) / avgPrice) * 100 : 0;
+    const rawScore = 22 + rangePct * 11 + deviationPct * 8;
+    const bounded = Math.max(5, Math.min(95, Math.round(rawScore)));
+    const level = toRiskLevel(bounded);
+    technical = normalizeTechnicalAnalysisResult(
+      {
+        provider: quote.provider,
+        symbol: task.symbol,
+        timeframe: `${task.horizonMin}m`,
+        confidence: clampNumber(1 - Math.min(0.85, rangePct / 22), 0.1, 0.95, 0.55),
+        summary: buildRiskScoreSummary(bounded, level, task.symbol, quote),
+        riskScore: bounded,
+        signals: {
+          trend: deviationPct >= 1.8 ? 'directional' : 'sideways',
+          momentum: deviationPct >= 1.2 ? 'active' : 'neutral',
+          volatility: rangePct >= 1.8 ? 'elevated' : 'normal',
+          bias: level === 'high' || level === 'elevated' ? 'defensive' : 'balanced'
+        },
+        indicators: {
+          rsi: null,
+          macd: null,
+          emaFast: null,
+          emaSlow: null,
+          atr: Number(rangePct.toFixed(6))
+        },
+        riskBand: {
+          stopLossPct: Number(Math.max(0.8, Math.min(3.5, 1.1 + rangePct / 3)).toFixed(4)),
+          takeProfitPct: Number(Math.max(1.2, Math.min(8, 2 + rangePct * 1.8)).toFixed(4))
+        },
+        quote,
+        asOf: quote.fetchedAt
+      },
+      task
+    );
+    technical.rangePct = Number(rangePct.toFixed(4));
+    technical.deviationPct = Number(deviationPct.toFixed(4));
+    technical.sampleSize = prices.length;
+  }
 
-  const deviationPct = avgPrice > 0 ? (Math.abs(Number(quote.priceUsd) - avgPrice) / avgPrice) * 100 : 0;
-  const rawScore = 22 + rangePct * 11 + deviationPct * 8;
-  const bounded = Math.max(5, Math.min(95, Math.round(rawScore)));
+  const quote =
+    technical?.quote && Number.isFinite(Number(technical.quote.priceUsd)) && Number(technical.quote.priceUsd) > 0
+      ? technical.quote
+      : await fetchBtcPriceQuote({
+          pair: task.symbol,
+          source: task.sourceRequested
+        });
+  const scoreRaw = Number(technical?.riskScore ?? NaN);
+  const bounded = Number.isFinite(scoreRaw)
+    ? Math.max(5, Math.min(95, Math.round(scoreRaw)))
+    : Math.max(5, Math.min(95, Math.round(Number(technical?.confidence || 0.5) * 100)));
   const level = toRiskLevel(bounded);
 
   return {
-    summary: buildRiskScoreSummary(bounded, level, task.symbol, quote),
+    summary: String(technical?.summary || buildRiskScoreSummary(bounded, level, task.symbol, quote)).trim(),
     risk: {
       symbol: task.symbol,
       score: bounded,
       level,
       horizonMin: task.horizonMin,
-      rangePct: Number(rangePct.toFixed(4)),
-      deviationPct: Number(deviationPct.toFixed(4)),
-      sampleSize: prices.length,
-      provider: quote.provider
+      rangePct: Number(
+        Number.isFinite(Number(technical?.rangePct))
+          ? Number(technical.rangePct)
+          : Number(technical?.indicators?.atr || 0)
+      ),
+      deviationPct: Number(
+        Number.isFinite(Number(technical?.deviationPct))
+          ? Number(technical.deviationPct)
+          : Number(technical?.confidence ? Math.abs(0.5 - Number(technical.confidence)) * 2.5 : 0)
+      ),
+      sampleSize: Number.isFinite(Number(technical?.sampleSize)) ? Number(technical.sampleSize) : 0,
+      provider: String(quote?.provider || technical?.provider || 'legacy').trim().toLowerCase()
     },
-    quote
+    quote,
+    technical
   };
 }
 
@@ -2231,7 +2476,17 @@ function createDefaultNetworkAgents() {
       xmtpAddress: XMTP_RISK_RESOLVED_ADDRESS,
       aaAddress: XMTP_RISK_AGENT_AA_ADDRESS,
       description: 'Computes risk-score feed through agent capability.',
-      capabilities: ['risk-score-feed', 'volatility-snapshot']
+      capabilities: ['risk-score-feed', 'volatility-snapshot', 'technical-analysis-feed']
+    },
+    {
+      id: 'technical-agent',
+      name: 'Technical Agent',
+      role: 'provider',
+      mode: 'a2a',
+      xmtpAddress: XMTP_RISK_RESOLVED_ADDRESS,
+      aaAddress: XMTP_RISK_AGENT_AA_ADDRESS,
+      description: 'Single technical facade over risk/price sub-analysis outputs.',
+      capabilities: ['technical-analysis-feed', 'risk-score-feed', 'market-quote']
     },
     {
       id: 'reader-agent',
@@ -2241,7 +2496,7 @@ function createDefaultNetworkAgents() {
       xmtpAddress: XMTP_READER_RESOLVED_ADDRESS,
       aaAddress: XMTP_READER_AGENT_AA_ADDRESS,
       description: 'Runs x-reader digest for URLs via ATAPI adapter.',
-      capabilities: ['x-reader-feed', 'url-digest']
+      capabilities: ['x-reader-feed', 'url-digest', 'info-analysis-feed']
     },
     {
       id: 'price-agent',
@@ -2267,16 +2522,47 @@ function createDefaultNetworkAgents() {
   return seeds.map((item) => sanitizeNetworkAgentRecord(item)).filter((item) => item.id);
 }
 
+function mergeBuiltinNetworkAgents(rows = []) {
+  const list = Array.isArray(rows) ? [...rows] : [];
+  const defaults = createDefaultNetworkAgents();
+  let changed = false;
+  for (const agent of defaults) {
+    const id = String(agent?.id || '').trim().toLowerCase();
+    if (!id) continue;
+    const idx = list.findIndex((item) => String(item?.id || '').trim().toLowerCase() === id);
+    if (idx < 0) {
+      list.push(agent);
+      changed = true;
+      continue;
+    }
+    const current = sanitizeNetworkAgentRecord(list[idx], list[idx]);
+    const mergedCapabilities = Array.from(new Set([...(current.capabilities || []), ...(agent.capabilities || [])]));
+    const merged = sanitizeNetworkAgentRecord(
+      {
+        ...current,
+        capabilities: mergedCapabilities
+      },
+      current
+    );
+    if (JSON.stringify(current) !== JSON.stringify(merged)) {
+      list[idx] = merged;
+      changed = true;
+    }
+  }
+  return { rows: list, changed };
+}
+
 function ensureNetworkAgents() {
   const rows = readNetworkAgents();
   const normalized = (Array.isArray(rows) ? rows : [])
     .map((item) => sanitizeNetworkAgentRecord(item))
     .filter((item) => item.id);
   if (normalized.length > 0) {
+    const merged = mergeBuiltinNetworkAgents(normalized);
     const before = JSON.stringify(Array.isArray(rows) ? rows : []);
-    const after = JSON.stringify(normalized);
-    if (before !== after) writeNetworkAgents(normalized);
-    return normalized;
+    const after = JSON.stringify(merged.rows);
+    if (before !== after || merged.changed) writeNetworkAgents(merged.rows);
+    return merged.rows;
   }
   const seeded = createDefaultNetworkAgents();
   writeNetworkAgents(seeded);
@@ -2369,8 +2655,8 @@ function resolveAgentAddressesByIds(agentIds = []) {
 function normalizeNetworkCommandType(value = '') {
   const type = String(value || '').trim().toLowerCase();
   if (!type) return 'router-risk-group';
-  if (['router-risk-group', 'router-risk'].includes(type)) return type;
-  throw new Error('Unsupported command type. Supported: router-risk-group, router-risk.');
+  if (['router-risk-group', 'router-risk', 'router-info-technical'].includes(type)) return type;
+  throw new Error('Unsupported command type. Supported: router-risk-group, router-risk, router-info-technical.');
 }
 
 function createCommandId() {
@@ -2502,10 +2788,12 @@ function extractNetworkCommandRefs(result = {}, fallback = {}) {
 
 async function invokeNetworkCommandTarget({ type = 'router-risk-group', payload = {} } = {}) {
   const commandType = normalizeNetworkCommandType(type);
-  const endpoint =
-    commandType === 'router-risk-group'
-      ? '/api/network/demo/router-risk-group/run'
-      : '/api/network/demo/router-risk/run';
+  let endpoint = '/api/network/demo/router-risk/run';
+  if (commandType === 'router-risk-group') {
+    endpoint = '/api/network/demo/router-risk-group/run';
+  } else if (commandType === 'router-info-technical') {
+    endpoint = '/api/network/demo/router-info-technical/run';
+  }
   const internalApiKey = getInternalAgentApiKey();
   const headers = { 'Content-Type': 'application/json' };
   if (internalApiKey) headers['x-api-key'] = internalApiKey;
@@ -2707,7 +2995,7 @@ async function handleRiskRuntimeTaskEnvelope({ envelope = {} } = {}) {
   const capability = String(envelope?.capability || '').trim().toLowerCase();
   const payment = buildTaskPaymentFromIntent(envelope);
   const receiptRef = buildTaskReceiptRef(payment);
-  if (!['risk-score-feed', 'volatility-snapshot'].includes(capability)) {
+  if (!['risk-score-feed', 'volatility-snapshot', 'technical-analysis-feed'].includes(capability)) {
     return {
       status: 'done',
       result: {
@@ -2726,7 +3014,11 @@ async function handleRiskRuntimeTaskEnvelope({ envelope = {} } = {}) {
   const result = await runRiskScoreAnalysis(task);
   return {
     status: 'done',
-    result,
+    result: {
+      ...result,
+      analysisType: 'technical',
+      analysis: result?.technical && typeof result.technical === 'object' ? result.technical : null
+    },
     payment,
     receiptRef
   };
@@ -2736,7 +3028,7 @@ async function handleReaderRuntimeTaskEnvelope({ envelope = {} } = {}) {
   const capability = String(envelope?.capability || '').trim().toLowerCase();
   const payment = buildTaskPaymentFromIntent(envelope);
   const receiptRef = buildTaskReceiptRef(payment);
-  if (!['x-reader-feed', 'url-digest'].includes(capability)) {
+  if (!['x-reader-feed', 'url-digest', 'info-analysis-feed'].includes(capability)) {
     return {
       status: 'done',
       result: {
@@ -2756,7 +3048,11 @@ async function handleReaderRuntimeTaskEnvelope({ envelope = {} } = {}) {
   return {
     status: 'done',
     result: {
-      summary: `x-reader digest ready: ${reader?.title || reader?.url || task.url}`,
+      summary:
+        String(reader?.analysis?.summary || '').trim() ||
+        `x-reader digest ready: ${reader?.title || reader?.url || task.url}`,
+      analysisType: 'info',
+      info: reader?.analysis || null,
       reader
     },
     payment,
@@ -5760,6 +6056,125 @@ async function buildRiskScorePaymentIntentForTask({
   };
 }
 
+async function buildXReaderPaymentIntentForTask({
+  body = {},
+  traceId = '',
+  fallbackRequestId = '',
+  defaultTask = { url: 'https://x.com/Kite_AI', mode: 'auto', maxChars: X_READER_MAX_CHARS_DEFAULT }
+} = {}) {
+  const inputTask =
+    body?.input && typeof body.input === 'object' && !Array.isArray(body.input)
+      ? body.input
+      : defaultTask;
+  const normalizedTask = normalizeXReaderParams({
+    url: inputTask?.url || inputTask?.resourceUrl || defaultTask.url || '',
+    mode: inputTask?.mode || inputTask?.source || defaultTask.mode || 'auto',
+    maxChars: inputTask?.maxChars ?? defaultTask.maxChars ?? X_READER_MAX_CHARS_DEFAULT
+  });
+  const rawIntent =
+    body?.paymentIntent && typeof body.paymentIntent === 'object' && !Array.isArray(body.paymentIntent)
+      ? body.paymentIntent
+      : {};
+  const bindRealX402 = parseBooleanFlag(body?.bindRealX402, false);
+  const strictBinding = parseBooleanFlag(body?.strictBinding, false);
+  const shouldBindRealX402 =
+    bindRealX402 ||
+    (String(rawIntent?.mode || '').trim().toLowerCase() === 'x402' &&
+      (!String(rawIntent?.requestId || '').trim() || !String(rawIntent?.txHash || '').trim()));
+
+  let paymentIntent = {
+    mode: String(rawIntent?.mode || 'mock').trim().toLowerCase() || 'mock',
+    requestId: String(rawIntent?.requestId || fallbackRequestId || '').trim(),
+    txHash: String(rawIntent?.txHash || '').trim(),
+    block: Number.isFinite(Number(rawIntent?.block)) ? Number(rawIntent.block) : null,
+    status: String(rawIntent?.status || '').trim().toLowerCase(),
+    explorer: String(rawIntent?.explorer || '').trim(),
+    verifiedAt: String(rawIntent?.verifiedAt || '').trim()
+  };
+
+  const warnings = [];
+  let workflowBinding = null;
+  if (shouldBindRealX402) {
+    try {
+      const payload = {
+        ...normalizedTask,
+        traceId: resolveWorkflowTraceId(body?.paymentTraceId || createTraceId('reader_bind')),
+        payer: normalizeAddress(body?.payer || ''),
+        sourceAgentId: String(body?.sourceAgentId || KITE_AGENT1_ID).trim(),
+        targetAgentId: String(body?.targetAgentId || KITE_AGENT2_ID).trim()
+      };
+      const resp = await fetch(`http://127.0.0.1:${PORT}/api/workflow/x-reader/run`, {
+        method: 'POST',
+        headers: buildInternalAgentHeaders(),
+        body: JSON.stringify(payload)
+      });
+      const result = await resp.json().catch(() => ({}));
+      if (!resp.ok || result?.ok === false) {
+        throw new Error(result?.reason || result?.error || `workflow/x-reader/run failed: HTTP ${resp.status}`);
+      }
+      const boundRequestId = String(result?.requestId || result?.workflow?.requestId || '').trim();
+      const evidence = resolveX402EvidenceByRequestId(boundRequestId);
+      if (!boundRequestId || !evidence?.txHash) {
+        throw new Error('x402 evidence missing after workflow run');
+      }
+      paymentIntent = {
+        mode: 'x402',
+        requestId: evidence.requestId,
+        txHash: evidence.txHash,
+        block: evidence.block,
+        status: evidence.status,
+        explorer: evidence.explorer,
+        verifiedAt: evidence.verifiedAt
+      };
+      workflowBinding = {
+        ok: true,
+        traceId: String(result?.traceId || result?.workflow?.traceId || '').trim(),
+        requestId: evidence.requestId,
+        txHash: evidence.txHash,
+        block: evidence.block,
+        status: evidence.status,
+        explorer: evidence.explorer
+      };
+    } catch (error) {
+      const reason = String(error?.message || 'bind_real_x402_failed').trim();
+      warnings.push(reason);
+      if (strictBinding) {
+        throw new Error(reason);
+      }
+    }
+  } else if (paymentIntent.mode === 'x402' && paymentIntent.requestId) {
+    const evidence = resolveX402EvidenceByRequestId(paymentIntent.requestId);
+    if (evidence?.txHash) {
+      paymentIntent = {
+        mode: 'x402',
+        requestId: evidence.requestId,
+        txHash: evidence.txHash,
+        block: evidence.block,
+        status: evidence.status,
+        explorer: evidence.explorer,
+        verifiedAt: evidence.verifiedAt
+      };
+    }
+  }
+
+  if (!paymentIntent.mode) paymentIntent.mode = 'mock';
+  if (!paymentIntent.requestId) paymentIntent.requestId = fallbackRequestId;
+  if (paymentIntent.mode === 'x402' && !paymentIntent.txHash) {
+    warnings.push('x402 evidence unavailable, fallback to mock payment intent');
+    paymentIntent.mode = 'mock';
+  }
+  if (!paymentIntent.txHash && paymentIntent.mode === 'mock') {
+    paymentIntent.txHash = `mock_${taskIdSafeToken(traceId || fallbackRequestId || 'reader')}`;
+  }
+
+  return {
+    paymentIntent,
+    normalizedTask,
+    workflowBinding,
+    warnings
+  };
+}
+
 function taskIdSafeToken(value = '') {
   return String(value || '')
     .trim()
@@ -8362,6 +8777,264 @@ app.post('/api/network/tasks/run', requireRole('agent'), async (req, res) => {
   });
 });
 
+app.post('/api/network/demo/router-info-technical/run', requireRole('agent'), async (req, res) => {
+  const body = req.body || {};
+  const autoStart = body.autoStart !== false;
+  if (autoStart) {
+    await startXmtpRuntimes();
+  }
+  const routerStatus = xmtpRuntime.getStatus();
+  if (!routerStatus.running) {
+    return res.status(400).json({
+      ok: false,
+      traceId: req.traceId || '',
+      error: 'xmtp_router_not_running',
+      reason: routerStatus.lastError || 'router runtime is not running'
+    });
+  }
+
+  const readerAgent = findNetworkAgentById('reader-agent');
+  const technicalAgent = findNetworkAgentById('technical-agent') || findNetworkAgentById('risk-agent');
+  const infoAddress = normalizeAddress(body.infoToAddress || readerAgent?.xmtpAddress || XMTP_READER_RESOLVED_ADDRESS);
+  const technicalAddress = normalizeAddress(
+    body.technicalToAddress || technicalAgent?.xmtpAddress || XMTP_RISK_RESOLVED_ADDRESS
+  );
+  if (!infoAddress || !technicalAddress) {
+    return res.status(400).json({
+      ok: false,
+      traceId: req.traceId || '',
+      error: 'agent_address_missing',
+      reason: 'Set reader/risk(technical) XMTP address mapping before running info-technical demo.'
+    });
+  }
+
+  const traceId = String(body.traceId || createTraceId('router_it_trace')).trim();
+  const requestId = String(body.requestId || createTraceId('router_it_req')).trim();
+  const infoTaskId = String(body.infoTaskId || createTraceId('router_it_info')).trim();
+  const technicalTaskId = String(body.technicalTaskId || createTraceId('router_it_tech')).trim();
+
+  const infoBody = {
+    ...body,
+    input:
+      body?.infoInput && typeof body.infoInput === 'object' && !Array.isArray(body.infoInput)
+        ? body.infoInput
+        : {
+            url: body?.url || body?.resourceUrl || 'https://x.com/Kite_AI',
+            mode: body?.mode || 'auto',
+            maxChars: body?.maxChars ?? X_READER_MAX_CHARS_DEFAULT
+          }
+  };
+  const technicalBody = {
+    ...body,
+    input:
+      body?.technicalInput && typeof body.technicalInput === 'object' && !Array.isArray(body.technicalInput)
+        ? body.technicalInput
+        : {
+            symbol: body?.symbol || body?.pair || 'BTCUSDT',
+            source: body?.source || 'hyperliquid',
+            horizonMin: body?.horizonMin ?? 60
+          }
+  };
+
+  let infoPaymentPlan = null;
+  let technicalPaymentPlan = null;
+  try {
+    infoPaymentPlan = await buildXReaderPaymentIntentForTask({
+      body: infoBody,
+      traceId,
+      fallbackRequestId: `${requestId}_info`,
+      defaultTask: {
+        url: 'https://x.com/Kite_AI',
+        mode: 'auto',
+        maxChars: X_READER_MAX_CHARS_DEFAULT
+      }
+    });
+    technicalPaymentPlan = await buildRiskScorePaymentIntentForTask({
+      body: technicalBody,
+      traceId,
+      fallbackRequestId: `${requestId}_technical`,
+      defaultTask: {
+        symbol: 'BTCUSDT',
+        source: 'hyperliquid',
+        horizonMin: 60
+      }
+    });
+  } catch (error) {
+    return res.status(400).json({
+      ok: false,
+      traceId: req.traceId || '',
+      error: 'bind_real_x402_failed',
+      reason: error?.message || 'bind_real_x402_failed'
+    });
+  }
+
+  const buildTaskEnvelope = ({ taskId, toAgentId, capability, input, paymentIntent }) => ({
+    kind: 'task-envelope',
+    protocolVersion: 'kite-agent-task-v1',
+    traceId,
+    requestId,
+    taskId,
+    fromAgentId: 'router-agent',
+    toAgentId,
+    channel: 'dm',
+    hopIndex: 1,
+    mode: 'a2a',
+    capability,
+    input,
+    paymentIntent,
+    expectsReply: true,
+    timestamp: new Date().toISOString()
+  });
+
+  const infoEnvelope = buildTaskEnvelope({
+    taskId: infoTaskId,
+    toAgentId: 'reader-agent',
+    capability: String(body.infoCapability || 'info-analysis-feed').trim(),
+    input: infoPaymentPlan.normalizedTask,
+    paymentIntent: infoPaymentPlan.paymentIntent
+  });
+  const technicalEnvelope = buildTaskEnvelope({
+    taskId: technicalTaskId,
+    toAgentId: String(body.technicalAgentId || technicalAgent?.id || 'technical-agent').trim().toLowerCase(),
+    capability: String(body.technicalCapability || 'technical-analysis-feed').trim(),
+    input: technicalPaymentPlan.normalizedTask,
+    paymentIntent: technicalPaymentPlan.paymentIntent
+  });
+
+  const infoSent = await xmtpRuntime.sendDm({
+    fromAgentId: 'router-agent',
+    toAgentId: infoEnvelope.toAgentId,
+    toAddress: infoAddress,
+    channel: 'dm',
+    hopIndex: 1,
+    envelope: infoEnvelope,
+    traceId,
+    requestId,
+    taskId: infoTaskId
+  });
+  if (!infoSent?.ok) {
+    return res.status(400).json({
+      ok: false,
+      traceId: req.traceId || '',
+      error: infoSent?.error || 'info_task_send_failed',
+      reason: infoSent?.reason || 'info_task_send_failed',
+      details: infoSent
+    });
+  }
+
+  const technicalSent = await xmtpRuntime.sendDm({
+    fromAgentId: 'router-agent',
+    toAgentId: technicalEnvelope.toAgentId,
+    toAddress: technicalAddress,
+    channel: 'dm',
+    hopIndex: 1,
+    envelope: technicalEnvelope,
+    traceId,
+    requestId,
+    taskId: technicalTaskId
+  });
+  if (!technicalSent?.ok) {
+    return res.status(400).json({
+      ok: false,
+      traceId: req.traceId || '',
+      error: technicalSent?.error || 'technical_task_send_failed',
+      reason: technicalSent?.reason || 'technical_task_send_failed',
+      details: technicalSent
+    });
+  }
+
+  const waitTaskResultEvent = async (taskId, timeoutMs = 15000) => {
+    const deadline = Date.now() + Math.max(800, Math.min(Number(timeoutMs || 15000), 30000));
+    while (Date.now() <= deadline) {
+      const hits = xmtpRuntime.listEvents({
+        runtimeName: 'router-runtime',
+        direction: 'inbound',
+        kind: 'task-result',
+        taskId
+      });
+      if (Array.isArray(hits) && hits.length > 0) return hits[0];
+      await waitMs(350);
+    }
+    return null;
+  };
+
+  const waitMsLimit = Math.max(1000, Math.min(Number(body.waitMs || 15000), 30000));
+  const infoEvent = await waitTaskResultEvent(infoTaskId, waitMsLimit);
+  const technicalEvent = await waitTaskResultEvent(technicalTaskId, waitMsLimit);
+
+  const infoTaskResult =
+    infoEvent?.parsed && typeof infoEvent.parsed === 'object' && !Array.isArray(infoEvent.parsed)
+      ? infoEvent.parsed
+      : null;
+  const technicalTaskResult =
+    technicalEvent?.parsed && typeof technicalEvent.parsed === 'object' && !Array.isArray(technicalEvent.parsed)
+      ? technicalEvent.parsed
+      : null;
+  const infoAnalysis =
+    infoTaskResult?.result?.info ||
+    infoTaskResult?.result?.analysis ||
+    null;
+  const technicalAnalysis =
+    technicalTaskResult?.result?.analysis ||
+    technicalTaskResult?.result?.technical ||
+    null;
+  const infoConfidence = Number(infoAnalysis?.confidence);
+  const technicalConfidence = Number(technicalAnalysis?.confidence);
+  const confidenceCandidates = [infoConfidence, technicalConfidence].filter((item) => Number.isFinite(item));
+  const confidenceBlend =
+    confidenceCandidates.length > 0
+      ? Number((confidenceCandidates.reduce((sum, item) => sum + item, 0) / confidenceCandidates.length).toFixed(4))
+      : null;
+
+  return res.json({
+    ok: true,
+    traceId: req.traceId || '',
+    command: {
+      type: 'router-info-technical',
+      traceId,
+      requestId
+    },
+    tasks: {
+      info: {
+        taskId: infoTaskId,
+        toAgentId: infoEnvelope.toAgentId,
+        capability: infoEnvelope.capability,
+        sent: infoSent,
+        resultReceived: Boolean(infoEvent),
+        resultEvent: infoEvent,
+        taskResult: infoTaskResult
+      },
+      technical: {
+        taskId: technicalTaskId,
+        toAgentId: technicalEnvelope.toAgentId,
+        capability: technicalEnvelope.capability,
+        sent: technicalSent,
+        resultReceived: Boolean(technicalEvent),
+        resultEvent: technicalEvent,
+        taskResult: technicalTaskResult
+      }
+    },
+    summary: {
+      infoSummary: String(infoTaskResult?.result?.summary || '').trim(),
+      technicalSummary: String(technicalTaskResult?.result?.summary || '').trim(),
+      confidenceBlend
+    },
+    analysis: {
+      info: infoAnalysis,
+      technical: technicalAnalysis
+    },
+    paymentBinding: {
+      info: infoPaymentPlan.workflowBinding || null,
+      technical: technicalPaymentPlan.workflowBinding || null
+    },
+    warnings: [
+      ...(Array.isArray(infoPaymentPlan.warnings) ? infoPaymentPlan.warnings : []),
+      ...(Array.isArray(technicalPaymentPlan.warnings) ? technicalPaymentPlan.warnings : [])
+    ],
+    runtime: getAllXmtpRuntimeStatuses()
+  });
+});
+
 app.get('/api/network/commands', requireRole('viewer'), (req, res) => {
   const limit = Math.max(1, Math.min(Number(req.query.limit || 50), 200));
   const statusFilters = parseNetworkCommandFilterList(req.query.status);
@@ -8970,6 +9643,76 @@ app.get('/api/market/btc/price', requireRole('viewer'), async (req, res) => {
       traceId: req.traceId || '',
       error: 'price_source_unavailable',
       reason: error?.message || 'price_source_unavailable'
+    });
+  }
+});
+
+app.get('/api/openalice/health', requireRole('viewer'), async (req, res) => {
+  const info = openAliceAdapter.info();
+  const health = await openAliceAdapter.health();
+  return res.status(health.ok ? 200 : 503).json({
+    ok: health.ok,
+    traceId: req.traceId || '',
+    provider: ANALYSIS_PROVIDER,
+    adapter: info,
+    health
+  });
+});
+
+app.post('/api/analysis/info/run', requireRole('agent'), async (req, res) => {
+  try {
+    const body = req.body || {};
+    const task = normalizeXReaderParams({
+      url: body.url || body.resourceUrl || body.targetUrl,
+      mode: body.mode || body.source || 'auto',
+      maxChars: body.maxChars ?? X_READER_MAX_CHARS_DEFAULT
+    });
+    const result = await runInfoAnalysis({
+      ...task,
+      traceId: req.traceId || ''
+    });
+    return res.json({
+      ok: true,
+      traceId: req.traceId || '',
+      provider: ANALYSIS_PROVIDER,
+      task,
+      result
+    });
+  } catch (error) {
+    return res.status(400).json({
+      ok: false,
+      traceId: req.traceId || '',
+      error: 'info_analysis_failed',
+      reason: error?.message || 'info analysis failed'
+    });
+  }
+});
+
+app.post('/api/analysis/technical/run', requireRole('agent'), async (req, res) => {
+  try {
+    const body = req.body || {};
+    const task = normalizeRiskScoreParams({
+      symbol: body.symbol || body.pair || 'BTCUSDT',
+      source: body.source || 'hyperliquid',
+      horizonMin: body.horizonMin ?? 60
+    });
+    const result = await runRiskScoreAnalysis({
+      ...task,
+      traceId: req.traceId || ''
+    });
+    return res.json({
+      ok: true,
+      traceId: req.traceId || '',
+      provider: ANALYSIS_PROVIDER,
+      task,
+      result: result?.technical || result
+    });
+  } catch (error) {
+    return res.status(400).json({
+      ok: false,
+      traceId: req.traceId || '',
+      error: 'technical_analysis_failed',
+      reason: error?.message || 'technical analysis failed'
     });
   }
 });
