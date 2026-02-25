@@ -1,31 +1,48 @@
 # XMTP Agent Quickstart Sandbox
 
-这个目录是和主项目隔离的最小可运行 XMTP Agent 测试。
+Standalone XMTP agent demo aligned with the official `build-an-agent` flow.
 
-## 1) 安装依赖
+## 1) Install
 
 ```powershell
 npm install
 ```
 
-## 2) 配置环境变量（PowerShell）
+## 2) Configure `.env`
 
-```powershell
-$env:XMTP_ENV="dev"
-$env:WALLET_KEY="0x你的私钥"
-```
+Copy `.env.example` to `.env`, then fill:
 
-## 3) 启动
+- `XMTP_ENV=dev` (or `production` / `local`)
+- `XMTP_WALLET_KEY=0x...` (agent wallet private key)
+- `XMTP_DB_ENCRYPTION_KEY=<64 hex chars>`
+- `XMTP_DB_DIRECTORY=.xmtp-db` (keep stable across restarts)
+
+## 3) Start
 
 ```powershell
 npm start
 ```
 
-成功后会打印：
+Expected logs:
 
+- `Agent started`
 - `Address`
 - `Inbox ID`
 - `Test URL`
 - `Waiting for messages...`
 
-你可以用 `Test URL` 打开的页面给这个 agent 发消息，agent 会自动回复 `echo: <你发的文本>`。
+## 4) DM test checklist
+
+1. Open `Test URL` in browser.
+2. Send from a different wallet than the agent wallet.
+3. Keep this process running and watch terminal logs:
+   - `[text] from=... content="..."`
+   - `[text] reply sent`
+
+## 5) If no reply
+
+1. Check env keys are correct: `XMTP_WALLET_KEY`, `XMTP_DB_ENCRYPTION_KEY`.
+2. Keep `XMTP_DB_DIRECTORY` fixed (do not rotate every run).
+3. Reuse one agent wallet instead of creating many installations.
+4. Inspect terminal `unhandledError` logs.
+
