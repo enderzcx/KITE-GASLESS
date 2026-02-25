@@ -80,6 +80,57 @@ const isStreamingTransportError = (error: unknown) => {
   );
 };
 
+const buildRuleReply = (rawInput: string) => {
+  const input = String(rawInput || "").trim();
+  const lowered = input.toLowerCase();
+
+  if (!input) {
+    return "我收到了空消息。你可以输入 /help 查看可用指令。";
+  }
+  if (
+    lowered === "/help" ||
+    lowered === "help" ||
+    lowered === "帮助" ||
+    lowered === "指令"
+  ) {
+    return [
+      "可用规则指令：",
+      "1) hi / hello / 你好 -> 问候",
+      "2) how are you / 在吗 -> 状态",
+      "3) time / 几点了 -> 当前时间",
+      "4) echo <text> -> 回显指定文本",
+      "5) /help -> 查看帮助",
+    ].join("\n");
+  }
+  if (/^(hi|hello|hey|你好|嗨)\b/.test(lowered)) {
+    return "你好，我在线。你可以发 /help 看可用规则。";
+  }
+  if (
+    lowered.includes("how are you") ||
+    lowered.includes("are you there") ||
+    lowered.includes("在吗") ||
+    lowered.includes("你还在")
+  ) {
+    return "我状态正常，消息收发在线。";
+  }
+  if (
+    lowered.includes("time") ||
+    lowered.includes("date") ||
+    lowered.includes("几点") ||
+    lowered.includes("时间")
+  ) {
+    const now = new Date();
+    return `当前时间: ${now.toISOString()} (UTC)`;
+  }
+  if (/^echo\s+/i.test(input)) {
+    return input.replace(/^echo\s+/i, "").trim() || "echo";
+  }
+  if (lowered.includes("btc") || lowered.includes("price")) {
+    return "这是规则版 agent，当前不连行情源。你可以继续发普通文本或 /help。";
+  }
+  return `规则回复：已收到「${input}」。发 /help 查看可用指令。`;
+};
+
 console.log(`Booting XMTP agent (env=${env}) ...`);
 console.log(`DB directory: ${process.env.XMTP_DB_DIRECTORY}`);
 
@@ -172,7 +223,7 @@ agent.on("text", async (ctx) => {
     return;
   }
 
-  const reply = `echo: ${incoming || "gm"}`;
+  const reply = buildRuleReply(incoming);
   try {
     await ctx.sendTextReply(reply);
     console.log("[text] reply sent");

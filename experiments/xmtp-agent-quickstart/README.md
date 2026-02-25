@@ -1,6 +1,7 @@
 # XMTP Agent Quickstart Sandbox
 
 Standalone XMTP agent demo aligned with the official `build-an-agent` flow.
+Current behavior: rule-based replies (not LLM).
 
 ## 1) Install
 
@@ -39,6 +40,14 @@ Expected logs:
 3. Keep this process running and watch terminal logs:
    - `[text] from=... content="..."`
    - `[text] reply sent`
+
+Rule examples:
+
+- `hi` -> greeting
+- `How are you?` -> status
+- `time` -> UTC time
+- `echo hello` -> `hello`
+- `/help` -> command list
 
 ## 5) If no reply
 
