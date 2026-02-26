@@ -107,6 +107,23 @@ function getFirstMapBoolean(resultMap) {
   return false;
 }
 
+function normalizeCapabilityList(input = []) {
+  if (!Array.isArray(input)) return [];
+  const out = [];
+  for (const item of input) {
+    const text = normalizeText(item).toLowerCase();
+    if (!text) continue;
+    if (out.includes(text)) continue;
+    out.push(text);
+  }
+  return out;
+}
+
+function isTaskProtocolKind(kind = '') {
+  const normalized = normalizeText(kind).toLowerCase();
+  return ['task-envelope', 'task-result', 'task-ack', 'ack'].includes(normalized);
+}
+
 export function createXmtpAgentRuntime(options = {}) {
   const readEvents = typeof options.readEvents === 'function' ? options.readEvents : () => [];
   const writeEvents = typeof options.writeEvents === 'function' ? options.writeEvents : () => {};
@@ -114,6 +131,8 @@ export function createXmtpAgentRuntime(options = {}) {
     typeof options.resolveAgentById === 'function' ? options.resolveAgentById : () => null;
   const handleTaskEnvelope =
     typeof options.handleTaskEnvelope === 'function' ? options.handleTaskEnvelope : null;
+  const handleTextMessage =
+    typeof options.handleTextMessage === 'function' ? options.handleTextMessage : null;
 
   const eventRetention = Math.max(50, Math.min(Number(options.eventRetention || 600), 5000));
   const autoAck = Boolean(options.autoAck);
@@ -149,6 +168,7 @@ export function createXmtpAgentRuntime(options = {}) {
     ignoredInbound: 0,
     sentOutbound: 0,
     autoAckCount: 0,
+    autoTextReplyCount: 0,
     recovering: false,
     recoveryCount: 0
   };
@@ -340,6 +360,119 @@ export function createXmtpAgentRuntime(options = {}) {
   function isAckPayload(payload = {}) {
     const kind = normalizeText(payload.kind || '').toLowerCase();
     return kind === 'task-ack' || kind === 'ack';
+  }
+
+  function getRuntimeAgentProfile() {
+    const runtimeAgentId = state.agentId || defaultAgentId;
+    const profile = resolveAgentById(runtimeAgentId);
+    if (!profile || typeof profile !== 'object') {
+      return {
+        id: runtimeAgentId,
+        name: runtimeAgentId || runtimeName,
+        capabilities: []
+      };
+    }
+    return {
+      id: normalizeText(profile.id || runtimeAgentId),
+      name: normalizeText(profile.name || runtimeAgentId || runtimeName),
+      capabilities: normalizeCapabilityList(profile.capabilities)
+    };
+  }
+
+  function buildTaskEnvelopeTemplate(profile = {}) {
+    const capability = normalizeText(profile?.capabilities?.[0] || 'info-analysis-feed');
+    const runtimeAgentId = normalizeText(profile?.id || state.agentId || defaultAgentId || runtimeName);
+    return {
+      kind: 'task-envelope',
+      protocolVersion: 'kite-agent-task-v1',
+      traceId: 'chat-demo-trace',
+      requestId: 'chat-demo-request',
+      taskId: 'chat-demo-task',
+      fromAgentId: 'human-user',
+      toAgentId: runtimeAgentId,
+      channel: 'dm',
+      hopIndex: 1,
+      capability,
+      input:
+        capability === 'technical-analysis-feed'
+          ? {
+              symbol: 'BTCUSDT',
+              source: 'hyperliquid',
+              horizonMin: 60
+            }
+          : {
+              url: 'https://xmtp.org',
+              mode: 'auto',
+              maxChars: 1200
+            }
+    };
+  }
+
+  function buildDefaultTextReply(inboundText = '') {
+    const text = normalizeText(inboundText);
+    const lowered = text.toLowerCase();
+    const profile = getRuntimeAgentProfile();
+    const capabilityLine = profile.capabilities.length
+      ? `能力: ${profile.capabilities.join(', ')}`
+      : '能力: 未声明';
+    const addressLine = state.address ? `地址: ${state.address}` : '';
+
+    if (!text) {
+      return `${profile.name} 在线。\n${capabilityLine}\n发送 help 查看可用指令。`;
+    }
+
+    if (/(^|\s)(help|功能|能力|怎么用|使用说明|示例)(\s|$)/i.test(text)) {
+      const sample = JSON.stringify(buildTaskEnvelopeTemplate(profile));
+      return `${profile.name} 在线。\n${capabilityLine}\n发送 task-envelope JSON 可触发 task-result。\n示例: ${sample}`;
+    }
+
+    if (/(^|\s)(hi|hello|hey|你好|在吗|哈喽|嗨)(\s|$)/i.test(text)) {
+      return `${profile.name} 收到。\n${capabilityLine}\n发送 help 获取 JSON 模板。`;
+    }
+
+    if (/(status|状态|在线|running)/i.test(lowered)) {
+      return `${profile.name} 运行正常。\n${capabilityLine}${addressLine ? `\n${addressLine}` : ''}`;
+    }
+
+    if (/(price|报价|多少钱|费用|协商|支付|x402)/i.test(lowered)) {
+      return `${profile.name} 已收到价格/支付问题。\n请发送 task-envelope JSON，我会返回结构化 task-result（含 payment/receiptRef）。`;
+    }
+
+    return `${profile.name} 已收到: "${text.slice(0, 120)}"\n如需执行任务，请发送 task-envelope JSON。\n输入 help 查看模板。`;
+  }
+
+  async function buildAutoTextReplyPayload({ text = '', parsed = null, context = {} } = {}) {
+    const kind = normalizeText(parsed?.kind || '').toLowerCase();
+    if (isTaskProtocolKind(kind)) return '';
+
+    if (handleTextMessage) {
+      try {
+        const handled = await handleTextMessage({
+          text,
+          parsed,
+          runtime: {
+            runtimeName,
+            agentId: state.agentId || defaultAgentId,
+            address: state.address,
+            env: state.env
+          },
+          context
+        });
+        if (handled === null || handled === false) return '';
+        if (typeof handled === 'string') return normalizeText(handled);
+        if (handled && typeof handled === 'object') {
+          return normalizeText(handled.reply || handled.text || handled.message || '');
+        }
+      } catch (error) {
+        appendEvent({
+          direction: 'internal',
+          event: 'text_handler_error',
+          error: normalizeText(error?.message || 'text_handler_failed')
+        });
+      }
+    }
+
+    return buildDefaultTextReply(text);
   }
 
   async function buildAutoTaskResultPayload(taskEnvelope = {}, runtimeContext = {}) {
@@ -596,38 +729,75 @@ export function createXmtpAgentRuntime(options = {}) {
         parsed &&
         normalizeText(parsed?.kind || '').toLowerCase() === 'task-envelope' &&
         !isAckPayload(parsed);
-      if (!shouldAutoReply) return;
+      if (shouldAutoReply) {
+        const resultPayload = await buildAutoTaskResultPayload(parsed, {
+          conversationId,
+          messageId,
+          senderInboxId: normalizeText(message?.senderInboxId || ''),
+          senderAddress,
+          text
+        });
+        const resultText = JSON.stringify(resultPayload);
+        const resultMessageId =
+          typeof ctx?.conversation?.sendText === 'function'
+            ? await ctx.conversation.sendText(resultText)
+            : await ctx.conversation.send(resultText);
+        state.sentOutbound += 1;
+        state.autoAckCount += 1;
+        appendEvent({
+          direction: 'outbound',
+          event: 'auto_task_result_sent',
+          conversationId,
+          messageId: normalizeText(resultMessageId),
+          toAddress: senderAddress,
+          fromAgentId: state.agentId || defaultAgentId,
+          toAgentId: fromAgentId,
+          kind: 'task-result',
+          channel,
+          hopIndex: Number.isFinite(Number(resultPayload.hopIndex)) ? Number(resultPayload.hopIndex) : null,
+          taskId,
+          traceId,
+          requestId,
+          text: resultText,
+          parsed: resultPayload
+        });
+        return;
+      }
 
-      const resultPayload = await buildAutoTaskResultPayload(parsed, {
-        conversationId,
-        messageId,
-        senderInboxId: normalizeText(message?.senderInboxId || ''),
-        senderAddress,
-        text
+      const shouldAutoTextReply = autoAck && !isTaskProtocolKind(kind);
+      if (!shouldAutoTextReply) return;
+      const textReply = await buildAutoTextReplyPayload({
+        text,
+        parsed,
+        context: {
+          conversationId,
+          messageId,
+          senderInboxId: normalizeText(message?.senderInboxId || ''),
+          senderAddress
+        }
       });
-      const resultText = JSON.stringify(resultPayload);
-      const resultMessageId =
+      if (!textReply) return;
+
+      const textReplyMessageId =
         typeof ctx?.conversation?.sendText === 'function'
-          ? await ctx.conversation.sendText(resultText)
-          : await ctx.conversation.send(resultText);
+          ? await ctx.conversation.sendText(textReply)
+          : await ctx.conversation.send(textReply);
       state.sentOutbound += 1;
-      state.autoAckCount += 1;
+      state.autoTextReplyCount += 1;
       appendEvent({
         direction: 'outbound',
-        event: 'auto_task_result_sent',
+        event: 'auto_text_reply_sent',
         conversationId,
-        messageId: normalizeText(resultMessageId),
+        messageId: normalizeText(textReplyMessageId),
         toAddress: senderAddress,
         fromAgentId: state.agentId || defaultAgentId,
         toAgentId: fromAgentId,
-        kind: 'task-result',
+        kind: 'text-reply',
         channel,
-        hopIndex: Number.isFinite(Number(resultPayload.hopIndex)) ? Number(resultPayload.hopIndex) : null,
         taskId,
         traceId,
         requestId,
-        text: resultText,
-        parsed: resultPayload
+        text: textReply
       });
     } catch (error) {
       state.lastError = normalizeText(error?.message || 'xmtp_incoming_handler_failed');
