@@ -40,6 +40,8 @@ const X402_REACTIVE_PRICE = process.env.X402_REACTIVE_PRICE || '0.03';
 const X402_BTC_PRICE = process.env.X402_BTC_PRICE || '0.00001';
 const X402_RISK_SCORE_PRICE = process.env.X402_RISK_SCORE_PRICE || '0.00002';
 const X402_X_READER_PRICE = process.env.X402_X_READER_PRICE || '0.00001';
+const X402_TECHNICAL_PRICE = process.env.X402_TECHNICAL_PRICE || X402_RISK_SCORE_PRICE;
+const X402_INFO_PRICE = process.env.X402_INFO_PRICE || X402_X_READER_PRICE;
 const X402_HYPERLIQUID_ORDER_PRICE = process.env.X402_HYPERLIQUID_ORDER_PRICE || '0.00002';
 const HYPERLIQUID_ORDER_RECIPIENT = normalizeAddress(
   String(process.env.X402_HYPERLIQUID_ORDER_RECIPIENT || process.env.HYPERLIQUID_ORDER_RECIPIENT || MERCHANT_ADDRESS).trim()
@@ -1281,8 +1283,30 @@ function getServiceProviderBytes32(action) {
     }
     return ethers.encodeBytes32String('kol-score');
   }
+  if (normalized === 'technical-analysis-feed') {
+    const alias = String(
+      process.env.KITE_TECHNICAL_SERVICE_PROVIDER_ALIAS || process.env.KITE_RISK_SERVICE_PROVIDER_ALIAS || 'kol-score'
+    )
+      .trim()
+      .toLowerCase();
+    if (alias === 'reactive-stop-orders') {
+      return ethers.encodeBytes32String('reactive-stop-orders');
+    }
+    return ethers.encodeBytes32String('kol-score');
+  }
   if (normalized === 'x-reader-feed') {
     const alias = String(process.env.KITE_XREADER_SERVICE_PROVIDER_ALIAS || 'kol-score')
+      .trim()
+      .toLowerCase();
+    if (alias === 'reactive-stop-orders') {
+      return ethers.encodeBytes32String('reactive-stop-orders');
+    }
+    return ethers.encodeBytes32String('kol-score');
+  }
+  if (normalized === 'info-analysis-feed') {
+    const alias = String(
+      process.env.KITE_INFO_SERVICE_PROVIDER_ALIAS || process.env.KITE_XREADER_SERVICE_PROVIDER_ALIAS || 'kol-score'
+    )
       .trim()
       .toLowerCase();
     if (alias === 'reactive-stop-orders') {
@@ -1316,7 +1340,12 @@ function normalizeAddresses(input) {
 }
 
 function getCoreAllowedRecipients() {
-  return normalizeRecipients([MERCHANT_ADDRESS, KITE_AGENT2_AA_ADDRESS]);
+  return normalizeRecipients([
+    MERCHANT_ADDRESS,
+    KITE_AGENT2_AA_ADDRESS,
+    resolveTechnicalSettlementRecipient(),
+    resolveInfoSettlementRecipient()
+  ]);
 }
 
 function mergeAllowedRecipients(addresses = []) {
@@ -1795,6 +1824,26 @@ function buildPaymentRequiredResponse(reqItem, reason = '') {
   };
 }
 
+function isTechnicalAnalysisAction(actionRaw = '') {
+  const action = String(actionRaw || '').trim().toLowerCase();
+  return action === 'technical-analysis-feed' || action === 'risk-score-feed';
+}
+
+function isInfoAnalysisAction(actionRaw = '') {
+  const action = String(actionRaw || '').trim().toLowerCase();
+  return action === 'info-analysis-feed' || action === 'x-reader-feed';
+}
+
+function resolveTechnicalSettlementRecipient() {
+  const candidate = normalizeAddress(XMTP_RISK_AGENT_AA_ADDRESS || KITE_AGENT2_AA_ADDRESS || '');
+  return ethers.isAddress(candidate) ? candidate : normalizeAddress(KITE_AGENT2_AA_ADDRESS || '');
+}
+
+function resolveInfoSettlementRecipient() {
+  const candidate = normalizeAddress(XMTP_READER_AGENT_AA_ADDRESS || KITE_AGENT2_AA_ADDRESS || '');
+  return ethers.isAddress(candidate) ? candidate : normalizeAddress(KITE_AGENT2_AA_ADDRESS || '');
+}
+
 function getActionConfig(actionRaw = '') {
   const action = String(actionRaw || 'kol-score').trim().toLowerCase();
   if (action === 'kol-score') {
@@ -1821,20 +1870,26 @@ function getActionConfig(actionRaw = '') {
       summary: 'BTC price quote unlocked by x402 payment'
     };
   }
-  if (action === 'risk-score-feed') {
+  if (isTechnicalAnalysisAction(action)) {
     return {
-      action: 'risk-score-feed',
-      amount: X402_RISK_SCORE_PRICE,
-      recipient: KITE_AGENT2_AA_ADDRESS,
-      summary: 'BTC risk score unlocked by x402 payment'
+      action: action === 'technical-analysis-feed' ? 'technical-analysis-feed' : 'risk-score-feed',
+      amount: action === 'technical-analysis-feed' ? X402_TECHNICAL_PRICE : X402_RISK_SCORE_PRICE,
+      recipient: resolveTechnicalSettlementRecipient(),
+      summary:
+        action === 'technical-analysis-feed'
+          ? 'Technical analysis unlocked by x402 payment'
+          : 'BTC risk score unlocked by x402 payment'
     };
   }
-  if (action === 'x-reader-feed') {
+  if (isInfoAnalysisAction(action)) {
     return {
-      action: 'x-reader-feed',
-      amount: X402_X_READER_PRICE,
-      recipient: KITE_AGENT2_AA_ADDRESS,
-      summary: 'x-reader digest unlocked by x402 payment'
+      action: action === 'info-analysis-feed' ? 'info-analysis-feed' : 'x-reader-feed',
+      amount: action === 'info-analysis-feed' ? X402_INFO_PRICE : X402_X_READER_PRICE,
+      recipient: resolveInfoSettlementRecipient(),
+      summary:
+        action === 'info-analysis-feed'
+          ? 'Info analysis unlocked by x402 payment'
+          : 'x-reader digest unlocked by x402 payment'
     };
   }
   if (action === 'hyperliquid-order-testnet') {
@@ -2541,9 +2596,18 @@ function createServiceId() {
 
 function normalizeServiceAction(actionRaw = '') {
   const action = String(actionRaw || 'btc-price-feed').trim().toLowerCase();
-  if (!['btc-price-feed', 'risk-score-feed', 'x-reader-feed', 'hyperliquid-order-testnet'].includes(action)) {
+  if (
+    ![
+      'btc-price-feed',
+      'risk-score-feed',
+      'technical-analysis-feed',
+      'x-reader-feed',
+      'info-analysis-feed',
+      'hyperliquid-order-testnet'
+    ].includes(action)
+  ) {
     throw new Error(
-      'Supported service actions: btc-price-feed, risk-score-feed, x-reader-feed, hyperliquid-order-testnet.'
+      'Supported service actions: btc-price-feed, risk-score-feed, technical-analysis-feed, x-reader-feed, info-analysis-feed, hyperliquid-order-testnet.'
     );
   }
   return action;
@@ -2566,17 +2630,17 @@ function normalizeStringList(input, { lower = false, dedup = true } = {}) {
 function sanitizeServiceRecord(input = {}, existing = null) {
   const now = new Date().toISOString();
   const action = normalizeServiceAction(input.action || existing?.action || 'btc-price-feed');
-  const isRisk = action === 'risk-score-feed';
-  const isXReader = action === 'x-reader-feed';
+  const isTechnical = isTechnicalAnalysisAction(action);
+  const isInfo = isInfoAnalysisAction(action);
   const isHyperliquidOrder = action === 'hyperliquid-order-testnet';
   const normalizedTask =
-    isRisk
+    isTechnical
       ? normalizeRiskScoreParams({
           symbol: input.pair || input.symbol || existing?.pair || 'BTCUSDT',
           source: input.source || existing?.source || 'hyperliquid',
           horizonMin: input.horizonMin ?? existing?.horizonMin ?? 60
         })
-      : isXReader
+      : isInfo
         ? normalizeXReaderParams({
             url:
               input.resourceUrl ||
@@ -2600,7 +2664,14 @@ function sanitizeServiceRecord(input = {}, existing = null) {
             pair: input.pair || existing?.pair || 'BTCUSDT',
             source: input.source || existing?.source || 'hyperliquid'
           });
-  const recipient = normalizeAddress(input.recipient || existing?.recipient || KITE_AGENT2_AA_ADDRESS);
+  const fallbackRecipient = isTechnical
+    ? resolveTechnicalSettlementRecipient()
+    : isInfo
+      ? resolveInfoSettlementRecipient()
+      : isHyperliquidOrder
+        ? normalizeAddress(HYPERLIQUID_ORDER_RECIPIENT || MERCHANT_ADDRESS)
+        : normalizeAddress(KITE_AGENT2_AA_ADDRESS);
+  const recipient = normalizeAddress(input.recipient || existing?.recipient || fallbackRecipient);
   if (!recipient || !ethers.isAddress(recipient)) {
     throw new Error('service recipient must be a valid address');
   }
@@ -2614,15 +2685,27 @@ function sanitizeServiceRecord(input = {}, existing = null) {
   }
   const name =
     String(input.name || existing?.name || '').trim() ||
-    (isXReader
-      ? 'X Reader Digest Service'
+    (isInfo
+      ? action === 'info-analysis-feed'
+        ? 'Message Info Analysis Service'
+        : 'X Reader Digest Service'
+      : isTechnical
+        ? action === 'technical-analysis-feed'
+          ? 'Technical Analysis Service'
+          : 'BTC Risk Score Service'
       : isHyperliquidOrder
         ? 'Hyperliquid Testnet Order Service'
         : 'BTCUSD Quote Service');
   const description =
     String(input.description || existing?.description || '').trim() ||
-    (isXReader
-      ? 'Pay-per-call URL digest powered by x-reader + x402.'
+    (isInfo
+      ? action === 'info-analysis-feed'
+        ? 'Pay-per-call message-side info analysis via OpenAlice + x402.'
+        : 'Pay-per-call URL digest powered by x-reader + x402.'
+      : isTechnical
+        ? action === 'technical-analysis-feed'
+          ? 'Pay-per-call technical analysis via risk agent + x402.'
+          : 'Pay-per-call risk score analysis via x402.'
       : isHyperliquidOrder
         ? 'Pay-per-call Hyperliquid testnet order execution via x402.'
         : 'Pay-per-call BTCUSD quote service.');
@@ -2630,8 +2713,14 @@ function sanitizeServiceRecord(input = {}, existing = null) {
   const tags = normalizeStringList(
     input.tags ||
       existing?.tags ||
-      (isXReader
-        ? ['atapi', 'x402', 'x-reader']
+      (isInfo
+        ? action === 'info-analysis-feed'
+          ? ['a2a', 'x402', 'message', 'info-analysis']
+          : ['atapi', 'x402', 'x-reader']
+        : isTechnical
+          ? action === 'technical-analysis-feed'
+            ? ['a2a', 'x402', 'technical-analysis']
+            : ['a2a', 'x402', 'risk']
         : isHyperliquidOrder
           ? ['atapi', 'x402', 'hyperliquid', 'order']
           : ['atapi', 'x402', action]),
@@ -2646,10 +2735,14 @@ function sanitizeServiceRecord(input = {}, existing = null) {
       ? input.exampleInput
         : existing?.exampleInput && typeof existing.exampleInput === 'object'
         ? existing.exampleInput
-        : isRisk
-          ? { symbol: 'BTCUSDT', horizonMin: 60, source: 'hyperliquid' }
-          : isXReader
-            ? { url: 'https://x.com/Kite_AI', mode: 'auto', maxChars: X_READER_MAX_CHARS_DEFAULT }
+        : isTechnical
+          ? action === 'technical-analysis-feed'
+            ? { symbol: 'BTCUSDT', horizonMin: 60, source: 'hyperliquid', perspective: 'technical' }
+            : { symbol: 'BTCUSDT', horizonMin: 60, source: 'hyperliquid' }
+          : isInfo
+            ? action === 'info-analysis-feed'
+              ? { topic: 'BTC market sentiment today', mode: 'openalice', maxChars: X_READER_MAX_CHARS_DEFAULT }
+              : { url: 'https://x.com/Kite_AI', mode: 'auto', maxChars: X_READER_MAX_CHARS_DEFAULT }
             : isHyperliquidOrder
               ? { symbol: 'BTCUSDT', side: 'buy', orderType: 'limit', tif: 'Gtc', size: 0.001 }
               : { pair: 'BTCUSDT', source: 'hyperliquid' };
@@ -2728,10 +2821,34 @@ function createDefaultServiceCatalog() {
       sourceRequested: 'hyperliquid',
       horizonMin: 60,
       providerAgentId: '3',
-      recipient: normalizeAddress(KITE_AGENT2_AA_ADDRESS),
+      recipient: resolveTechnicalSettlementRecipient(),
       tokenAddress: normalizeAddress(SETTLEMENT_TOKEN),
       price: String(Number(Number(X402_RISK_SCORE_PRICE || '0.00002').toFixed(6))),
       tags: ['a2a', 'x402', 'risk'],
+      slaMs: 15000,
+      rateLimitPerMinute: 10,
+      budgetPerDay: 0.08,
+      allowlistPayers: [],
+      exampleInput: { symbol: 'BTCUSDT', horizonMin: 60, source: 'hyperliquid' },
+      active: true,
+      createdAt: now,
+      updatedAt: now,
+      publishedBy: 'system'
+    },
+    {
+      id: 'svc_technical_analysis',
+      name: 'Technical Analysis (A2A)',
+      description: 'Agent-to-agent technical analysis feed with strict x402 settlement evidence.',
+      action: 'technical-analysis-feed',
+      pair: 'BTCUSDT',
+      source: 'hyperliquid',
+      sourceRequested: 'hyperliquid',
+      horizonMin: 60,
+      providerAgentId: 'technical-agent',
+      recipient: resolveTechnicalSettlementRecipient(),
+      tokenAddress: normalizeAddress(SETTLEMENT_TOKEN),
+      price: String(Number(Number(X402_TECHNICAL_PRICE || X402_RISK_SCORE_PRICE || '0.00002').toFixed(6))),
+      tags: ['a2a', 'x402', 'technical-analysis'],
       slaMs: 15000,
       rateLimitPerMinute: 10,
       budgetPerDay: 0.08,
@@ -2753,7 +2870,7 @@ function createDefaultServiceCatalog() {
       resourceUrl: 'https://x.com/Kite_AI',
       maxChars: X_READER_MAX_CHARS_DEFAULT,
       providerAgentId: String(KITE_AGENT2_ID).trim(),
-      recipient: normalizeAddress(KITE_AGENT2_AA_ADDRESS),
+      recipient: resolveInfoSettlementRecipient(),
       tokenAddress: normalizeAddress(SETTLEMENT_TOKEN),
       price: String(Number(Number(X402_X_READER_PRICE || '0.00001').toFixed(6))),
       tags: ['atapi', 'x402', 'x-reader', 'digest'],
@@ -2762,6 +2879,31 @@ function createDefaultServiceCatalog() {
       budgetPerDay: 0.05,
       allowlistPayers: [],
       exampleInput: { url: 'https://x.com/Kite_AI', mode: 'auto', maxChars: X_READER_MAX_CHARS_DEFAULT },
+      active: true,
+      createdAt: now,
+      updatedAt: now,
+      publishedBy: 'system'
+    },
+    {
+      id: 'svc_info_analysis',
+      name: 'Message Info Analysis (A2A)',
+      description: 'Agent-to-agent message-side info analysis via OpenAlice + x402 payment.',
+      action: 'info-analysis-feed',
+      pair: '',
+      source: 'openalice',
+      sourceRequested: 'openalice',
+      resourceUrl: '',
+      maxChars: X_READER_MAX_CHARS_DEFAULT,
+      providerAgentId: 'message-agent',
+      recipient: resolveInfoSettlementRecipient(),
+      tokenAddress: normalizeAddress(SETTLEMENT_TOKEN),
+      price: String(Number(Number(X402_INFO_PRICE || X402_X_READER_PRICE || '0.00001').toFixed(6))),
+      tags: ['a2a', 'x402', 'message', 'info-analysis'],
+      slaMs: 15000,
+      rateLimitPerMinute: 8,
+      budgetPerDay: 0.05,
+      allowlistPayers: [],
+      exampleInput: { topic: 'BTC market sentiment today', mode: 'openalice', maxChars: X_READER_MAX_CHARS_DEFAULT },
       active: true,
       createdAt: now,
       updatedAt: now,
@@ -2826,10 +2968,10 @@ function ensureServiceCatalog() {
 function mapCapabilityToServiceActions(capability = '') {
   const normalized = String(capability || '').trim().toLowerCase();
   if (['technical-analysis-feed', 'risk-score-feed', 'volatility-snapshot'].includes(normalized)) {
-    return ['risk-score-feed'];
+    return ['technical-analysis-feed', 'risk-score-feed'];
   }
   if (['info-analysis-feed', 'x-reader-feed', 'url-digest'].includes(normalized)) {
-    return ['x-reader-feed'];
+    return ['info-analysis-feed', 'x-reader-feed'];
   }
   if (['btc-price-feed', 'market-quote'].includes(normalized)) {
     return ['btc-price-feed'];
@@ -4185,6 +4327,7 @@ async function buildAgent001StrictPaymentPlan({
         bindRealX402: true,
         strictBinding: true,
         prebindOnly: true,
+        action: 'technical-analysis-feed',
         payer,
         sourceAgentId: 'router-agent',
         targetAgentId: targetAgentId || 'technical-agent'
@@ -4211,6 +4354,7 @@ async function buildAgent001StrictPaymentPlan({
         bindRealX402: true,
         strictBinding: true,
         prebindOnly: true,
+        action: 'info-analysis-feed',
         payer,
         sourceAgentId: 'router-agent',
         targetAgentId: targetAgentId || 'message-agent'
@@ -6007,7 +6151,17 @@ function buildA2ACapabilities() {
           source: 'hyperliquid (fallback: binance, okx)'
         },
         price: X402_RISK_SCORE_PRICE,
-        recipient: KITE_AGENT2_AA_ADDRESS
+        recipient: resolveTechnicalSettlementRecipient()
+      },
+      {
+        id: 'technical-analysis-feed',
+        input: {
+          symbol: 'string (BTC/BTCUSDT/BTCUSD)',
+          horizonMin: 'number 5-240',
+          source: 'hyperliquid (fallback: binance, okx)'
+        },
+        price: X402_TECHNICAL_PRICE,
+        recipient: resolveTechnicalSettlementRecipient()
       },
       {
         id: 'x-reader-feed',
@@ -6017,7 +6171,17 @@ function buildA2ACapabilities() {
           maxChars: 'number 200-8000'
         },
         price: X402_X_READER_PRICE,
-        recipient: KITE_AGENT2_AA_ADDRESS
+        recipient: resolveInfoSettlementRecipient()
+      },
+      {
+        id: 'info-analysis-feed',
+        input: {
+          topic: 'string (keyword/topic text) OR url',
+          mode: 'openalice/auto',
+          maxChars: 'number 200-8000'
+        },
+        price: X402_INFO_PRICE,
+        recipient: resolveInfoSettlementRecipient()
       },
       {
         id: 'reactive-stop-orders',
@@ -8054,6 +8218,9 @@ app.post('/api/workflow/risk-score/run', requireRole('agent'), async (req, res) 
   const sourceAgentId = String(req.body?.sourceAgentId || KITE_AGENT1_ID).trim();
   const targetAgentId = String(req.body?.targetAgentId || KITE_AGENT2_ID).trim();
   const prebindOnly = parseBooleanFlag(req.body?.prebindOnly, false);
+  const requestedAction = String(req.body?.action || 'risk-score-feed').trim().toLowerCase();
+  const workflowAction = requestedAction === 'technical-analysis-feed' ? 'technical-analysis-feed' : 'risk-score-feed';
+  const workflowActionCfg = getActionConfig(workflowAction) || getActionConfig('risk-score-feed');
   const traceId = resolveWorkflowTraceId(req.body?.traceId);
   const runtime = readSessionRuntime();
   const payer = normalizeAddress(req.body?.payer || runtime.aaWallet || '');
@@ -8081,6 +8248,7 @@ app.post('/api/workflow/risk-score/run', requireRole('agent'), async (req, res) 
       sourceAgentId,
       targetAgentId,
       traceId,
+      action: workflowAction,
       task: normalizedTask
     });
     if (challengeResult.status !== 402) {
@@ -8121,7 +8289,7 @@ app.post('/api/workflow/risk-score/run', requireRole('agent'), async (req, res) 
           recipient: accept.recipient,
           amount: accept.amount,
           requestId,
-          action: 'risk-score-feed',
+          action: workflowAction,
           query: `A2A risk-score ${normalizedTask.symbol} horizon=${normalizedTask.horizonMin} source=${normalizedTask.source}`
         },
         { maxAttempts: 3, timeoutMs: 210_000 }
@@ -8153,6 +8321,7 @@ app.post('/api/workflow/risk-score/run', requireRole('agent'), async (req, res) 
       sourceAgentId,
       targetAgentId,
       traceId,
+      action: workflowAction,
       prebindOnly,
       requestId,
       paymentProof: {
@@ -8226,17 +8395,17 @@ app.post('/api/workflow/risk-score/run', requireRole('agent'), async (req, res) 
               {
                 requestId: workflow.requestId,
                 status: 'pending',
-                action: 'risk-score-feed',
+                action: workflowAction,
                 query: `A2A risk-score ${workflow?.input?.symbol || 'BTCUSDT'} horizon=${workflow?.input?.horizonMin || 60}`.trim(),
                 payer: workflow.payer || '',
-                amount: String(X402_RISK_SCORE_PRICE || ''),
+                amount: String(workflowActionCfg?.amount || X402_RISK_SCORE_PRICE || ''),
                 tokenAddress: SETTLEMENT_TOKEN,
-                recipient: KITE_AGENT2_AA_ADDRESS,
+                recipient: String(workflowActionCfg?.recipient || resolveTechnicalSettlementRecipient()).trim(),
                 paymentTxHash: workflow.txHash || '',
                 a2a: {
                   sourceAgentId: workflow.sourceAgentId,
                   targetAgentId: workflow.targetAgentId,
-                  taskType: 'risk-score-feed',
+                  taskType: workflowAction,
                   traceId
                 }
               },
@@ -8268,6 +8437,9 @@ app.post('/api/workflow/x-reader/run', requireRole('agent'), async (req, res) =>
   const sourceAgentId = String(req.body?.sourceAgentId || KITE_AGENT1_ID).trim();
   const targetAgentId = String(req.body?.targetAgentId || KITE_AGENT2_ID).trim();
   const prebindOnly = parseBooleanFlag(req.body?.prebindOnly, false);
+  const requestedAction = String(req.body?.action || 'x-reader-feed').trim().toLowerCase();
+  const workflowAction = requestedAction === 'info-analysis-feed' ? 'info-analysis-feed' : 'x-reader-feed';
+  const workflowActionCfg = getActionConfig(workflowAction) || getActionConfig('x-reader-feed');
   const traceId = resolveWorkflowTraceId(req.body?.traceId);
   const runtime = readSessionRuntime();
   const payer = normalizeAddress(req.body?.payer || runtime.aaWallet || '');
@@ -8295,6 +8467,7 @@ app.post('/api/workflow/x-reader/run', requireRole('agent'), async (req, res) =>
       sourceAgentId,
       targetAgentId,
       traceId,
+      action: workflowAction,
       task: normalizedTask
     });
     if (challengeResult.status !== 402) {
@@ -8334,7 +8507,7 @@ app.post('/api/workflow/x-reader/run', requireRole('agent'), async (req, res) =>
           recipient: accept.recipient,
           amount: accept.amount,
           requestId,
-          action: 'x-reader-feed',
+          action: workflowAction,
           query: `ATAPI x-reader ${normalizedTask.url}`
         },
         { maxAttempts: 3, timeoutMs: 210_000 }
@@ -8365,6 +8538,7 @@ app.post('/api/workflow/x-reader/run', requireRole('agent'), async (req, res) =>
       sourceAgentId,
       targetAgentId,
       traceId,
+      action: workflowAction,
       prebindOnly,
       requestId,
       paymentProof: {
@@ -8436,17 +8610,17 @@ app.post('/api/workflow/x-reader/run', requireRole('agent'), async (req, res) =>
               {
                 requestId: workflow.requestId,
                 status: 'pending',
-                action: 'x-reader-feed',
+                action: workflowAction,
                 query: `ATAPI x-reader ${workflow?.input?.url || ''}`.trim(),
                 payer: workflow.payer || '',
-                amount: String(X402_X_READER_PRICE || ''),
+                amount: String(workflowActionCfg?.amount || X402_X_READER_PRICE || ''),
                 tokenAddress: SETTLEMENT_TOKEN,
-                recipient: KITE_AGENT2_AA_ADDRESS,
+                recipient: String(workflowActionCfg?.recipient || resolveInfoSettlementRecipient()).trim(),
                 paymentTxHash: workflow.txHash || '',
                 a2a: {
                   sourceAgentId: workflow.sourceAgentId,
                   targetAgentId: workflow.targetAgentId,
-                  taskType: 'x-reader-feed',
+                  taskType: workflowAction,
                   traceId
                 }
               },
@@ -8844,8 +9018,8 @@ function hasStrictX402Evidence(payment = null) {
 
 function resolveAgent001CapabilityByAction(action = '') {
   const normalized = String(action || '').trim().toLowerCase();
-  if (normalized === 'risk-score-feed') return 'technical-analysis-feed';
-  if (normalized === 'x-reader-feed') return 'info-analysis-feed';
+  if (normalized === 'risk-score-feed' || normalized === 'technical-analysis-feed') return 'technical-analysis-feed';
+  if (normalized === 'x-reader-feed' || normalized === 'info-analysis-feed') return 'info-analysis-feed';
   return '';
 }
 
@@ -9024,6 +9198,10 @@ async function buildRiskScorePaymentIntentForTask({
   const bindRealX402 = parseBooleanFlag(body?.bindRealX402, false);
   const strictBinding = parseBooleanFlag(body?.strictBinding, false);
   const prebindOnly = parseBooleanFlag(body?.prebindOnly, AGENT001_PREBIND_ONLY);
+  const workflowAction =
+    String(body?.action || '').trim().toLowerCase() === 'technical-analysis-feed'
+      ? 'technical-analysis-feed'
+      : 'risk-score-feed';
   const shouldBindRealX402 =
     bindRealX402 ||
     (String(rawIntent?.mode || '').trim().toLowerCase() === 'x402' &&
@@ -9049,6 +9227,7 @@ async function buildRiskScorePaymentIntentForTask({
         payer: normalizeAddress(body?.payer || ''),
         sourceAgentId: String(body?.sourceAgentId || KITE_AGENT1_ID).trim(),
         targetAgentId: String(body?.targetAgentId || KITE_AGENT2_ID).trim(),
+        action: workflowAction,
         prebindOnly
       };
       const { body: result, attempts } = await runAgent001PrebindWorkflowWithRetry({
@@ -9153,6 +9332,10 @@ async function buildXReaderPaymentIntentForTask({
   const bindRealX402 = parseBooleanFlag(body?.bindRealX402, false);
   const strictBinding = parseBooleanFlag(body?.strictBinding, false);
   const prebindOnly = parseBooleanFlag(body?.prebindOnly, AGENT001_PREBIND_ONLY);
+  const workflowAction =
+    String(body?.action || '').trim().toLowerCase() === 'info-analysis-feed'
+      ? 'info-analysis-feed'
+      : 'x-reader-feed';
   const shouldBindRealX402 =
     bindRealX402 ||
     (String(rawIntent?.mode || '').trim().toLowerCase() === 'x402' &&
@@ -9178,6 +9361,7 @@ async function buildXReaderPaymentIntentForTask({
         payer: normalizeAddress(body?.payer || ''),
         sourceAgentId: String(body?.sourceAgentId || KITE_AGENT1_ID).trim(),
         targetAgentId: String(body?.targetAgentId || KITE_AGENT2_ID).trim(),
+        action: workflowAction,
         prebindOnly
       };
       const { body: result, attempts } = await runAgent001PrebindWorkflowWithRetry({
@@ -10036,6 +10220,9 @@ async function handleA2ARiskScore(body = {}) {
   const prebindOnly = parseBooleanFlag(body.prebindOnly, false);
   const taskInput = body.task || {};
   const identityInput = body.identity || {};
+  const requestedAction = String(body.action || 'risk-score-feed').trim().toLowerCase();
+  const taskAction = requestedAction === 'technical-analysis-feed' ? 'technical-analysis-feed' : 'risk-score-feed';
+  const serviceLabel = taskAction === 'technical-analysis-feed' ? 'A2A technical analysis' : 'A2A risk score';
 
   let task = null;
   try {
@@ -10050,10 +10237,10 @@ async function handleA2ARiskScore(body = {}) {
     };
   }
 
-  const actionCfg = getActionConfig('risk-score-feed');
+  const actionCfg = getActionConfig(taskAction);
   const actionAmount = String(actionCfg?.amount || X402_RISK_SCORE_PRICE || '0.00002');
   const requests = readX402Requests();
-  const a2aQuery = `A2A risk-score ${task.symbol} horizon=${task.horizonMin} source=${task.source}`;
+  const a2aQuery = `${serviceLabel} ${task.symbol} horizon=${task.horizonMin} source=${task.source}`;
 
   if (!requestId || !paymentProof) {
     let identityVerification = null;
@@ -10080,7 +10267,7 @@ async function handleA2ARiskScore(body = {}) {
     });
     if (!policyResult.ok) {
       logPolicyFailure({
-        action: 'a2a-risk-score-feed',
+        action: `a2a-${taskAction}`,
         payer,
         recipient: actionCfg.recipient,
         amount: actionAmount,
@@ -10112,7 +10299,7 @@ async function handleA2ARiskScore(body = {}) {
     reqItem.a2a = {
       sourceAgentId,
       targetAgentId,
-      taskType: 'risk-score-feed',
+      taskType: taskAction,
       traceId
     };
     requests.unshift(reqItem);
@@ -10131,7 +10318,7 @@ async function handleA2ARiskScore(body = {}) {
           protocol: 'x402-a2a-v1',
           sourceAgentId,
           targetAgentId,
-          taskType: 'risk-score-feed',
+          taskType: taskAction,
           task,
           identity: identityVerification?.identity || null
         },
@@ -10171,7 +10358,7 @@ async function handleA2ARiskScore(body = {}) {
           reused: true,
           prebindOnly: true,
           result: {
-            summary: reqItem?.result?.summary || 'A2A risk score payment settled (prebind-only)',
+            summary: reqItem?.result?.summary || `${serviceLabel} payment settled (prebind-only)`,
             prebindOnly: true
           },
           a2a: reqItem.a2a || null,
@@ -10179,10 +10366,10 @@ async function handleA2ARiskScore(body = {}) {
             traceId,
             sourceAgentId,
             targetAgentId,
-            capability: 'risk-score-feed',
+            capability: taskAction,
             phase: 'settled',
             state: 'success',
-            summary: reqItem?.result?.summary || 'A2A risk score payment settled (prebind-only)'
+            summary: reqItem?.result?.summary || `${serviceLabel} payment settled (prebind-only)`
           })
         }
       };
@@ -10196,7 +10383,7 @@ async function handleA2ARiskScore(body = {}) {
       try {
         const computed = await runRiskScoreAnalysis(reqItem.actionParams || task);
         riskResult = {
-          summary: `A2A risk score unlocked by x402 payment: ${computed.summary}`,
+          summary: `${serviceLabel} unlocked by x402 payment: ${computed.summary}`,
           ...computed
         };
         reqItem.result = riskResult;
@@ -10212,16 +10399,16 @@ async function handleA2ARiskScore(body = {}) {
         mode: 'x402',
         requestId: reqItem.requestId,
         reused: true,
-        result: riskResult || { summary: 'A2A risk score already unlocked' },
+        result: riskResult || { summary: `${serviceLabel} already unlocked` },
         a2a: reqItem.a2a || null,
         receipt: buildA2AReceipt(reqItem, null, {
           traceId,
           sourceAgentId,
           targetAgentId,
-          capability: 'risk-score-feed',
+          capability: taskAction,
           phase: 'settled',
           state: 'success',
-          summary: reqItem?.result?.summary || 'A2A risk score already unlocked'
+          summary: reqItem?.result?.summary || `${serviceLabel} already unlocked`
         })
       }
     };
@@ -10263,18 +10450,18 @@ async function handleA2ARiskScore(body = {}) {
     ...(reqItem.a2a || {}),
     sourceAgentId: String(reqItem?.a2a?.sourceAgentId || sourceAgentId).trim(),
     targetAgentId: String(reqItem?.a2a?.targetAgentId || targetAgentId).trim(),
-    taskType: String(reqItem?.a2a?.taskType || 'risk-score-feed').trim(),
+    taskType: String(reqItem?.a2a?.taskType || taskAction).trim(),
     traceId: String(reqItem?.a2a?.traceId || traceId).trim()
   };
   if (prebindOnly) {
     reqItem.result = {
-      summary: 'A2A risk score payment settled (prebind-only)',
+      summary: `${serviceLabel} payment settled (prebind-only)`,
       prebindOnly: true
     };
   } else {
     const riskResult = await runRiskScoreAnalysis(reqItem.actionParams || task);
     reqItem.result = {
-      summary: `A2A risk score unlocked by x402 payment: ${riskResult.summary}`,
+      summary: `${serviceLabel} unlocked by x402 payment: ${riskResult.summary}`,
       ...riskResult
     };
   }
@@ -10284,7 +10471,7 @@ async function handleA2ARiskScore(body = {}) {
     traceId: reqItem?.a2a?.traceId || traceId,
     sourceAgentId,
     targetAgentId,
-    capability: 'risk-score-feed',
+    capability: taskAction,
     phase: 'settled',
     state: 'success',
     summary: reqItem?.result?.summary || riskResult.summary
@@ -10306,7 +10493,7 @@ async function handleA2ARiskScore(body = {}) {
       a2a: reqItem.a2a || {
         sourceAgentId,
         targetAgentId,
-        taskType: 'risk-score-feed'
+        taskType: taskAction
       },
       receipt
     }
@@ -10323,6 +10510,9 @@ async function handleA2AXReader(body = {}) {
   const prebindOnly = parseBooleanFlag(body.prebindOnly, false);
   const taskInput = body.task || {};
   const identityInput = body.identity || {};
+  const requestedAction = String(body.action || 'x-reader-feed').trim().toLowerCase();
+  const taskAction = requestedAction === 'info-analysis-feed' ? 'info-analysis-feed' : 'x-reader-feed';
+  const serviceLabel = taskAction === 'info-analysis-feed' ? 'A2A info analysis' : 'ATAPI x-reader';
 
   let task = null;
   try {
@@ -10348,10 +10538,10 @@ async function handleA2AXReader(body = {}) {
     };
   }
 
-  const actionCfg = getActionConfig('x-reader-feed');
+  const actionCfg = getActionConfig(taskAction);
   const actionAmount = String(actionCfg?.amount || X402_X_READER_PRICE || '0.00001');
   const requests = readX402Requests();
-  const a2aQuery = `ATAPI x-reader ${task.url}`;
+  const a2aQuery = `${serviceLabel} ${task.url || task.topic || ''}`.trim();
 
   if (!requestId || !paymentProof) {
     let identityVerification = null;
@@ -10378,7 +10568,7 @@ async function handleA2AXReader(body = {}) {
     });
     if (!policyResult.ok) {
       logPolicyFailure({
-        action: 'a2a-x-reader-feed',
+        action: `a2a-${taskAction}`,
         payer,
         recipient: actionCfg.recipient,
         amount: actionAmount,
@@ -10410,7 +10600,7 @@ async function handleA2AXReader(body = {}) {
     reqItem.a2a = {
       sourceAgentId,
       targetAgentId,
-      taskType: 'x-reader-feed',
+      taskType: taskAction,
       traceId
     };
     requests.unshift(reqItem);
@@ -10429,7 +10619,7 @@ async function handleA2AXReader(body = {}) {
           protocol: 'x402-a2a-v1',
           sourceAgentId,
           targetAgentId,
-          taskType: 'x-reader-feed',
+          taskType: taskAction,
           task,
           identity: identityVerification?.identity || null
         },
@@ -10469,7 +10659,7 @@ async function handleA2AXReader(body = {}) {
           reused: true,
           prebindOnly: true,
           result: {
-            summary: reqItem?.result?.summary || 'ATAPI x-reader payment settled (prebind-only)',
+            summary: reqItem?.result?.summary || `${serviceLabel} payment settled (prebind-only)`,
             prebindOnly: true
           },
           a2a: reqItem.a2a || null,
@@ -10477,10 +10667,10 @@ async function handleA2AXReader(body = {}) {
             traceId,
             sourceAgentId,
             targetAgentId,
-            capability: 'x-reader-feed',
+            capability: taskAction,
             phase: 'settled',
             state: 'success',
-            summary: reqItem?.result?.summary || 'ATAPI x-reader payment settled (prebind-only)'
+            summary: reqItem?.result?.summary || `${serviceLabel} payment settled (prebind-only)`
           })
         }
       };
@@ -10494,7 +10684,7 @@ async function handleA2AXReader(body = {}) {
       try {
         reader = await fetchXReaderDigest(reqItem.actionParams || task);
         reqItem.result = {
-          summary: `ATAPI x-reader digest unlocked by x402 payment: ${reader.title || reader.url || 'x-reader digest'}`,
+          summary: `${serviceLabel} unlocked by x402 payment: ${reader.title || reader.url || task.topic || 'analysis result'}`,
           reader
         };
         writeX402Requests(requests);
@@ -10510,7 +10700,7 @@ async function handleA2AXReader(body = {}) {
         requestId: reqItem.requestId,
         reused: true,
         result: {
-          summary: reqItem?.result?.summary || 'ATAPI x-reader digest already unlocked',
+          summary: reqItem?.result?.summary || `${serviceLabel} already unlocked`,
           reader
         },
         a2a: reqItem.a2a || null,
@@ -10518,10 +10708,10 @@ async function handleA2AXReader(body = {}) {
           traceId,
           sourceAgentId,
           targetAgentId,
-          capability: 'x-reader-feed',
+          capability: taskAction,
           phase: 'settled',
           state: 'success',
-          summary: reqItem?.result?.summary || 'ATAPI x-reader digest already unlocked'
+          summary: reqItem?.result?.summary || `${serviceLabel} already unlocked`
         })
       }
     };
@@ -10563,21 +10753,21 @@ async function handleA2AXReader(body = {}) {
     ...(reqItem.a2a || {}),
     sourceAgentId: String(reqItem?.a2a?.sourceAgentId || sourceAgentId).trim(),
     targetAgentId: String(reqItem?.a2a?.targetAgentId || targetAgentId).trim(),
-    taskType: String(reqItem?.a2a?.taskType || 'x-reader-feed').trim(),
+    taskType: String(reqItem?.a2a?.taskType || taskAction).trim(),
     traceId: String(reqItem?.a2a?.traceId || traceId).trim()
   };
   let summaryTail = 'x-reader digest';
   if (prebindOnly) {
     reqItem.result = {
-      summary: 'ATAPI x-reader payment settled (prebind-only)',
+      summary: `${serviceLabel} payment settled (prebind-only)`,
       prebindOnly: true
     };
-    summaryTail = 'ATAPI x-reader payment settled (prebind-only)';
+    summaryTail = `${serviceLabel} payment settled (prebind-only)`;
   } else {
     const reader = await fetchXReaderDigest(reqItem.actionParams || task);
     summaryTail = reader.title || reader.url || 'x-reader digest';
     reqItem.result = {
-      summary: `ATAPI x-reader digest unlocked by x402 payment: ${summaryTail}`,
+      summary: `${serviceLabel} unlocked by x402 payment: ${summaryTail}`,
       reader
     };
   }
@@ -10587,7 +10777,7 @@ async function handleA2AXReader(body = {}) {
     traceId: reqItem?.a2a?.traceId || traceId,
     sourceAgentId,
     targetAgentId,
-    capability: 'x-reader-feed',
+    capability: taskAction,
     phase: 'settled',
     state: 'success',
     summary: reqItem?.result?.summary || summaryTail
@@ -10609,7 +10799,7 @@ async function handleA2AXReader(body = {}) {
       a2a: reqItem.a2a || {
         sourceAgentId,
         targetAgentId,
-        taskType: 'x-reader-feed'
+        taskType: taskAction
       },
       receipt
     }
@@ -11086,7 +11276,7 @@ app.post('/api/x402/kol-score', requireRole('agent'), async (req, res) => {
       });
     }
   }
-  if (actionCfg.action === 'risk-score-feed') {
+  if (isTechnicalAnalysisAction(actionCfg.action)) {
     try {
       normalizedActionParams = normalizeRiskScoreParams(actionParamsInput || {});
     } catch (error) {
@@ -11096,7 +11286,7 @@ app.post('/api/x402/kol-score', requireRole('agent'), async (req, res) => {
       });
     }
   }
-  if (actionCfg.action === 'x-reader-feed') {
+  if (isInfoAnalysisAction(actionCfg.action)) {
     try {
       normalizedActionParams = normalizeXReaderParams(actionParamsInput || {});
     } catch (error) {
@@ -11212,7 +11402,7 @@ app.post('/api/x402/kol-score', requireRole('agent'), async (req, res) => {
         quote
       };
     }
-    if (reqItem.action === 'risk-score-feed') {
+    if (isTechnicalAnalysisAction(reqItem.action)) {
       let riskResult = reqItem?.result || null;
       if (!riskResult) {
         try {
@@ -11225,7 +11415,7 @@ app.post('/api/x402/kol-score', requireRole('agent'), async (req, res) => {
         summary: 'BTC risk score already unlocked'
       };
     }
-    if (reqItem.action === 'x-reader-feed') {
+    if (isInfoAnalysisAction(reqItem.action)) {
       let reader = reqItem?.result?.reader || null;
       if (!reader) {
         try {
@@ -11301,11 +11491,11 @@ app.post('/api/x402/kol-score', requireRole('agent'), async (req, res) => {
       quote
     };
   }
-  if (reqItem.action === 'risk-score-feed') {
+  if (isTechnicalAnalysisAction(reqItem.action)) {
     const riskResult = await runRiskScoreAnalysis(reqItem.actionParams || {});
     finalResult = riskResult;
   }
-  if (reqItem.action === 'x-reader-feed') {
+  if (isInfoAnalysisAction(reqItem.action)) {
     const reader = await fetchXReaderDigest(reqItem.actionParams || {});
     finalResult = {
       summary: `x-reader digest unlocked by x402 payment: ${reader.title || reader.url}`,
@@ -12056,6 +12246,7 @@ app.post('/api/network/demo/router-info-technical/run', requireRole('agent'), as
 
   const infoBody = {
     ...body,
+    action: String(body?.infoAction || body?.action || 'info-analysis-feed').trim().toLowerCase(),
     input:
       body?.infoInput && typeof body.infoInput === 'object' && !Array.isArray(body.infoInput)
         ? body.infoInput
@@ -12067,6 +12258,7 @@ app.post('/api/network/demo/router-info-technical/run', requireRole('agent'), as
   };
   const technicalBody = {
     ...body,
+    action: String(body?.technicalAction || body?.action || 'technical-analysis-feed').trim().toLowerCase(),
     input:
       body?.technicalInput && typeof body.technicalInput === 'object' && !Array.isArray(body.technicalInput)
         ? body.technicalInput
@@ -13347,11 +13539,19 @@ app.post('/api/services/:serviceId/invoke', requireRole('agent'), async (req, re
     return res.status(409).json({ ok: false, error: 'service_inactive', reason: 'Service is not active.' });
   }
   const action = String(service.action || '').trim().toLowerCase();
-  if (!['btc-price-feed', 'risk-score-feed', 'x-reader-feed', 'hyperliquid-order-testnet'].includes(action)) {
+  const supportedServiceActions = [
+    'btc-price-feed',
+    'risk-score-feed',
+    'technical-analysis-feed',
+    'x-reader-feed',
+    'info-analysis-feed',
+    'hyperliquid-order-testnet'
+  ];
+  if (!supportedServiceActions.includes(action)) {
     return res.status(400).json({
       ok: false,
       error: 'unsupported_service_action',
-      reason: 'Supported action: btc-price-feed, risk-score-feed, x-reader-feed, hyperliquid-order-testnet.'
+      reason: 'Supported action: btc-price-feed, risk-score-feed, technical-analysis-feed, x-reader-feed, info-analysis-feed, hyperliquid-order-testnet.'
     });
   }
 
@@ -13404,8 +13604,10 @@ app.post('/api/services/:serviceId/invoke', requireRole('agent'), async (req, re
     const internalApiKey = getInternalAgentApiKey();
     const headers = { 'Content-Type': 'application/json' };
     if (internalApiKey) headers['x-api-key'] = internalApiKey;
+    const isTechnicalServiceAction = action === 'risk-score-feed' || action === 'technical-analysis-feed';
+    const isInfoServiceAction = action === 'x-reader-feed' || action === 'info-analysis-feed';
     const invokePayload =
-      action === 'risk-score-feed'
+      isTechnicalServiceAction
         ? {
             traceId,
             sourceAgentId,
@@ -13413,16 +13615,19 @@ app.post('/api/services/:serviceId/invoke', requireRole('agent'), async (req, re
             symbol: service.pair || 'BTCUSDT',
             horizonMin: Number(service.horizonMin || 60),
             source: service.source || 'hyperliquid',
+            action,
             payer
           }
-        : action === 'x-reader-feed'
+        : isInfoServiceAction
           ? {
               traceId,
               sourceAgentId,
               targetAgentId,
               url: service.resourceUrl || service.exampleInput?.url || body.url || '',
+              topic: body.topic || service.exampleInput?.topic || '',
               mode: service.source || service.mode || 'auto',
               maxChars: Number(service.maxChars || service.exampleInput?.maxChars || X_READER_MAX_CHARS_DEFAULT),
+              action,
               payer
             }
         : action === 'hyperliquid-order-testnet'
@@ -13453,9 +13658,9 @@ app.post('/api/services/:serviceId/invoke', requireRole('agent'), async (req, re
             payer
           };
     const workflowPath =
-      action === 'risk-score-feed'
+      isTechnicalServiceAction
         ? '/api/workflow/risk-score/run'
-        : action === 'x-reader-feed'
+        : isInfoServiceAction
           ? '/api/workflow/x-reader/run'
           : action === 'hyperliquid-order-testnet'
             ? '/api/workflow/hyperliquid-order/run'

@@ -11,6 +11,13 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
   - `GET /api/x402/maintenance/summary`
   - `POST /api/x402/maintenance/expire-stale`
   - cleanup runs through backend cache/persistence path (`readX402Requests/writeX402Requests`) to avoid file-edit/cache mismatch.
+- Added first-class message/technical paid service actions:
+  - `info-analysis-feed`
+  - `technical-analysis-feed`
+  - now available in service catalog, quote selection, service invoke routing, and x402 action handling.
+- Added new default service entries:
+  - `svc_info_analysis` (message-agent + info-analysis-feed)
+  - `svc_technical_analysis` (technical-agent + technical-analysis-feed)
 - Added AGENT001 paid-result pull API:
   - `GET /api/agent001/results/:requestId`
   - supports requestId-based retrieval when DM delivery fails after x402 payment.
