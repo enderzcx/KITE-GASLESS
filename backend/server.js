@@ -1933,6 +1933,48 @@ function normalizeTechnicalAnalysisResult(raw = {}, task = {}) {
   };
 }
 
+function isWeakTechnicalAnalysis(technical = {}) {
+  const source = technical && typeof technical === 'object' && !Array.isArray(technical) ? technical : {};
+  const summary = String(source.summary || '').trim().toLowerCase();
+  const weakSummaryMarkers = [
+    'unable to fetch real-time market data',
+    'could not be fetched',
+    'tool limitations',
+    'neutral assumptions',
+    'cannot be performed'
+  ];
+  const hasWeakSummary = weakSummaryMarkers.some((item) => summary.includes(item));
+
+  const indicators = source.indicators && typeof source.indicators === 'object' && !Array.isArray(source.indicators) ? source.indicators : {};
+  const numericIndicators = ['rsi', 'macd', 'emaFast', 'emaSlow', 'atr']
+    .map((key) => Number(indicators[key]))
+    .filter((value) => Number.isFinite(value));
+  const hasAnyIndicatorSignal = numericIndicators.some((value) => Math.abs(value) > 0.000001);
+
+  const score = Number(source.riskScore ?? NaN);
+  const confidence = Number(source.confidence ?? NaN);
+  const scoreLooksPlaceholder = Number.isFinite(score) && Math.round(score) === 50;
+  const confidenceLooksPlaceholder = Number.isFinite(confidence) && confidence <= 0.55;
+
+  const quote = source.quote && typeof source.quote === 'object' && !Array.isArray(source.quote) ? source.quote : {};
+  const hasQuote = Number.isFinite(Number(quote.priceUsd)) && Number(quote.priceUsd) > 0;
+
+  const asOfRaw = String(source.asOf || '').trim();
+  let staleAsOf = false;
+  if (asOfRaw) {
+    const asOfTime = Date.parse(asOfRaw);
+    if (Number.isFinite(asOfTime)) {
+      const ageMs = Date.now() - asOfTime;
+      staleAsOf = ageMs > 1000 * 60 * 60 * 24 * 7; // older than 7 days
+    }
+  }
+
+  if (hasWeakSummary) return true;
+  if (!hasQuote && scoreLooksPlaceholder && confidenceLooksPlaceholder) return true;
+  if (!hasQuote && !hasAnyIndicatorSignal && staleAsOf) return true;
+  return false;
+}
+
 async function runInfoAnalysis(params = {}) {
   const task = normalizeXReaderParams(params);
   const remote = await openAliceAdapter.analyzeInfo({
@@ -2063,6 +2105,7 @@ async function runRiskScoreAnalysis(input = {}) {
   const task = normalizeRiskScoreParams(input);
   let technical = null;
   let openAliceFallbackReason = '';
+  let openAliceFallbackLabel = '';
 
   if (ANALYSIS_PROVIDER === 'openalice') {
     const remote = await openAliceAdapter.analyzeTechnical({
@@ -2077,8 +2120,14 @@ async function runRiskScoreAnalysis(input = {}) {
         ...task,
         traceId: String(input?.traceId || '').trim()
       });
+      if (isWeakTechnicalAnalysis(technical)) {
+        technical = null;
+        openAliceFallbackReason = 'openalice returned low-signal technical output';
+        openAliceFallbackLabel = 'low-signal response';
+      }
     } else {
       openAliceFallbackReason = String(remote?.reason || remote?.error || 'openalice_technical_failed').trim();
+      openAliceFallbackLabel = 'unavailable';
     }
   }
 
@@ -2133,7 +2182,7 @@ async function runRiskScoreAnalysis(input = {}) {
     technical.sampleSize = prices.length;
     if (openAliceFallbackReason) {
       technical.provider = 'openalice-fallback';
-      technical.summary = `${technical.summary} (fallback due to OpenAlice unavailable)`;
+      technical.summary = `${technical.summary} (fallback due to OpenAlice ${openAliceFallbackLabel || 'unavailable'})`;
       technical.fallbackReason = openAliceFallbackReason;
     }
   }
