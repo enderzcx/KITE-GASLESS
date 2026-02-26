@@ -1936,6 +1936,33 @@ function normalizeTechnicalAnalysisResult(raw = {}, task = {}) {
   };
 }
 
+function isStaleTimestamp(value = '', maxAgeMs = 1000 * 60 * 60 * 24 * 7) {
+  const raw = String(value || '').trim();
+  if (!raw) return false;
+  const ts = Date.parse(raw);
+  if (!Number.isFinite(ts)) return false;
+  return Date.now() - ts > maxAgeMs;
+}
+
+function isWeakInfoAnalysis(info = {}) {
+  const source = info && typeof info === 'object' && !Array.isArray(info) ? info : {};
+  const summary = String(source.summary || '').trim().toLowerCase();
+  const weakMarkers = [
+    'could not retrieve information',
+    'browser control service is unavailable',
+    'unable to fetch',
+    'cannot access',
+    'failed to fetch'
+  ];
+  const hasWeakSummary = weakMarkers.some((item) => summary.includes(item));
+  const confidence = Number(source.confidence ?? NaN);
+  const headlines = Array.isArray(source.headlines) ? source.headlines.filter(Boolean) : [];
+  const keyFactors = Array.isArray(source.keyFactors) ? source.keyFactors.filter(Boolean) : [];
+  const lowSignal = confidence <= 0.55 && headlines.length === 0 && keyFactors.length === 0;
+  const staleAsOf = isStaleTimestamp(source.asOf);
+  return Boolean(hasWeakSummary || lowSignal || staleAsOf);
+}
+
 function isWeakTechnicalAnalysis(technical = {}) {
   const source = technical && typeof technical === 'object' && !Array.isArray(technical) ? technical : {};
   const summary = String(source.summary || '').trim().toLowerCase();
@@ -1963,24 +1990,8 @@ function isWeakTechnicalAnalysis(technical = {}) {
   const quote = source.quote && typeof source.quote === 'object' && !Array.isArray(source.quote) ? source.quote : {};
   const hasQuote = Number.isFinite(Number(quote.priceUsd)) && Number(quote.priceUsd) > 0;
 
-  const asOfRaw = String(source.asOf || '').trim();
-  let staleAsOf = false;
-  if (asOfRaw) {
-    const asOfTime = Date.parse(asOfRaw);
-    if (Number.isFinite(asOfTime)) {
-      const ageMs = Date.now() - asOfTime;
-      staleAsOf = ageMs > 1000 * 60 * 60 * 24 * 7; // older than 7 days
-    }
-  }
-  const quoteFetchedAtRaw = String(quote.fetchedAt || '').trim();
-  let staleQuoteFetchedAt = false;
-  if (quoteFetchedAtRaw) {
-    const quoteTime = Date.parse(quoteFetchedAtRaw);
-    if (Number.isFinite(quoteTime)) {
-      const ageMs = Date.now() - quoteTime;
-      staleQuoteFetchedAt = ageMs > 1000 * 60 * 60 * 24 * 7; // older than 7 days
-    }
-  }
+  const staleAsOf = isStaleTimestamp(source.asOf);
+  const staleQuoteFetchedAt = isStaleTimestamp(quote.fetchedAt);
 
   if (hasWeakSummary) return true;
   if (staleAsOf || staleQuoteFetchedAt) return true;
@@ -1991,6 +2002,7 @@ function isWeakTechnicalAnalysis(technical = {}) {
 
 async function runInfoAnalysis(params = {}) {
   const task = normalizeXReaderParams(params);
+  let fallbackReason = 'openalice_info_failed';
   const remote = await openAliceAdapter.analyzeInfo({
     url: task.url,
     mode: task.mode,
@@ -1999,12 +2011,17 @@ async function runInfoAnalysis(params = {}) {
     topic: String(params?.topic || task.url).trim()
   });
   if (remote?.ok) {
-    return normalizeInfoAnalysisResult(remote.data || {}, {
+    const normalized = normalizeInfoAnalysisResult(remote.data || {}, {
       ...task,
       traceId: String(params?.traceId || '').trim()
     });
+    if (!isWeakInfoAnalysis(normalized)) {
+      return normalized;
+    }
+    fallbackReason = 'openalice returned low-signal info output';
+  } else {
+    fallbackReason = String(remote?.reason || remote?.error || fallbackReason).trim();
   }
-  const fallbackReason = String(remote?.reason || remote?.error || 'openalice_info_failed').trim();
   return normalizeInfoAnalysisResult(
     {
       provider: 'openalice-fallback',
