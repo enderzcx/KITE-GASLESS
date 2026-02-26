@@ -283,6 +283,19 @@ curl.exe -sS -X POST "http://127.0.0.1:3001/api/network/demo/router-info-technic
   --data-binary "{\"autoStart\":true,\"bindRealX402\":false,\"infoInput\":{\"url\":\"https://x.com/Kite_AI\"},\"technicalInput\":{\"symbol\":\"BTCUSDT\",\"horizonMin\":60}}"
 ```
 
+### AGENT001 Direct Chat Verify (Local)
+
+Use one message to let `router-agent` orchestrate `technical-agent` + `message-agent` automatically:
+
+```powershell
+curl.exe -sS -X POST "http://127.0.0.1:3001/api/agent001/chat/run" `
+  -H "x-api-key: <agent_key>" `
+  -H "Content-Type: application/json" `
+  --data-binary "{\"autoStart\":true,\"text\":\"给我 BTC 的消息+技术联合结论，60m\"}"
+```
+
+For xmtp.chat DM, send plain text directly to `router-agent` XMTP address.
+
 ### Network Commands Quick Verify (Local)
 
 Create a queued command:

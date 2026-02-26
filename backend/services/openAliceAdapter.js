@@ -485,6 +485,51 @@ export function createOpenAliceAdapter(config = {}) {
     };
   }
 
+  async function chatMessage(input = {}) {
+    const roleRaw = normalizeText(input.role || 'message').toLowerCase();
+    const roleConfig = roleRaw === 'technical' ? technicalRole : infoRole;
+    const message = normalizeText(input.message || input.prompt || '');
+    if (!message) {
+      return {
+        ok: false,
+        error: 'openalice_message_required',
+        reason: 'chat message is empty',
+        statusCode: 400,
+        text: '',
+        data: null,
+        body: {}
+      };
+    }
+    const chatResult = await callChat(roleConfig, message);
+    if (!chatResult.ok) {
+      return {
+        ok: false,
+        error: chatResult.error || 'openalice_chat_failed',
+        reason: chatResult.reason || 'openalice chat failed',
+        statusCode: chatResult.statusCode || 502,
+        text: '',
+        data: null,
+        body: chatResult.body || {}
+      };
+    }
+    const body = pickObject(chatResult.body) || {};
+    const text = normalizeText(
+      chatResult.rawText ||
+        body.text ||
+        body.message ||
+        body.reply ||
+        body.outputText ||
+        (chatResult.data ? JSON.stringify(chatResult.data) : '')
+    );
+    return {
+      ok: true,
+      statusCode: chatResult.statusCode,
+      text,
+      data: pickObject(chatResult.data) || null,
+      body
+    };
+  }
+
   function info() {
     const mode =
       infoRole.baseUrl && technicalRole.baseUrl
@@ -516,6 +561,7 @@ export function createOpenAliceAdapter(config = {}) {
     info,
     health,
     analyzeInfo,
-    analyzeTechnical
+    analyzeTechnical,
+    chatMessage
   };
 }

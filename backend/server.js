@@ -2599,12 +2599,12 @@ function createDefaultNetworkAgents() {
   const seeds = [
     {
       id: 'router-agent',
-      name: 'Router Agent',
+      name: 'AGENT001',
       role: 'router',
       mode: 'a2a',
       xmtpAddress: XMTP_ROUTER_RESOLVED_ADDRESS,
       aaAddress: XMTP_ROUTER_AGENT_AA_ADDRESS,
-      description: 'Routes tasks and coordinates A2A execution.',
+      description: 'AGENT001 orchestrator: direct DM entry for task routing and A2A coordination.',
       capabilities: ['route-task', 'dispatch-a2a']
     },
     {
@@ -2636,6 +2636,16 @@ function createDefaultNetworkAgents() {
       aaAddress: XMTP_READER_AGENT_AA_ADDRESS,
       description: 'Runs x-reader digest for URLs via ATAPI adapter.',
       capabilities: ['x-reader-feed', 'url-digest', 'info-analysis-feed']
+    },
+    {
+      id: 'message-agent',
+      name: 'Message Agent',
+      role: 'provider',
+      mode: 'a2api',
+      xmtpAddress: XMTP_READER_RESOLVED_ADDRESS,
+      aaAddress: XMTP_READER_AGENT_AA_ADDRESS,
+      description: 'Message/news sentiment facade over reader runtime.',
+      capabilities: ['info-analysis-feed', 'url-digest', 'x-reader-feed']
     },
     {
       id: 'price-agent',
@@ -2676,9 +2686,16 @@ function mergeBuiltinNetworkAgents(rows = []) {
     }
     const current = sanitizeNetworkAgentRecord(list[idx], list[idx]);
     const mergedCapabilities = Array.from(new Set([...(current.capabilities || []), ...(agent.capabilities || [])]));
+    const nextName = id === 'router-agent' ? String(agent.name || current.name || '').trim() : String(current.name || agent.name || '').trim();
+    const nextDescription =
+      id === 'router-agent'
+        ? String(agent.description || current.description || '').trim()
+        : String(current.description || agent.description || '').trim();
     const merged = sanitizeNetworkAgentRecord(
       {
         ...current,
+        name: nextName,
+        description: nextDescription,
         capabilities: mergedCapabilities
       },
       current
@@ -3130,6 +3147,355 @@ function buildTaskReceiptRef(payment = {}) {
   };
 }
 
+function parseJsonObjectFromText(text = '') {
+  const raw = String(text || '').trim();
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+  } catch {}
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced && fenced[1]) {
+    try {
+      const parsed = JSON.parse(String(fenced[1] || '').trim());
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+    } catch {}
+  }
+  const first = raw.indexOf('{');
+  const last = raw.lastIndexOf('}');
+  if (first >= 0 && last > first) {
+    try {
+      const parsed = JSON.parse(raw.slice(first, last + 1));
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+    } catch {}
+  }
+  return null;
+}
+
+function extractFirstUrlFromText(text = '') {
+  const raw = String(text || '').trim();
+  const match = raw.match(/https?:\/\/[^\s]+/i);
+  return match ? String(match[0] || '').trim() : '';
+}
+
+function extractBtcSymbolFromText(text = '') {
+  const raw = String(text || '').toUpperCase();
+  if (/\bBTCUSD[T]?\b/.test(raw)) return 'BTCUSDT';
+  if (/\bBTC\b/.test(raw)) return 'BTCUSDT';
+  return 'BTCUSDT';
+}
+
+function extractHorizonFromText(text = '') {
+  const raw = String(text || '').toLowerCase();
+  const match = raw.match(/(\d{1,3})\s*(m|min|minute|minutes|分钟|分)/i);
+  if (!match) return 60;
+  const value = Number(match[1]);
+  if (!Number.isFinite(value)) return 60;
+  return Math.max(5, Math.min(Math.round(value), 240));
+}
+
+function buildAgent001HelpText() {
+  return [
+    'AGENT001 在线，可直接自然语言下单给我：',
+    '1) 技术面：例如 “分析 BTCUSDT 技术面 60m”',
+    '2) 消息面：例如 “分析 btc market sentiment today” 或发送 URL',
+    '3) 联合分析：例如 “给我 BTC 的消息+技术联合结论”',
+    '我会自动与 technical-agent / message-agent 通过 XMTP 协作，再回你结果。'
+  ].join('\n');
+}
+
+async function classifyAgent001IntentByLlm(text = '') {
+  const rawText = String(text || '').trim();
+  if (!rawText) return { intent: 'help', symbol: 'BTCUSDT', horizonMin: 60, source: 'hyperliquid', topic: '' };
+  const prompt = [
+    'You are AGENT001 intent router.',
+    'Return ONLY JSON with schema:',
+    '{"intent":"technical|info|both|chat|help","symbol":"BTCUSDT","horizonMin":60,"source":"hyperliquid","topic":""}',
+    'Rules:',
+    '- intent=technical for technical/risk analysis requests',
+    '- intent=info for news/sentiment/info requests',
+    '- intent=both for combined info+technical requests',
+    '- intent=help for capability/help requests',
+    '- topic should keep user query text for info intent',
+    '- symbol should default BTCUSDT',
+    '',
+    `User text: ${rawText}`
+  ].join('\n');
+  const chat = await openAliceAdapter.chatMessage({
+    role: 'message',
+    message: prompt
+  });
+  if (!chat?.ok) return null;
+  const parsed = parseJsonObjectFromText(chat.text || '');
+  if (!parsed) return null;
+  return {
+    intent: String(parsed.intent || '').trim().toLowerCase() || '',
+    symbol: String(parsed.symbol || '').trim().toUpperCase() || 'BTCUSDT',
+    horizonMin: Number.isFinite(Number(parsed.horizonMin)) ? Math.max(5, Math.min(Math.round(Number(parsed.horizonMin)), 240)) : 60,
+    source: String(parsed.source || 'hyperliquid').trim().toLowerCase() || 'hyperliquid',
+    topic: String(parsed.topic || '').trim()
+  };
+}
+
+function classifyAgent001IntentFallback(text = '') {
+  const rawText = String(text || '').trim();
+  const hasTech = /(技术|technical|risk|指标|rsi|macd|ema|atr|btc)/i.test(rawText);
+  const hasInfo = /(消息|news|sentiment|舆情|资讯|headline|digest|x-reader|http:\/\/|https:\/\/)/i.test(rawText);
+  const askHelp = /(help|功能|怎么用|命令|示例)/i.test(rawText);
+  if (!rawText || askHelp) {
+    return { intent: 'help', symbol: 'BTCUSDT', horizonMin: 60, source: 'hyperliquid', topic: '' };
+  }
+  let intent = 'chat';
+  if (hasTech && hasInfo) intent = 'both';
+  else if (hasTech) intent = 'technical';
+  else if (hasInfo) intent = 'info';
+  const url = extractFirstUrlFromText(rawText);
+  const topic = url || rawText;
+  return {
+    intent,
+    symbol: extractBtcSymbolFromText(rawText),
+    horizonMin: extractHorizonFromText(rawText),
+    source: 'hyperliquid',
+    topic
+  };
+}
+
+function resolveAgent001Intent(text = '', llmIntent = null) {
+  const fallback = classifyAgent001IntentFallback(text);
+  if (!llmIntent || typeof llmIntent !== 'object') return fallback;
+  const intent = String(llmIntent.intent || '').trim().toLowerCase();
+  if (!['technical', 'info', 'both', 'chat', 'help'].includes(intent)) return fallback;
+  return {
+    intent,
+    symbol: String(llmIntent.symbol || fallback.symbol || 'BTCUSDT').trim().toUpperCase() || 'BTCUSDT',
+    horizonMin: Number.isFinite(Number(llmIntent.horizonMin))
+      ? Math.max(5, Math.min(Math.round(Number(llmIntent.horizonMin)), 240))
+      : fallback.horizonMin,
+    source: String(llmIntent.source || fallback.source || 'hyperliquid').trim().toLowerCase() || 'hyperliquid',
+    topic: String(llmIntent.topic || fallback.topic || '').trim()
+  };
+}
+
+function resolveAgentAddressByIdForRouter(agentId = '') {
+  const id = String(agentId || '').trim().toLowerCase();
+  const mapped = findNetworkAgentById(id);
+  const mappedAddress = normalizeAddress(mapped?.xmtpAddress || '');
+  if (mappedAddress) return mappedAddress;
+  if (id === 'risk-agent' || id === 'technical-agent') return normalizeAddress(XMTP_RISK_RESOLVED_ADDRESS);
+  if (id === 'reader-agent' || id === 'message-agent') return normalizeAddress(XMTP_READER_RESOLVED_ADDRESS);
+  return '';
+}
+
+async function waitRouterTaskResultByTaskId(taskId = '', waitMsLimit = 25_000) {
+  const safeTaskId = String(taskId || '').trim();
+  if (!safeTaskId) return null;
+  const deadline = Date.now() + Math.max(1_000, Math.min(Number(waitMsLimit || 25_000), 60_000));
+  while (Date.now() <= deadline) {
+    const hits = xmtpRuntime.listEvents({
+      runtimeName: 'router-runtime',
+      direction: 'inbound',
+      kind: 'task-result',
+      taskId: safeTaskId
+    });
+    if (Array.isArray(hits) && hits.length > 0) {
+      return hits[0];
+    }
+    await waitMs(280);
+  }
+  return null;
+}
+
+async function runAgent001DispatchTask({
+  toAgentId = '',
+  capability = '',
+  input = {},
+  waitMsLimit = 25_000
+} = {}) {
+  const routerStatus = xmtpRuntime.getStatus();
+  if (!routerStatus.running) {
+    return {
+      ok: false,
+      error: 'xmtp_router_not_running',
+      reason: routerStatus.lastError || 'router runtime is not running'
+    };
+  }
+  const resolvedToAgentId = String(toAgentId || '').trim().toLowerCase();
+  const toAddress = resolveAgentAddressByIdForRouter(resolvedToAgentId);
+  if (!toAddress) {
+    return {
+      ok: false,
+      error: 'target_agent_address_missing',
+      reason: `missing xmtp address for ${resolvedToAgentId || 'unknown'}`
+    };
+  }
+  const traceId = createTraceId('agent001_trace');
+  const requestId = createTraceId('agent001_req');
+  const taskId = createTraceId('agent001_task');
+  const envelope = {
+    kind: 'task-envelope',
+    protocolVersion: 'kite-agent-task-v1',
+    traceId,
+    requestId,
+    taskId,
+    fromAgentId: 'router-agent',
+    toAgentId: resolvedToAgentId,
+    channel: 'dm',
+    hopIndex: 1,
+    mode: 'a2a',
+    capability: String(capability || '').trim(),
+    input: input && typeof input === 'object' && !Array.isArray(input) ? input : {},
+    expectsReply: true,
+    timestamp: new Date().toISOString()
+  };
+  const sent = await xmtpRuntime.sendDm({
+    fromAgentId: 'router-agent',
+    toAgentId: resolvedToAgentId,
+    toAddress,
+    channel: 'dm',
+    hopIndex: 1,
+    envelope,
+    traceId,
+    requestId,
+    taskId
+  });
+  if (!sent?.ok) {
+    return {
+      ok: false,
+      error: sent?.error || 'router_send_failed',
+      reason: sent?.reason || 'router send failed',
+      sent
+    };
+  }
+  const resultEvent = await waitRouterTaskResultByTaskId(taskId, waitMsLimit);
+  const taskResult = resultEvent?.parsed && typeof resultEvent.parsed === 'object' && !Array.isArray(resultEvent.parsed)
+    ? resultEvent.parsed
+    : null;
+  if (!taskResult) {
+    return {
+      ok: false,
+      error: 'task_result_timeout',
+      reason: `no task-result within ${Math.max(1_000, Math.min(Number(waitMsLimit || 25_000), 60_000))}ms`,
+      sent,
+      task: { traceId, requestId, taskId, toAgentId: resolvedToAgentId, capability }
+    };
+  }
+  return {
+    ok: true,
+    sent,
+    task: { traceId, requestId, taskId, toAgentId: resolvedToAgentId, capability },
+    resultEvent,
+    taskResult
+  };
+}
+
+function buildAgent001DispatchSummary(results = {}) {
+  const technical = results?.technical || null;
+  const info = results?.info || null;
+  const lines = [];
+  if (technical?.ok && technical?.taskResult?.result?.summary) {
+    lines.push(`技术面: ${String(technical.taskResult.result.summary).trim()}`);
+  } else if (technical) {
+    lines.push(`技术面失败: ${String(technical.reason || technical.error || 'unknown').trim()}`);
+  }
+  if (info?.ok && info?.taskResult?.result?.summary) {
+    lines.push(`消息面: ${String(info.taskResult.result.summary).trim()}`);
+  } else if (info) {
+    lines.push(`消息面失败: ${String(info.reason || info.error || 'unknown').trim()}`);
+  }
+  return lines.join('\n').trim();
+}
+
+async function maybePolishAgent001Reply(rawText = '', draft = '') {
+  const cleanDraft = String(draft || '').trim();
+  if (!cleanDraft) return '';
+  const prompt = [
+    '你是 AGENT001。',
+    '请把以下执行结果整理成简洁中文回复。',
+    '要求：',
+    '- 保留关键结论',
+    '- 不要编造',
+    '- 不要输出 markdown 代码块',
+    '',
+    `用户原话: ${String(rawText || '').trim()}`,
+    `执行结果: ${cleanDraft}`
+  ].join('\n');
+  const chat = await openAliceAdapter.chatMessage({
+    role: 'message',
+    message: prompt
+  });
+  if (!chat?.ok) return cleanDraft;
+  const text = String(chat.text || '').trim();
+  return text || cleanDraft;
+}
+
+async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
+  const rawText = String(text || '').trim();
+  if (!rawText) return buildAgent001HelpText();
+
+  if (/(help|功能|怎么用|命令|示例)/i.test(rawText)) {
+    return buildAgent001HelpText();
+  }
+  if (/(status|状态|在线|running)/i.test(rawText)) {
+    const runtime = getAllXmtpRuntimeStatuses();
+    return [
+      'AGENT001 状态:',
+      `router: ${runtime.router.running ? 'running' : 'stopped'}`,
+      `technical(risk): ${runtime.risk.running ? 'running' : 'stopped'}`,
+      `message(reader): ${runtime.reader.running ? 'running' : 'stopped'}`
+    ].join('\n');
+  }
+
+  const llmIntent = await classifyAgent001IntentByLlm(rawText);
+  const intent = resolveAgent001Intent(rawText, llmIntent);
+  if (intent.intent === 'help') {
+    return buildAgent001HelpText();
+  }
+  if (intent.intent === 'chat') {
+    const chat = await openAliceAdapter.chatMessage({
+      role: 'message',
+      message: `你是 AGENT001，请用简洁中文回复用户。\n用户消息: ${rawText}`
+    });
+    if (chat?.ok && String(chat.text || '').trim()) return String(chat.text || '').trim();
+    return `AGENT001 已收到。可直接说“分析 BTC 技术面 60m”或“分析 btc market sentiment today”。`;
+  }
+
+  const waitMsLimit = 30_000;
+  const runTechnical = intent.intent === 'technical' || intent.intent === 'both';
+  const runInfo = intent.intent === 'info' || intent.intent === 'both';
+  const technicalPromise = runTechnical
+    ? runAgent001DispatchTask({
+        toAgentId: 'technical-agent',
+        capability: 'technical-analysis-feed',
+        input: {
+          symbol: intent.symbol || 'BTCUSDT',
+          source: intent.source || 'hyperliquid',
+          horizonMin: intent.horizonMin || 60
+        },
+        waitMsLimit
+      })
+    : Promise.resolve(null);
+  const infoPromise = runInfo
+    ? runAgent001DispatchTask({
+        toAgentId: 'message-agent',
+        capability: 'info-analysis-feed',
+        input: {
+          url: intent.topic || extractFirstUrlFromText(rawText) || rawText,
+          mode: 'news',
+          maxChars: 900
+        },
+        waitMsLimit
+      })
+    : Promise.resolve(null);
+
+  const [technical, info] = await Promise.all([technicalPromise, infoPromise]);
+  const summary = buildAgent001DispatchSummary({ technical, info });
+  if (!summary) {
+    return 'AGENT001 调度完成，但未拿到可读结果。请稍后重试。';
+  }
+  const polished = await maybePolishAgent001Reply(rawText, summary);
+  return polished || summary;
+}
+
 async function handleRiskRuntimeTaskEnvelope({ envelope = {} } = {}) {
   const capability = String(envelope?.capability || '').trim().toLowerCase();
   const payment = buildTaskPaymentFromIntent(envelope);
@@ -3327,11 +3693,12 @@ const xmtpRuntime = createXmtpAgentRuntime({
   gatewayHost: XMTP_GATEWAY_HOST,
   dbEncryptionKey: XMTP_DB_ENCRYPTION_KEY,
   dbDirectory: XMTP_ROUTER_DB_DIRECTORY,
-  autoAck: XMTP_AUTO_ACK,
+  autoAck: true,
   eventRetention: XMTP_EVENT_RETENTION,
   readEvents: readXmtpEvents,
   writeEvents: writeXmtpEvents,
-  resolveAgentById: findNetworkAgentById
+  resolveAgentById: findNetworkAgentById,
+  handleTextMessage: handleRouterRuntimeTextMessage
 });
 
 const xmtpRiskRuntime = createXmtpAgentRuntime({
@@ -9969,6 +10336,38 @@ app.get('/api/openalice/health', requireRole('viewer'), async (req, res) => {
     adapter: info,
     health
   });
+});
+
+app.post('/api/agent001/chat/run', requireRole('agent'), async (req, res) => {
+  const body = req.body || {};
+  const text = String(body.text || body.message || '').trim();
+  if (!text) {
+    return res.status(400).json({
+      ok: false,
+      traceId: req.traceId || '',
+      error: 'text_required',
+      reason: 'text is required'
+    });
+  }
+  if (body.autoStart !== false) {
+    await startXmtpRuntimes();
+  }
+  try {
+    const reply = await handleRouterRuntimeTextMessage({ text });
+    return res.json({
+      ok: true,
+      traceId: req.traceId || '',
+      agentId: 'router-agent',
+      reply
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      traceId: req.traceId || '',
+      error: 'agent001_chat_failed',
+      reason: error?.message || 'agent001 chat failed'
+    });
+  }
 });
 
 app.post('/api/analysis/info/run', requireRole('agent'), async (req, res) => {

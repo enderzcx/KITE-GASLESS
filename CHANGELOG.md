@@ -102,6 +102,17 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 - OpenAlice info chat prompt now includes explicit `inputType/topic` semantics so topic-mode requests are handled without webpage fetch dependency.
 - Info-analysis timestamp normalization now rewrites stale/future OpenAlice `asOf` to a fresh ISO time window, preventing false fallback on otherwise usable topic analysis.
 - Info-analysis now performs one delayed retry before fallback when first OpenAlice result is low-signal, improving DM stability during warm-up/transient model responses.
+- Router runtime (`AGENT001`) now supports LLM-assisted direct DM orchestration:
+  - plain-text DM to `router-agent` is classified into `technical/info/both/chat/help`,
+  - router dispatches XMTP `task-envelope` to `technical-agent`/`message-agent`,
+  - aggregates `task-result` and replies to user in Chinese.
+- Network agent defaults updated:
+  - `router-agent` display name is now `AGENT001`,
+  - added `message-agent` alias (mapped to reader runtime facade).
+- Added debug endpoint for AGENT001 behavior without xmtp.chat:
+  - `POST /api/agent001/chat/run`
+- OpenAlice adapter now exposes generic message chat bridge:
+  - `chatMessage({ role, message })`
 - XMTP runtime now supports explicit network endpoint overrides:
   - `XMTP_API_URL`
   - `XMTP_HISTORY_SYNC_URL` (supports `null` to disable history sync endpoint)
