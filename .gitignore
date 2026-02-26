@@ -18,6 +18,7 @@ backend/data/*.json
 # local notes
 重要信息.md
 AGENT_NETWORK_PLAN.md
+GOAL.md
 experiments/xmtp-agent-quickstart/
 
 # aa-v2 build outputs

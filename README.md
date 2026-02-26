@@ -35,7 +35,7 @@ Current Version: `v1.8.0`
   - frontend: `npm run dev` (Vite)
   - backend: `npm start` (Express)
 
-## Product Direction (Aligned with `GOAL.md`)
+## Product Direction
 
 - Positioning: agent-first network, not a retail wallet tutorial product.
 - Core closed loop: discover service -> invoke -> pay (x402) -> unlock result -> verify evidence.
