@@ -958,6 +958,93 @@ function writeX402Requests(records) {
   writeJsonArray(x402Path, records);
 }
 
+function computeX402StatusCounts(rows = [], now = Date.now()) {
+  const items = Array.isArray(rows) ? rows : [];
+  let pending = 0;
+  let paid = 0;
+  let expired = 0;
+  let failed = 0;
+  for (const item of items) {
+    const status = String(item?.status || '').trim().toLowerCase();
+    const expiresAt = Number(item?.expiresAt || 0);
+    if (status === 'paid') {
+      paid += 1;
+    } else if (status === 'pending') {
+      if (expiresAt > 0 && now > expiresAt) expired += 1;
+      else pending += 1;
+    } else if (status === 'expired') {
+      expired += 1;
+    } else if (status) {
+      failed += 1;
+    }
+  }
+  return {
+    total: items.length,
+    pending,
+    paid,
+    expired,
+    failed
+  };
+}
+
+function expireStaleX402PendingRequests({
+  dryRun = false,
+  stalePendingMs = 24 * 60 * 60 * 1000,
+  limit = 0,
+  reason = 'ttl_or_stale_pending'
+} = {}) {
+  const now = Date.now();
+  const maxStalePendingMs = Number.isFinite(Number(stalePendingMs)) && Number(stalePendingMs) > 0
+    ? Number(stalePendingMs)
+    : 24 * 60 * 60 * 1000;
+  const maxUpdates = Number.isFinite(Number(limit)) && Number(limit) > 0
+    ? Math.min(Number(limit), 10_000)
+    : 0;
+  const rows = readX402Requests();
+  const before = computeX402StatusCounts(rows, now);
+  let touched = 0;
+  const touchedIds = [];
+  const nextRows = rows.map((item) => {
+    const status = String(item?.status || '').trim().toLowerCase();
+    if (status !== 'pending') return item;
+    if (maxUpdates > 0 && touched >= maxUpdates) return item;
+    const expiresAt = Number(item?.expiresAt || 0);
+    const createdAt = Number(item?.createdAt || 0);
+    const expiredByTtl = expiresAt > 0 && now > expiresAt;
+    const expiredByAge = (!expiresAt || expiresAt <= 0) && createdAt > 0 && now - createdAt > maxStalePendingMs;
+    if (!expiredByTtl && !expiredByAge) return item;
+    touched += 1;
+    touchedIds.push(String(item?.requestId || '').trim());
+    if (dryRun) return item;
+    return {
+      ...item,
+      status: 'expired',
+      expiredAt: now,
+      cleanup: {
+        reason,
+        expiredBy: expiredByTtl ? 'ttl' : 'age',
+        stalePendingMs: maxStalePendingMs,
+        cleanedAt: now
+      }
+    };
+  });
+  if (!dryRun && touched > 0) {
+    writeX402Requests(nextRows);
+  }
+  const after = computeX402StatusCounts(dryRun ? rows : nextRows, now);
+  return {
+    ok: true,
+    dryRun,
+    now,
+    stalePendingMs: maxStalePendingMs,
+    requestedLimit: maxUpdates,
+    cleaned: touched,
+    before,
+    after,
+    requestIds: touchedIds.slice(0, 100)
+  };
+}
+
 function readPolicyFailures() {
   return readJsonArray(policyFailurePath);
 }
@@ -13706,6 +13793,39 @@ app.get('/api/x402/requests', requireRole('viewer'), (req, res) => {
   });
 
   res.json({ ok: true, total: filtered.length, items: filtered.slice(0, limit) });
+});
+
+app.get('/api/x402/maintenance/summary', requireRole('viewer'), (req, res) => {
+  const now = Date.now();
+  const rows = readX402Requests();
+  const counts = computeX402StatusCounts(rows, now);
+  return res.json({
+    ok: true,
+    traceId: req.traceId || '',
+    now,
+    nowIso: new Date(now).toISOString(),
+    storage: {
+      cwd: process.cwd(),
+      x402Path
+    },
+    persistence: persistenceStore.info(),
+    counts
+  });
+});
+
+app.post('/api/x402/maintenance/expire-stale', requireRole('admin'), (req, res) => {
+  const body = req.body || {};
+  const cleanup = expireStaleX402PendingRequests({
+    dryRun: Boolean(body.dryRun),
+    stalePendingMs: body.stalePendingMs,
+    limit: body.limit,
+    reason: String(body.reason || '').trim() || 'manual_cleanup'
+  });
+  return res.json({
+    ok: true,
+    traceId: req.traceId || '',
+    cleanup
+  });
 });
 
 // AA Session Payment Endpoint

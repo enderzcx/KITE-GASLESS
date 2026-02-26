@@ -7,6 +7,10 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 ## [Unreleased]
 
 ### Added
+- Added x402 maintenance endpoints for runtime-safe stale request cleanup:
+  - `GET /api/x402/maintenance/summary`
+  - `POST /api/x402/maintenance/expire-stale`
+  - cleanup runs through backend cache/persistence path (`readX402Requests/writeX402Requests`) to avoid file-edit/cache mismatch.
 - Added AGENT001 paid-result pull API:
   - `GET /api/agent001/results/:requestId`
   - supports requestId-based retrieval when DM delivery fails after x402 payment.
