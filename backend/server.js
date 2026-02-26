@@ -6320,6 +6320,77 @@ function isUserOpReplacementFeeError(reason = '') {
   );
 }
 
+function extractUserOpHashFromReason(reason = '') {
+  const text = String(reason || '').trim();
+  if (!text) return '';
+  const matched = text.match(/0x[a-fA-F0-9]{64}/);
+  return matched ? matched[0] : '';
+}
+
+function shouldFallbackToEoaRelay(reason = '') {
+  const text = String(reason || '').trim().toLowerCase();
+  if (!text) return false;
+  return (
+    text.includes('eth_estimateuseroperationgas') ||
+    text.includes('execution reverted') ||
+    text.includes('timeout waiting for useroperation') ||
+    text.includes('aa24') ||
+    text.includes('sig_validation_failed')
+  );
+}
+
+async function sendSessionTransferViaEoaRelay({
+  provider,
+  aaWallet,
+  sessionId,
+  authPayload,
+  authSignature,
+  serviceProvider,
+  metadata
+} = {}) {
+  if (!backendSigner) {
+    return { ok: false, reason: 'backend_signer_unavailable_for_eoa_relay' };
+  }
+  try {
+    const signer = backendSigner.provider ? backendSigner : backendSigner.connect(provider);
+    const relaySender = await signer.getAddress();
+    const relayGas = await provider.getBalance(relaySender);
+    if (relayGas <= 0n) {
+      return { ok: false, reason: `backend_signer_insufficient_kite_gas:${relaySender}` };
+    }
+    const writeAbi = [
+      'function executeTransferWithAuthorizationAndProvider(bytes32 sessionId, tuple(address from,address to,address token,uint256 value,uint256 validAfter,uint256 validBefore,bytes32 nonce) auth, bytes signature, bytes32 serviceProvider, bytes metadata) external'
+    ];
+    const account = new ethers.Contract(aaWallet, writeAbi, signer);
+    const tx = await account.executeTransferWithAuthorizationAndProvider(
+      sessionId,
+      authPayload,
+      authSignature,
+      serviceProvider,
+      metadata
+    );
+    const receipt = await tx.wait();
+    if (!receipt || Number(receipt.status || 0) !== 1) {
+      return {
+        ok: false,
+        reason: 'eoa_relay_transaction_failed',
+        txHash: tx?.hash || ''
+      };
+    }
+    return {
+      ok: true,
+      txHash: tx.hash,
+      blockNumber: Number(receipt.blockNumber || 0),
+      relaySender
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: String(error?.message || 'eoa_relay_failed').trim()
+    };
+  }
+}
+
 async function callRpc(method, params = []) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), PROOF_RPC_TIMEOUT_MS);
@@ -13848,18 +13919,57 @@ app.post('/api/session/pay', requireRole('agent'), async (req, res) => {
       return { result: innerResult, attempts: innerAttempts };
     });
     const payElapsedMs = Math.max(0, Date.now() - lockStartedAt);
+    const primaryReason = String(result?.reason || '').trim();
+    const extractedUserOpHash = String(result?.userOpHash || extractUserOpHashFromReason(primaryReason)).trim();
+    let finalResult = result;
+    let signerMode = 'aa-session';
+    let relaySender = '';
+    let fallbackAttempted = false;
+    let fallbackReason = '';
 
-    if (!result || result.status !== 'success' || !result.transactionHash) {
+    if (!finalResult || finalResult.status !== 'success' || !finalResult.transactionHash) {
+      if (shouldFallbackToEoaRelay(primaryReason)) {
+        fallbackAttempted = true;
+        const fallback = await sendSessionTransferViaEoaRelay({
+          provider,
+          aaWallet: runtime.aaWallet,
+          sessionId,
+          authPayload,
+          authSignature,
+          serviceProvider,
+          metadata
+        });
+        if (fallback.ok && fallback.txHash) {
+          signerMode = 'aa-session-eoa-relay';
+          relaySender = String(fallback.relaySender || '').trim();
+          finalResult = {
+            status: 'success',
+            transactionHash: fallback.txHash,
+            userOpHash: extractedUserOpHash,
+            receipt: {
+              blockNumber: fallback.blockNumber || null
+            }
+          };
+        } else {
+          fallbackReason = String(fallback.reason || '').trim();
+        }
+      }
+    }
+
+    if (!finalResult || finalResult.status !== 'success' || !finalResult.transactionHash) {
+      const reason = primaryReason || 'unknown';
       return res.status(500).json({
         ok: false,
         error: 'aa_session_payment_failed',
-        reason: result?.reason || 'unknown',
+        reason: fallbackReason ? `${reason}; eoa_relay_failed: ${fallbackReason}` : reason,
         details: {
-          userOpHash: result?.userOpHash || '',
+          userOpHash: extractedUserOpHash,
           sessionId,
           payer: runtime.aaWallet,
           attempts,
-          payElapsedMs
+          payElapsedMs,
+          fallbackAttempted,
+          fallbackReason
         }
       });
     }
@@ -13871,11 +13981,12 @@ app.post('/api/session/pay', requireRole('agent'), async (req, res) => {
       amount: String(amount),
       token: tokenAddress,
       recipient: recipient,
-      txHash: result.transactionHash,
-      userOpHash: result.userOpHash || '',
+      txHash: finalResult.transactionHash,
+      userOpHash: extractedUserOpHash,
       status: 'success',
       requestId: requestId || '',
-      signerMode: 'aa-session',
+      signerMode,
+      relaySender,
       agentId: ERC8004_AGENT_ID !== null ? String(ERC8004_AGENT_ID) : '',
       identityRegistry: ERC8004_IDENTITY_REGISTRY || '',
       aaWallet: runtime.aaWallet,
@@ -13898,9 +14009,12 @@ app.post('/api/session/pay', requireRole('agent'), async (req, res) => {
         aaWallet: runtime.aaWallet,
         sessionAddress: runtime.sessionAddress,
         sessionId,
-        txHash: result.transactionHash,
-        userOpHash: result.userOpHash || '',
-        payElapsedMs
+        txHash: finalResult.transactionHash,
+        userOpHash: extractedUserOpHash,
+        payElapsedMs,
+        signerMode,
+        relaySender,
+        fallbackAttempted
       },
       message: 'AA session payment submitted and confirmed.'
     });
