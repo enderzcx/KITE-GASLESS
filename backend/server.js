@@ -121,6 +121,7 @@ const ERC8004_AGENT_ID = Number.isFinite(Number(ERC8004_AGENT_ID_RAW))
 const API_KEY_ADMIN = String(process.env.KITECLAW_API_KEY_ADMIN || '').trim();
 const API_KEY_AGENT = String(process.env.KITECLAW_API_KEY_AGENT || '').trim();
 const API_KEY_VIEWER = String(process.env.KITECLAW_API_KEY_VIEWER || '').trim();
+const AUTH_DISABLED = /^(1|true|yes|on)$/i.test(String(process.env.KITECLAW_AUTH_DISABLED || '').trim());
 const RATE_LIMIT_WINDOW_MS = Number(process.env.KITECLAW_RATE_LIMIT_WINDOW_MS || 60_000);
 const RATE_LIMIT_MAX = Number(process.env.KITECLAW_RATE_LIMIT_MAX || 240);
 const IDENTITY_CHALLENGE_TTL_MS = Number(process.env.IDENTITY_CHALLENGE_TTL_MS || 120_000);
@@ -320,6 +321,7 @@ const XMTP_PRICE_DB_DIRECTORY = path.resolve(XMTP_DB_DIRECTORY, 'price-agent');
 const XMTP_EXECUTOR_DB_DIRECTORY = path.resolve(XMTP_DB_DIRECTORY, 'executor-agent');
 
 function authConfigured() {
+  if (AUTH_DISABLED) return false;
   return Boolean(API_KEY_ADMIN || API_KEY_AGENT || API_KEY_VIEWER);
 }
 
@@ -10178,6 +10180,7 @@ app.get('/api/auth/info', requireRole('viewer'), (req, res) => {
   res.json({
     ok: true,
     traceId: req.traceId,
+    authDisabled: AUTH_DISABLED,
     authConfigured: authConfigured(),
     acceptedHeaders: ['x-api-key', 'Authorization: Bearer <key>'],
     roles: ['viewer', 'agent', 'admin'],
