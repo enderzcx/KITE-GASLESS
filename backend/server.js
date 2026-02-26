@@ -13,7 +13,7 @@ import { createPersistenceStore } from './services/persistenceStore.js';
 import { createXmtpAgentRuntime } from './services/xmtpAgentRuntime.js';
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = String(process.env.PORT || 3001).trim() || '3001';
 const dataPath = path.resolve('data', 'records.json');
 const x402Path = path.resolve('data', 'x402_requests.json');
 const policyFailurePath = path.resolve('data', 'policy_failures.json');
