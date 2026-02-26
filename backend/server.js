@@ -1987,8 +1987,14 @@ function normalizeXReaderParams(input = {}) {
       throw new Error('invalid protocol');
     }
     normalizedUrl = parsed.toString();
-    topic = normalizedUrl;
-    inputType = 'url';
+    const host = String(parsed.hostname || '').replace(/^www\./i, '').trim();
+    if (OPENALICE_STRICT_REQUIRED) {
+      topic = host ? `market sentiment for ${host}` : normalizedUrl;
+      inputType = 'topic';
+    } else {
+      topic = normalizedUrl;
+      inputType = 'url';
+    }
   } catch {
     normalizedUrl = '';
     topic = rawInput;
@@ -2290,10 +2296,10 @@ function isWeakTechnicalAnalysis(technical = {}) {
     'could not be fetched',
     'tool limitations',
     'neutral assumptions',
-    'cannot be performed',
-    'tool_error'
+    'cannot be performed'
   ];
   const hasWeakSummary = weakSummaryMarkers.some((item) => summary.includes(item));
+  const hasToolErrorSummary = summary.includes('tool_error');
 
   const indicators = source.indicators && typeof source.indicators === 'object' && !Array.isArray(source.indicators) ? source.indicators : {};
   const numericIndicators = ['rsi', 'macd', 'emaFast', 'emaSlow', 'atr']
@@ -2313,6 +2319,7 @@ function isWeakTechnicalAnalysis(technical = {}) {
   const staleQuoteFetchedAt = isStaleTimestamp(quote.fetchedAt);
 
   if (hasWeakSummary) return true;
+  if (hasToolErrorSummary && (!hasQuote || !hasAnyIndicatorSignal)) return true;
   if (staleAsOf || staleQuoteFetchedAt) return true;
   if (!hasQuote && scoreLooksPlaceholder && confidenceLooksPlaceholder) return true;
   if (!hasQuote && !hasAnyIndicatorSignal && staleAsOf) return true;
@@ -2337,6 +2344,15 @@ function resolveAnalysisErrorStatus(error = null, fallback = 500) {
 async function runInfoAnalysis(params = {}) {
   const task = normalizeXReaderParams(params);
   const resolvedTopic = String(params?.topic || task.topic || task.url).trim();
+  const urlAsTopic = /^https?:\/\//i.test(resolvedTopic);
+  let urlTopicFallback = 'crypto market sentiment today';
+  if (task.url) {
+    try {
+      const host = new URL(task.url).hostname.replace(/^www\./i, '').trim();
+      if (host) urlTopicFallback = `market sentiment for ${host}`;
+    } catch {}
+  }
+  const topicRetryTopic = urlAsTopic ? urlTopicFallback : resolvedTopic;
   const infoPayload = {
     url: task.url,
     topic: resolvedTopic,
@@ -2345,8 +2361,15 @@ async function runInfoAnalysis(params = {}) {
     maxChars: task.maxChars,
     traceId: String(params?.traceId || '').trim()
   };
+  const topicRetryPayload = {
+    ...infoPayload,
+    url: '',
+    topic: topicRetryTopic || resolvedTopic || task.url || 'crypto market sentiment today',
+    inputType: 'topic'
+  };
+  const primaryInfoPayload = task.inputType === 'url' ? topicRetryPayload : infoPayload;
   let fallbackReason = 'openalice_info_failed';
-  let remote = await openAliceAdapter.analyzeInfo(infoPayload);
+  let remote = await openAliceAdapter.analyzeInfo(primaryInfoPayload);
   if (remote?.ok) {
     let normalized = normalizeInfoAnalysisResult(remote.data || {}, {
       ...task,
@@ -2354,12 +2377,25 @@ async function runInfoAnalysis(params = {}) {
     });
     if (isWeakInfoAnalysis(normalized)) {
       await waitMs(1200);
-      remote = await openAliceAdapter.analyzeInfo(infoPayload);
+      remote = await openAliceAdapter.analyzeInfo(primaryInfoPayload);
       if (remote?.ok) {
         normalized = normalizeInfoAnalysisResult(remote.data || {}, {
           ...task,
           traceId: String(params?.traceId || '').trim()
         });
+      }
+      if (isWeakInfoAnalysis(normalized) && task.inputType === 'url') {
+        await waitMs(900);
+        remote = await openAliceAdapter.analyzeInfo(topicRetryPayload);
+        if (remote?.ok) {
+          normalized = normalizeInfoAnalysisResult(remote.data || {}, {
+            ...task,
+            traceId: String(params?.traceId || '').trim(),
+            inputType: 'topic',
+            url: '',
+            topic: resolvedTopic || task.url
+          });
+        }
       }
       if (isWeakInfoAnalysis(normalized)) {
         fallbackReason = 'openalice returned low-signal info output';
@@ -2371,6 +2407,22 @@ async function runInfoAnalysis(params = {}) {
     }
   } else {
     fallbackReason = String(remote?.reason || remote?.error || fallbackReason).trim();
+    if (task.inputType === 'url') {
+      await waitMs(900);
+      const topicRemote = await openAliceAdapter.analyzeInfo(topicRetryPayload);
+      if (topicRemote?.ok) {
+        const normalized = normalizeInfoAnalysisResult(topicRemote.data || {}, {
+          ...task,
+          traceId: String(params?.traceId || '').trim(),
+          inputType: 'topic',
+          url: '',
+          topic: resolvedTopic || task.url
+        });
+        if (!isWeakInfoAnalysis(normalized)) {
+          return normalized;
+        }
+      }
+    }
   }
   if (OPENALICE_STRICT_REQUIRED) {
     throw buildOpenAliceRequiredError(
@@ -2497,26 +2549,40 @@ async function runRiskScoreAnalysis(input = {}) {
   let openAliceFallbackLabel = '';
 
   if (ANALYSIS_PROVIDER === 'openalice') {
-    const remote = await openAliceAdapter.analyzeTechnical({
-      symbol: task.symbol,
-      source: task.sourceRequested,
-      timeframe: `${task.horizonMin}m`,
-      horizonMin: task.horizonMin,
-      traceId: String(input?.traceId || '').trim()
-    });
-    if (remote?.ok) {
-      technical = normalizeTechnicalAnalysisResult(remote.data || {}, {
-        ...task,
+    const technicalAttempts = Math.max(
+      1,
+      Math.min(Number(process.env.OPENALICE_TECHNICAL_ATTEMPTS || 4), 4)
+    );
+    const technicalReasons = [];
+    for (let attempt = 1; attempt <= technicalAttempts; attempt += 1) {
+      const remote = await openAliceAdapter.analyzeTechnical({
+        symbol: task.symbol,
+        source: task.sourceRequested,
+        timeframe: `${task.horizonMin}m`,
+        horizonMin: task.horizonMin,
         traceId: String(input?.traceId || '').trim()
       });
-      if (isWeakTechnicalAnalysis(technical)) {
-        technical = null;
-        openAliceFallbackReason = 'openalice returned low-signal technical output';
+      if (remote?.ok) {
+        const candidate = normalizeTechnicalAnalysisResult(remote.data || {}, {
+          ...task,
+          traceId: String(input?.traceId || '').trim()
+        });
+        if (!isWeakTechnicalAnalysis(candidate)) {
+          technical = candidate;
+          break;
+        }
         openAliceFallbackLabel = 'low-signal response';
+        technicalReasons.push('openalice returned low-signal technical output');
+      } else {
+        openAliceFallbackLabel = 'unavailable';
+        technicalReasons.push(String(remote?.reason || remote?.error || 'openalice_technical_failed').trim());
       }
-    } else {
-      openAliceFallbackReason = String(remote?.reason || remote?.error || 'openalice_technical_failed').trim();
-      openAliceFallbackLabel = 'unavailable';
+      if (attempt < technicalAttempts) {
+        await waitMs(1200 * attempt);
+      }
+    }
+    if (!technical) {
+      openAliceFallbackReason = technicalReasons.filter(Boolean).join('; ');
     }
   }
 
@@ -12462,7 +12528,7 @@ app.post('/api/network/demo/router-info-technical/run', requireRole('agent'), as
   }
 
   const waitTaskResultEvent = async (taskId, timeoutMs = 15000) => {
-    const deadline = Date.now() + Math.max(1000, Math.min(Number(timeoutMs || 15000), 30000));
+    const deadline = Date.now() + Math.max(1000, Math.min(Number(timeoutMs || 15000), 60000));
     while (Date.now() <= deadline) {
       const hits = xmtpRuntime.listEvents({
         kind: 'task-result',
@@ -12495,7 +12561,7 @@ app.post('/api/network/demo/router-info-technical/run', requireRole('agent'), as
     return null;
   };
 
-  const waitMsLimit = Math.max(1000, Math.min(Number(body.waitMs || 15000), 30000));
+  const waitMsLimit = Math.max(1000, Math.min(Number(body.waitMs || 15000), 60000));
   let [infoEvent, technicalEvent] = await Promise.all([
     waitTaskResultEvent(infoTaskId, waitMsLimit),
     waitTaskResultEvent(technicalTaskId, waitMsLimit)

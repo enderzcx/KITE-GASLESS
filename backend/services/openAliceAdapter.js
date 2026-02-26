@@ -36,18 +36,61 @@ function parseJsonObjectFromText(text = '') {
   const direct = parseJsonSafe(raw);
   if (direct && typeof direct === 'object' && !Array.isArray(direct) && !direct.rawText) return direct;
 
+  const extractLastJsonObject = (input = '') => {
+    const textRaw = String(input || '');
+    let lastMatch = null;
+    for (let start = 0; start < textRaw.length; start += 1) {
+      if (textRaw[start] !== '{') continue;
+      let depth = 0;
+      let inString = false;
+      let escaped = false;
+      for (let i = start; i < textRaw.length; i += 1) {
+        const ch = textRaw[i];
+        if (inString) {
+          if (escaped) {
+            escaped = false;
+            continue;
+          }
+          if (ch === '\\') {
+            escaped = true;
+            continue;
+          }
+          if (ch === '"') {
+            inString = false;
+          }
+          continue;
+        }
+        if (ch === '"') {
+          inString = true;
+          continue;
+        }
+        if (ch === '{') {
+          depth += 1;
+          continue;
+        }
+        if (ch !== '}') continue;
+        depth -= 1;
+        if (depth !== 0) continue;
+        const candidate = parseJsonSafe(textRaw.slice(start, i + 1));
+        if (candidate && typeof candidate === 'object' && !Array.isArray(candidate) && !candidate.rawText) {
+          lastMatch = candidate;
+        }
+        break;
+      }
+    }
+    return lastMatch;
+  };
+
   const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if (fenced && fenced[1]) {
     const inside = parseJsonSafe(fenced[1]);
     if (inside && typeof inside === 'object' && !Array.isArray(inside) && !inside.rawText) return inside;
+    const fencedExtracted = extractLastJsonObject(fenced[1]);
+    if (fencedExtracted) return fencedExtracted;
   }
 
-  const first = raw.indexOf('{');
-  const last = raw.lastIndexOf('}');
-  if (first >= 0 && last > first) {
-    const slice = parseJsonSafe(raw.slice(first, last + 1));
-    if (slice && typeof slice === 'object' && !Array.isArray(slice) && !slice.rawText) return slice;
-  }
+  const extracted = extractLastJsonObject(raw);
+  if (extracted) return extracted;
   return null;
 }
 
@@ -105,9 +148,9 @@ function buildTechnicalChatMessage(input = {}) {
   return [
     'You are Technical Analysis Agent for crypto markets.',
     'Return ONLY one compact JSON object. No markdown, no code fence, no extra text.',
-    'You MUST call tool(s) before final answer. If tools fail, state exact tool error in summary.',
+    'You MUST call tool(s) before final answer.',
     'Preferred tool: calculateIndicator.',
-    'Run these formulas with asset="crypto" before final answer:',
+    'Try these formulas with asset="crypto" before final answer (retry once when a call fails):',
     `1) RSI(CLOSE('${toolSymbol}', '${interval}'), 14)`,
     `2) MACD(CLOSE('${toolSymbol}', '${interval}'), 12, 26, 9)`,
     `3) EMA(CLOSE('${toolSymbol}', '${interval}'), 12)`,
@@ -121,7 +164,8 @@ function buildTechnicalChatMessage(input = {}) {
     '- riskScore range: 5 to 95',
     '- asOf and quote.fetchedAt must be ISO-8601 timestamp',
     '- quote.priceUsd must come from tool data, not fabricated',
-    '- if any required tool call fails, put "TOOL_ERROR: <reason>" at summary start',
+    '- if some indicators fail but quote.priceUsd and at least one indicator are available, return best-effort analysis',
+    '- only put "TOOL_ERROR: <reason>" at summary start when quote.priceUsd and major indicators are unavailable',
     '',
     `Input traceId=${traceId || 'n/a'}`,
     `Input symbol=${symbol}`,
