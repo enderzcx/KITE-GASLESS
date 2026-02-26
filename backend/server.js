@@ -1831,6 +1831,25 @@ function normalizeStringArray(values = [], limit = 12) {
     .slice(0, Math.max(1, Number(limit) || 12));
 }
 
+function normalizeFreshIsoTimestamp(primaryValue = '', fallbackValue = '') {
+  const now = Date.now();
+  const maxAgeMs = 1000 * 60 * 60 * 24 * 7;
+  const futureSkewMs = 1000 * 60 * 10;
+  const candidates = [primaryValue, fallbackValue];
+  for (const candidate of candidates) {
+    const raw = String(candidate || '').trim();
+    if (!raw) continue;
+    const ts = Date.parse(raw);
+    if (!Number.isFinite(ts)) continue;
+    const ageMs = now - ts;
+    const tooOld = ageMs > maxAgeMs;
+    const tooFuture = ts - now > futureSkewMs;
+    if (tooOld || tooFuture) continue;
+    return new Date(ts).toISOString();
+  }
+  return new Date(now).toISOString();
+}
+
 function normalizeInfoAnalysisResult(raw = {}, task = {}) {
   const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
   const candidateHeadlines = normalizeStringArray(
@@ -1890,13 +1909,21 @@ function normalizeTechnicalAnalysisResult(raw = {}, task = {}) {
     String(quoteSource.provider || source.quoteProvider || source.provider || (ANALYSIS_PROVIDER === 'openalice' ? 'openalice' : 'legacy'))
       .trim()
       .toLowerCase() || 'legacy';
+  const normalizedAsOf = normalizeFreshIsoTimestamp(
+    source.asOf || source.timestamp || source.fetchedAt || '',
+    quoteSource.fetchedAt || ''
+  );
+  const normalizedQuoteFetchedAt = normalizeFreshIsoTimestamp(
+    quoteSource.fetchedAt || '',
+    source.asOf || source.timestamp || source.fetchedAt || ''
+  );
   const quote =
     Number.isFinite(quotePriceRaw) && quotePriceRaw > 0
       ? {
           provider: quoteProvider,
           pair: quotePair,
           priceUsd: Number(quotePriceRaw.toFixed(6)),
-          fetchedAt: String(quoteSource.fetchedAt || source.asOf || source.timestamp || '').trim() || new Date().toISOString(),
+          fetchedAt: normalizedQuoteFetchedAt,
           sourceRequested: String(task.sourceRequested || task.source || '').trim().toLowerCase() || 'auto',
           attemptedProviders: normalizeStringArray(quoteSource.attemptedProviders || [quoteProvider], 6)
         }
@@ -1931,7 +1958,7 @@ function normalizeTechnicalAnalysisResult(raw = {}, task = {}) {
     },
     riskScore,
     summary,
-    asOf: String(source.asOf || source.timestamp || source.fetchedAt || '').trim() || new Date().toISOString(),
+    asOf: normalizedAsOf,
     quote
   };
 }

@@ -97,6 +97,7 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
   - backend enforces `OPENALICE_TIMEOUT_MS >= 30000` to avoid premature aborts on `/api/chat`.
 - Low-signal detection for technical analysis now treats stale `asOf/quote.fetchedAt` timestamps (>7 days old) and `TOOL_ERROR` summaries as fallback triggers.
 - Low-signal detection for info analysis now falls back when OpenAlice returns stale timestamps or "cannot retrieve information" placeholder summaries.
+- Technical analysis normalization now rewrites stale/future OpenAlice timestamps to a fresh ISO time window, preventing false `low-signal` fallback when indicators are otherwise valid.
 - XMTP runtime now supports explicit network endpoint overrides:
   - `XMTP_API_URL`
   - `XMTP_HISTORY_SYNC_URL` (supports `null` to disable history sync endpoint)
