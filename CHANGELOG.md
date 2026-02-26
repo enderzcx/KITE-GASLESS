@@ -60,6 +60,11 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
   - `POST /api/network/demo/router-info-technical/run`
   - supports dual task dispatch (`info-analysis-feed` + `technical-analysis-feed`) and aggregated summary output.
 - Added isolated XMTP quickstart sandbox (`experiments/xmtp-agent-quickstart`) to run the official Build-an-Agent flow independently from project backend.
+- Added local OpenBB Docker ops scripts:
+  - `backend/scripts/start-openbb-local.ps1`
+  - `backend/scripts/stop-openbb-local.ps1`
+  - `backend/scripts/verify-openbb-local.ps1`
+  - `backend/docker/openbb/Dockerfile`
 
 ### Changed
 - Demo and Ops UI now provide `Download Receipt` action from API result panels.
@@ -86,6 +91,11 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
   - `backend/scripts/stop-openalice-dual.ps1`
   - `backend/scripts/verify-openalice-dual.ps1`
 - `start-openalice-dual.ps1` now supports outbound proxy (`OPENALICE_PROXY_URL` / `OPENALICE_NO_PROXY`) for model API access behind restricted networks.
+- OpenAlice technical prompt now explicitly requires tool usage (`calculateIndicator`) before returning JSON, reducing placeholder-only technical replies.
+- Risk-score pipeline now classifies low-signal OpenAlice technical outputs as weak and automatically falls back to local deterministic analysis.
+- OpenAlice timeout handling is now safer for tool-calling workloads:
+  - backend enforces `OPENALICE_TIMEOUT_MS >= 30000` to avoid premature aborts on `/api/chat`.
+- Low-signal detection for technical analysis now treats stale `asOf/quote.fetchedAt` timestamps (>7 days old) and `TOOL_ERROR` summaries as fallback triggers.
 - XMTP runtime now supports explicit network endpoint overrides:
   - `XMTP_API_URL`
   - `XMTP_HISTORY_SYNC_URL` (supports `null` to disable history sync endpoint)

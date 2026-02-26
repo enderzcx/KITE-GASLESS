@@ -416,7 +416,7 @@ OPENALICE_INFO_API_KEY=
 # - technical agent runtime
 OPENALICE_TECHNICAL_BASE_URL=http://127.0.0.1:3312
 OPENALICE_TECHNICAL_API_KEY=
-OPENALICE_TIMEOUT_MS=12000
+OPENALICE_TIMEOUT_MS=30000
 OPENALICE_RETRY=1
 # Optional outbound proxy if direct access to OpenAI/Google is blocked:
 OPENALICE_PROXY_URL=http://127.0.0.1:7890
@@ -447,8 +447,28 @@ Notes:
 - If `OPENCLAW_HEALTH_PATH=/v1/models` returns HTML instead of JSON, you likely hit a control UI route instead of an OpenAI-compatible API route.
 - Info analysis no longer uses Jina x-reader path; backend routes info tasks to OpenAlice adapter.
 - If OpenAlice only exposes `/api/chat`, backend adapter will auto-switch to chat mode and parse strict JSON contracts.
+- Technical analysis with tool-calling LLM often needs >12s; backend enforces a `30s` minimum timeout for OpenAlice requests.
 - OpenBB is optional. Without OpenBB, OpenAlice can still answer, but quantitative indicator depth/market coverage is usually weaker.
 - For XMTP local backend, you can additionally set `XMTP_API_URL/XMTP_HISTORY_SYNC_URL/XMTP_GATEWAY_HOST`.
+
+OpenBB local sidecar (Docker, Windows PowerShell):
+
+```powershell
+cd "G:\KKK\KITE GASLESS\backend"
+
+# start/build local OpenBB container on 6900
+powershell -ExecutionPolicy Bypass -File .\scripts\start-openbb-local.ps1
+
+# verify OpenBB + BTCUSD historical endpoint
+powershell -ExecutionPolicy Bypass -File .\scripts\verify-openbb-local.ps1
+
+# stop container
+powershell -ExecutionPolicy Bypass -File .\scripts\stop-openbb-local.ps1
+```
+
+Notes for OpenBB:
+- `start-openbb-local.ps1` reads `OPENALICE_PROXY_URL` and `OPENALICE_NO_PROXY` from `backend/.env`.
+- If proxy is `127.0.0.1`/`localhost`, the script auto-converts it to `host.docker.internal` for container networking.
 
 ## Tencent Lighthouse Web Deployment (Low Cost)
 

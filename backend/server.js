@@ -84,7 +84,10 @@ const OPENALICE_TECHNICAL_BASE_URL = String(
 const OPENALICE_TECHNICAL_API_KEY = String(
   process.env.OPENALICE_TECHNICAL_API_KEY || process.env.OPENALICE_TECH_API_KEY || OPENALICE_API_KEY
 ).trim();
-const OPENALICE_TIMEOUT_MS = Number(process.env.OPENALICE_TIMEOUT_MS || 12000);
+const OPENALICE_TIMEOUT_MS = Math.max(
+  30_000,
+  Math.min(Number(process.env.OPENALICE_TIMEOUT_MS || 30_000), 120_000)
+);
 const OPENALICE_RETRY = Number(process.env.OPENALICE_RETRY || 1);
 const ANALYSIS_PROVIDER = 'openalice';
 const ERC8004_IDENTITY_REGISTRY = process.env.ERC8004_IDENTITY_REGISTRY || '';
@@ -1941,7 +1944,8 @@ function isWeakTechnicalAnalysis(technical = {}) {
     'could not be fetched',
     'tool limitations',
     'neutral assumptions',
-    'cannot be performed'
+    'cannot be performed',
+    'tool_error'
   ];
   const hasWeakSummary = weakSummaryMarkers.some((item) => summary.includes(item));
 
@@ -1968,8 +1972,18 @@ function isWeakTechnicalAnalysis(technical = {}) {
       staleAsOf = ageMs > 1000 * 60 * 60 * 24 * 7; // older than 7 days
     }
   }
+  const quoteFetchedAtRaw = String(quote.fetchedAt || '').trim();
+  let staleQuoteFetchedAt = false;
+  if (quoteFetchedAtRaw) {
+    const quoteTime = Date.parse(quoteFetchedAtRaw);
+    if (Number.isFinite(quoteTime)) {
+      const ageMs = Date.now() - quoteTime;
+      staleQuoteFetchedAt = ageMs > 1000 * 60 * 60 * 24 * 7; // older than 7 days
+    }
+  }
 
   if (hasWeakSummary) return true;
+  if (staleAsOf || staleQuoteFetchedAt) return true;
   if (!hasQuote && scoreLooksPlaceholder && confidenceLooksPlaceholder) return true;
   if (!hasQuote && !hasAnyIndicatorSignal && staleAsOf) return true;
   return false;

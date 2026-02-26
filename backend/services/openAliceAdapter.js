@@ -89,21 +89,38 @@ function buildInfoChatMessage(input = {}) {
 
 function buildTechnicalChatMessage(input = {}) {
   const symbol = normalizeText(input.symbol || input.pair || 'BTCUSDT').toUpperCase();
+  const compactSymbol = symbol.replace(/[-_\s/]/g, '');
+  const toolSymbol = compactSymbol === 'BTC' || compactSymbol === 'BTCUSDT' || compactSymbol === 'BTCUSD'
+    ? 'BTCUSD'
+    : compactSymbol;
   const traceId = normalizeText(input.traceId || '');
   const source = normalizeText(input.source || 'auto');
   const timeframe = normalizeText(input.timeframe || `${Number(input.horizonMin || 60)}m`);
+  const interval = /^(60m|1h)$/i.test(timeframe) ? '1h' : '1d';
   return [
     'You are Technical Analysis Agent for crypto markets.',
     'Return ONLY one compact JSON object. No markdown, no code fence, no extra text.',
+    'You MUST call tool(s) before final answer. If tools fail, state exact tool error in summary.',
+    'Preferred tool: calculateIndicator.',
+    'Run these formulas with asset="crypto" before final answer:',
+    `1) RSI(CLOSE('${toolSymbol}', '${interval}'), 14)`,
+    `2) MACD(CLOSE('${toolSymbol}', '${interval}'), 12, 26, 9)`,
+    `3) EMA(CLOSE('${toolSymbol}', '${interval}'), 12)`,
+    `4) EMA(CLOSE('${toolSymbol}', '${interval}'), 26)`,
+    `5) ATR(HIGH('${toolSymbol}', '${interval}'), LOW('${toolSymbol}', '${interval}'), CLOSE('${toolSymbol}', '${interval}'), 14)`,
+    `6) CLOSE('${toolSymbol}', '${interval}')[-1]`,
     'JSON schema:',
     '{"provider":"openalice","traceId":"","symbol":"BTCUSDT","timeframe":"60m","indicators":{"rsi":50,"macd":0,"emaFast":0,"emaSlow":0,"atr":0},"signals":{"trend":"sideways","momentum":"neutral","volatility":"normal","bias":"neutral"},"confidence":0.5,"riskBand":{"stopLossPct":1.5,"takeProfitPct":3.0},"riskScore":50,"summary":"","asOf":"","quote":{"provider":"openalice","pair":"BTCUSDT","priceUsd":0,"fetchedAt":"","sourceRequested":"auto","attemptedProviders":["openalice"]}}',
     'Rules:',
     '- confidence range: 0 to 1',
     '- riskScore range: 5 to 95',
     '- asOf and quote.fetchedAt must be ISO-8601 timestamp',
+    '- quote.priceUsd must come from tool data, not fabricated',
+    '- if any required tool call fails, put "TOOL_ERROR: <reason>" at summary start',
     '',
     `Input traceId=${traceId || 'n/a'}`,
     `Input symbol=${symbol}`,
+    `Input toolSymbol=${toolSymbol}`,
     `Input timeframe=${timeframe}`,
     `Input source=${source}`
   ].join('\n');
