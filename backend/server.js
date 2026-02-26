@@ -3200,6 +3200,7 @@ function buildAgent001HelpText() {
     '1) 技术面：例如 “分析 BTCUSDT 技术面 60m”',
     '2) 消息面：例如 “分析 btc market sentiment today” 或发送 URL',
     '3) 联合分析：例如 “给我 BTC 的消息+技术联合结论”',
+    '4) 交易计划：例如 “基于消息+技术给我 BTC 挂单计划，60m”',
     '我会自动与 technical-agent / message-agent 通过 XMTP 协作，再回你结果。'
   ].join('\n');
 }
@@ -3210,11 +3211,12 @@ async function classifyAgent001IntentByLlm(text = '') {
   const prompt = [
     'You are AGENT001 intent router.',
     'Return ONLY JSON with schema:',
-    '{"intent":"technical|info|both|chat|help","symbol":"BTCUSDT","horizonMin":60,"source":"hyperliquid","topic":""}',
+    '{"intent":"technical|info|both|trade|chat|help","symbol":"BTCUSDT","horizonMin":60,"source":"hyperliquid","topic":""}',
     'Rules:',
     '- intent=technical for technical/risk analysis requests',
     '- intent=info for news/sentiment/info requests',
     '- intent=both for combined info+technical requests',
+    '- intent=trade for order/plan/entry/exit/place-order requests',
     '- intent=help for capability/help requests',
     '- topic should keep user query text for info intent',
     '- symbol should default BTCUSDT',
@@ -3239,6 +3241,7 @@ async function classifyAgent001IntentByLlm(text = '') {
 
 function classifyAgent001IntentFallback(text = '') {
   const rawText = String(text || '').trim();
+  const hasTrade = /(交易|下单|挂单|做多|做空|交易计划|order|place order|plan|entry|exit|strategy|trade)/i.test(rawText);
   const hasTech = /(技术|technical|risk|指标|rsi|macd|ema|atr|btc)/i.test(rawText);
   const hasInfo = /(消息|news|sentiment|舆情|资讯|headline|digest|x-reader|http:\/\/|https:\/\/)/i.test(rawText);
   const askHelp = /(help|功能|怎么用|命令|示例)/i.test(rawText);
@@ -3246,7 +3249,8 @@ function classifyAgent001IntentFallback(text = '') {
     return { intent: 'help', symbol: 'BTCUSDT', horizonMin: 60, source: 'hyperliquid', topic: '' };
   }
   let intent = 'chat';
-  if (hasTech && hasInfo) intent = 'both';
+  if (hasTrade) intent = 'trade';
+  else if (hasTech && hasInfo) intent = 'both';
   else if (hasTech) intent = 'technical';
   else if (hasInfo) intent = 'info';
   const url = extractFirstUrlFromText(rawText);
@@ -3264,7 +3268,7 @@ function resolveAgent001Intent(text = '', llmIntent = null) {
   const fallback = classifyAgent001IntentFallback(text);
   if (!llmIntent || typeof llmIntent !== 'object') return fallback;
   const intent = String(llmIntent.intent || '').trim().toLowerCase();
-  if (!['technical', 'info', 'both', 'chat', 'help'].includes(intent)) return fallback;
+  if (!['technical', 'info', 'both', 'trade', 'chat', 'help'].includes(intent)) return fallback;
   return {
     intent,
     symbol: String(llmIntent.symbol || fallback.symbol || 'BTCUSDT').trim().toUpperCase() || 'BTCUSDT',
@@ -3405,6 +3409,220 @@ function buildAgent001DispatchSummary(results = {}) {
   return lines.join('\n').trim();
 }
 
+function roundPriceByMagnitude(value, fallbackDigits = 2) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return '';
+  if (numeric >= 1000) return numeric.toFixed(2);
+  if (numeric >= 100) return numeric.toFixed(3);
+  if (numeric >= 1) return numeric.toFixed(4);
+  return numeric.toFixed(Math.max(4, fallbackDigits));
+}
+
+function pickTradeDecisionSide({
+  trend = '',
+  momentum = '',
+  bias = '',
+  sentimentScore = NaN
+} = {}) {
+  let longScore = 0;
+  let shortScore = 0;
+  const reasons = [];
+  const safeTrend = String(trend || '').trim().toLowerCase();
+  const safeMomentum = String(momentum || '').trim().toLowerCase();
+  const safeBias = String(bias || '').trim().toLowerCase();
+
+  if (/(up|bull)/.test(safeTrend)) {
+    longScore += 2;
+    reasons.push('技术趋势偏多');
+  } else if (/(down|bear)/.test(safeTrend)) {
+    shortScore += 2;
+    reasons.push('技术趋势偏空');
+  } else {
+    reasons.push('技术趋势偏震荡');
+  }
+
+  if (/(bull|long)/.test(safeBias)) {
+    longScore += 2;
+    reasons.push('技术偏向做多');
+  } else if (/(bear|short)/.test(safeBias)) {
+    shortScore += 2;
+    reasons.push('技术偏向做空');
+  } else if (safeBias) {
+    reasons.push(`技术偏向 ${safeBias}`);
+  }
+
+  if (/(bull|up|positive|strong)/.test(safeMomentum)) longScore += 1;
+  if (/(bear|down|negative|weak)/.test(safeMomentum)) shortScore += 1;
+
+  const sentiment = Number(sentimentScore);
+  if (Number.isFinite(sentiment)) {
+    if (sentiment >= 0.2) {
+      longScore += 1;
+      reasons.push('消息面情绪偏正向');
+    } else if (sentiment <= -0.2) {
+      shortScore += 1;
+      reasons.push('消息面情绪偏负向');
+    } else {
+      reasons.push('消息面情绪中性');
+    }
+  } else {
+    reasons.push('消息面情绪未量化');
+  }
+
+  const diff = Math.abs(longScore - shortScore);
+  const side = longScore > shortScore ? 'long' : shortScore > longScore ? 'short' : 'none';
+  return {
+    side: diff >= 2 ? side : 'none',
+    longScore,
+    shortScore,
+    diff,
+    reasons
+  };
+}
+
+function buildAgent001TradePlan({
+  rawText = '',
+  intent = {},
+  technical = null,
+  info = null
+} = {}) {
+  const technicalResult =
+    technical?.taskResult?.result && typeof technical.taskResult.result === 'object' && !Array.isArray(technical.taskResult.result)
+      ? technical.taskResult.result
+      : {};
+  const infoResult =
+    info?.taskResult?.result && typeof info.taskResult.result === 'object' && !Array.isArray(info.taskResult.result)
+      ? info.taskResult.result
+      : {};
+
+  const analysis =
+    technicalResult?.analysis && typeof technicalResult.analysis === 'object' && !Array.isArray(technicalResult.analysis)
+      ? technicalResult.analysis
+      : technicalResult?.technical && typeof technicalResult.technical === 'object' && !Array.isArray(technicalResult.technical)
+        ? technicalResult.technical
+        : {};
+  const risk =
+    technicalResult?.risk && typeof technicalResult.risk === 'object' && !Array.isArray(technicalResult.risk)
+      ? technicalResult.risk
+      : {};
+  const quote =
+    technicalResult?.quote && typeof technicalResult.quote === 'object' && !Array.isArray(technicalResult.quote)
+      ? technicalResult.quote
+      : analysis?.quote && typeof analysis.quote === 'object' && !Array.isArray(analysis.quote)
+        ? analysis.quote
+        : {};
+  const infoPayload =
+    infoResult?.info && typeof infoResult.info === 'object' && !Array.isArray(infoResult.info)
+      ? infoResult.info
+      : {};
+
+  const symbol =
+    String(
+      analysis?.symbol ||
+        risk?.symbol ||
+        intent?.symbol ||
+        extractBtcSymbolFromText(rawText) ||
+        'BTCUSDT'
+    )
+      .trim()
+      .toUpperCase() || 'BTCUSDT';
+  const horizonMin = Number.isFinite(Number(intent?.horizonMin))
+    ? Math.max(5, Math.min(Math.round(Number(intent.horizonMin)), 240))
+    : Number.isFinite(Number(risk?.horizonMin))
+      ? Math.max(5, Math.min(Math.round(Number(risk.horizonMin)), 240))
+      : extractHorizonFromText(rawText);
+  const priceUsd = Number(quote?.priceUsd ?? NaN);
+  const riskScoreRaw = Number(risk?.score ?? analysis?.riskScore ?? NaN);
+  const riskScore = Number.isFinite(riskScoreRaw) ? Math.max(5, Math.min(95, Math.round(riskScoreRaw))) : 50;
+  const riskLevel = String(risk?.level || toRiskLevel(riskScore)).trim().toLowerCase() || toRiskLevel(riskScore);
+  const sentimentScore = Number(infoPayload?.sentimentScore ?? NaN);
+  const sentimentConfidence = Number(infoPayload?.confidence ?? NaN);
+  const signals =
+    analysis?.signals && typeof analysis.signals === 'object' && !Array.isArray(analysis.signals)
+      ? analysis.signals
+      : {};
+  const riskBand =
+    analysis?.riskBand && typeof analysis.riskBand === 'object' && !Array.isArray(analysis.riskBand)
+      ? analysis.riskBand
+      : {};
+  const stopLossPct = clampNumber(riskBand?.stopLossPct, 0.2, 20, 1.5);
+  const takeProfitPct = clampNumber(riskBand?.takeProfitPct, 0.4, 40, 3);
+
+  const sideDecision = pickTradeDecisionSide({
+    trend: signals?.trend,
+    momentum: signals?.momentum,
+    bias: signals?.bias,
+    sentimentScore
+  });
+
+  let decision = 'no-order';
+  let decisionReason = '';
+  if (riskScore >= 70) {
+    decision = 'no-order';
+    decisionReason = `风险分 ${riskScore}/100 偏高，先观望`;
+  } else if (sideDecision.side === 'long') {
+    decision = 'long-limit';
+    decisionReason = '技术面与消息面偏多，执行挂单做多';
+  } else if (sideDecision.side === 'short') {
+    decision = 'short-limit';
+    decisionReason = '技术面与消息面偏空，执行挂单做空';
+  } else {
+    decision = 'no-order';
+    decisionReason = '信号冲突或强度不足，暂不挂单';
+  }
+
+  let entryPrice = NaN;
+  let stopPrice = NaN;
+  let takePrice = NaN;
+  if (Number.isFinite(priceUsd) && priceUsd > 0 && decision === 'long-limit') {
+    entryPrice = priceUsd * (1 - 0.0012);
+    stopPrice = entryPrice * (1 - stopLossPct / 100);
+    takePrice = entryPrice * (1 + takeProfitPct / 100);
+  } else if (Number.isFinite(priceUsd) && priceUsd > 0 && decision === 'short-limit') {
+    entryPrice = priceUsd * (1 + 0.0012);
+    stopPrice = entryPrice * (1 + stopLossPct / 100);
+    takePrice = entryPrice * (1 - takeProfitPct / 100);
+  }
+
+  const positionPct = riskScore >= 65 ? 20 : riskScore >= 55 ? 30 : riskScore >= 45 ? 40 : 50;
+  const technicalSummary = String(technicalResult?.summary || technical?.reason || technical?.error || '').trim();
+  const infoSummary = String(infoResult?.summary || info?.reason || info?.error || '').trim();
+  const sentimentText = Number.isFinite(sentimentScore)
+    ? `${sentimentScore.toFixed(3)}${Number.isFinite(sentimentConfidence) ? ` (置信度 ${sentimentConfidence.toFixed(2)})` : ''}`
+    : 'N/A';
+
+  const lines = [
+    '交易计划（规则版）',
+    `标的: ${symbol} | 周期: ${horizonMin}m`,
+    `决策: ${
+      decision === 'long-limit' ? '挂单做多' : decision === 'short-limit' ? '挂单做空' : '不挂单'
+    }`,
+    `决策理由: ${decisionReason}`,
+    `风险: ${riskScore}/100 (${riskLevel}) | 消息情绪: ${sentimentText}`,
+    `信号评分: long=${sideDecision.longScore}, short=${sideDecision.shortScore}`
+  ];
+
+  if (decision !== 'no-order' && Number.isFinite(entryPrice) && Number.isFinite(stopPrice) && Number.isFinite(takePrice)) {
+    lines.push(`入场挂单: ${roundPriceByMagnitude(entryPrice)}`);
+    lines.push(`止损: ${roundPriceByMagnitude(stopPrice)} (${stopLossPct.toFixed(2)}%)`);
+    lines.push(`止盈: ${roundPriceByMagnitude(takePrice)} (${takeProfitPct.toFixed(2)}%)`);
+    lines.push(`建议仓位: 账户可用保证金的 ${positionPct}%`);
+    lines.push('订单失效: 30 分钟未成交则撤单重评');
+  } else if (decision !== 'no-order') {
+    lines.push('入场挂单: 当前缺少有效价格，先请求最新报价后再下单');
+  } else {
+    lines.push('执行建议: 等待下一轮信号（建议 15-30 分钟后重评）');
+  }
+
+  lines.push(`技术面摘要: ${technicalSummary || '暂无技术面摘要'}`);
+  lines.push(`消息面摘要: ${infoSummary || '暂无消息面摘要'}`);
+  if (sideDecision.reasons.length > 0) {
+    lines.push(`规则依据: ${sideDecision.reasons.join('；')}`);
+  }
+  lines.push('提示: 仅用于研究与演示，不构成投资建议。');
+  return lines.join('\n');
+}
+
 async function maybePolishAgent001Reply(rawText = '', draft = '') {
   const cleanDraft = String(draft || '').trim();
   if (!cleanDraft) return '';
@@ -3468,8 +3686,9 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
   }
 
   const waitMsLimit = 30_000;
-  const runTechnical = intent.intent === 'technical' || intent.intent === 'both';
-  const runInfo = intent.intent === 'info' || intent.intent === 'both';
+  const runTrade = intent.intent === 'trade';
+  const runTechnical = runTrade || intent.intent === 'technical' || intent.intent === 'both';
+  const runInfo = runTrade || intent.intent === 'info' || intent.intent === 'both';
   const technicalPromise = runTechnical
     ? runAgent001DispatchTask({
         toAgentId: 'technical-agent',
@@ -3496,6 +3715,14 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
     : Promise.resolve(null);
 
   const [technical, info] = await Promise.all([technicalPromise, infoPromise]);
+  if (runTrade) {
+    return buildAgent001TradePlan({
+      rawText,
+      intent,
+      technical,
+      info
+    });
+  }
   const summary = buildAgent001DispatchSummary({ technical, info });
   if (!summary) {
     return 'AGENT001 调度完成，但未拿到可读结果。请稍后重试。';
