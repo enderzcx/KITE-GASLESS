@@ -4014,11 +4014,17 @@ async function buildAgent001StrictPaymentPlan({
     });
   }
   if (normalizedCapability === 'info-analysis-feed') {
+    const rawTopic = String(intent?.topic || '').trim();
+    const rawUrl = String(extractFirstUrlFromText(rawText) || '').trim();
+    const fallbackTopic = String(rawText || '').trim();
+    const defaultTopic = `${String(intent?.symbol || 'BTCUSDT').trim().toUpperCase()} market sentiment`;
+    const resolvedTopic = rawTopic || rawUrl || fallbackTopic || defaultTopic;
     return buildXReaderPaymentIntentForTask({
       body: {
         input: {
-          url: intent?.topic || extractFirstUrlFromText(rawText) || rawText,
-          mode: 'news',
+          url: /^https?:\/\//i.test(resolvedTopic) ? resolvedTopic : '',
+          topic: resolvedTopic,
+          mode: 'openalice',
           maxChars: 900
         },
         bindRealX402: true,
@@ -7936,14 +7942,25 @@ async function buildXReaderPaymentIntentForTask({
   body = {},
   traceId = '',
   fallbackRequestId = '',
-  defaultTask = { url: 'https://x.com/Kite_AI', mode: 'auto', maxChars: X_READER_MAX_CHARS_DEFAULT }
+  defaultTask = {
+    url: 'https://x.com/Kite_AI',
+    topic: 'btc market sentiment today',
+    mode: 'auto',
+    maxChars: X_READER_MAX_CHARS_DEFAULT
+  }
 } = {}) {
   const inputTask =
     body?.input && typeof body.input === 'object' && !Array.isArray(body.input)
       ? body.input
       : defaultTask;
   const normalizedTask = normalizeXReaderParams({
-    url: inputTask?.url || inputTask?.resourceUrl || defaultTask.url || '',
+    url: inputTask?.url || inputTask?.resourceUrl || '',
+    topic:
+      inputTask?.topic ||
+      inputTask?.query ||
+      inputTask?.keyword ||
+      defaultTask.topic ||
+      '',
     mode: inputTask?.mode || inputTask?.source || defaultTask.mode || 'auto',
     maxChars: inputTask?.maxChars ?? defaultTask.maxChars ?? X_READER_MAX_CHARS_DEFAULT
   });
