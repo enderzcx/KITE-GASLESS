@@ -93,6 +93,8 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
   - `GET /api/demo/stream`
   - `GET /api/events/stream`
 - SSE broadcast internals removed from active runtime (workflow broadcast kept as no-op for compatibility).
+- Removed `experiments/xmtp-agent-quickstart` from version control;
+  keep it as local-only sandbox and do not upload.
 
 ## [v1.8.0] - 2026-02-22
 

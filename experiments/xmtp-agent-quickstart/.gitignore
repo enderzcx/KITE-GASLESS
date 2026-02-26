@@ -1,8 +1,0 @@
-node_modules/
-.env
-.env.local
-dist/
-*.log
-xmtp-*.db3
-xmtp-*.db3-shm
-xmtp-*.db3-wal
