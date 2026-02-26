@@ -4672,6 +4672,7 @@ async function handleReaderRuntimeTaskEnvelope({ envelope = {} } = {}) {
   const input = getTaskEnvelopeInput(envelope);
   const task = normalizeXReaderParams({
     url: input.url || input.resourceUrl || '',
+    topic: input.topic || input.query || input.keyword || '',
     mode: input.mode || input.source || 'auto',
     maxChars: input.maxChars ?? X_READER_MAX_CHARS_DEFAULT
   });
@@ -7315,7 +7316,8 @@ app.post('/api/workflow/x-reader/run', requireRole('agent'), async (req, res) =>
   let normalizedTask = null;
   try {
     normalizedTask = normalizeXReaderParams({
-      url: req.body?.url || req.body?.resourceUrl,
+      url: req.body?.url || req.body?.resourceUrl || req.body?.targetUrl,
+      topic: req.body?.topic || req.body?.query || req.body?.keyword,
       mode: req.body?.mode || req.body?.source || 'auto',
       maxChars: req.body?.maxChars ?? X_READER_MAX_CHARS_DEFAULT
     });
@@ -8500,6 +8502,12 @@ app.get('/api/receipt/:requestId/excerpt', requireRole('viewer'), async (req, re
     try {
       const normalizedTask = normalizeXReaderParams({
         url: reqItem?.actionParams?.url || storedReader?.url || '',
+        topic:
+          reqItem?.actionParams?.topic ||
+          reqItem?.actionParams?.query ||
+          reqItem?.actionParams?.keyword ||
+          storedReader?.topic ||
+          '',
         mode: reqItem?.actionParams?.mode || storedReader?.mode || 'auto',
         maxChars
       });
@@ -9093,6 +9101,13 @@ async function handleA2AXReader(body = {}) {
   try {
     task = normalizeXReaderParams({
       url: body.url || taskInput.url || taskInput.resourceUrl,
+      topic:
+        body.topic ||
+        body.query ||
+        body.keyword ||
+        taskInput.topic ||
+        taskInput.query ||
+        taskInput.keyword,
       mode: body.mode || body.source || taskInput.mode || taskInput.source || 'auto',
       maxChars: body.maxChars ?? taskInput.maxChars ?? X_READER_MAX_CHARS_DEFAULT
     });
@@ -11892,6 +11907,7 @@ app.post('/api/analysis/info/run', requireRole('agent'), async (req, res) => {
     const body = req.body || {};
     const task = normalizeXReaderParams({
       url: body.url || body.resourceUrl || body.targetUrl,
+      topic: body.topic || body.query || body.keyword,
       mode: body.mode || body.source || 'auto',
       maxChars: body.maxChars ?? X_READER_MAX_CHARS_DEFAULT
     });
