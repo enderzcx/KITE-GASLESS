@@ -7,6 +7,14 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 ## [Unreleased]
 
 ### Added
+- Added Hyperliquid testnet trading adapter and API endpoints:
+  - `GET /api/hyperliquid/testnet/health`
+  - `GET /api/hyperliquid/testnet/mids`
+  - `GET /api/hyperliquid/testnet/open-orders`
+  - `GET /api/hyperliquid/testnet/order-status`
+  - `POST /api/hyperliquid/testnet/order`
+  - `POST /api/hyperliquid/testnet/cancel`
+  - supports dry-run (`simulate=true`) and live order/cancel with testnet API wallet.
 - Receipt export API for judge-friendly proof bundles:
   - `GET /api/receipt/:requestId`
   - optional `?download=1` to download `kiteclaw_receipt_<requestId>.json`.

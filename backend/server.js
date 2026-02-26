@@ -8,6 +8,7 @@ import { ethers } from 'ethers';
 import { GokiteAASDK } from '../frontend/src/gokite-aa-sdk.js';
 import { createOpenClawAdapter } from './services/openclawAdapter.js';
 import { createOpenAliceAdapter } from './services/openAliceAdapter.js';
+import { createHyperliquidAdapter } from './services/hyperliquidAdapter.js';
 import { createPersistenceStore } from './services/persistenceStore.js';
 import { createXmtpAgentRuntime } from './services/xmtpAgentRuntime.js';
 
@@ -89,6 +90,24 @@ const OPENALICE_TIMEOUT_MS = Math.max(
   Math.min(Number(process.env.OPENALICE_TIMEOUT_MS || 30_000), 120_000)
 );
 const OPENALICE_RETRY = Number(process.env.OPENALICE_RETRY || 1);
+const HYPERLIQUID_TESTNET_ENABLED = /^(1|true|yes|on)$/i.test(
+  String(process.env.HYPERLIQUID_TESTNET_ENABLED || '0').trim()
+);
+const HYPERLIQUID_TESTNET_PRIVATE_KEY = normalizePrivateKey(
+  String(process.env.HYPERLIQUID_TESTNET_PRIVATE_KEY || '').trim()
+);
+const HYPERLIQUID_TESTNET_ACCOUNT_ADDRESS = normalizeAddress(
+  String(process.env.HYPERLIQUID_TESTNET_ACCOUNT_ADDRESS || '').trim()
+);
+const HYPERLIQUID_TESTNET_API_URL = String(process.env.HYPERLIQUID_TESTNET_API_URL || '').trim();
+const HYPERLIQUID_TESTNET_TIMEOUT_MS = Math.max(
+  3000,
+  Math.min(Number(process.env.HYPERLIQUID_TESTNET_TIMEOUT_MS || 12_000), 120_000)
+);
+const HYPERLIQUID_TESTNET_MARKET_SLIPPAGE_BPS = Math.max(
+  1,
+  Math.min(Number(process.env.HYPERLIQUID_TESTNET_MARKET_SLIPPAGE_BPS || 30), 1000)
+);
 const ANALYSIS_PROVIDER = 'openalice';
 const ERC8004_IDENTITY_REGISTRY = process.env.ERC8004_IDENTITY_REGISTRY || '';
 const ERC8004_AGENT_ID_RAW = process.env.ERC8004_AGENT_ID || '';
@@ -189,6 +208,16 @@ const openAliceAdapter = createOpenAliceAdapter({
   technicalApiKey: OPENALICE_TECHNICAL_API_KEY,
   timeoutMs: OPENALICE_TIMEOUT_MS,
   retry: OPENALICE_RETRY
+});
+
+const hyperliquidAdapter = createHyperliquidAdapter({
+  enabled: HYPERLIQUID_TESTNET_ENABLED,
+  isTestnet: true,
+  privateKey: HYPERLIQUID_TESTNET_PRIVATE_KEY,
+  accountAddress: HYPERLIQUID_TESTNET_ACCOUNT_ADDRESS,
+  apiUrl: HYPERLIQUID_TESTNET_API_URL,
+  timeoutMs: HYPERLIQUID_TESTNET_TIMEOUT_MS,
+  defaultMarketSlippageBps: HYPERLIQUID_TESTNET_MARKET_SLIPPAGE_BPS
 });
 
 const persistenceStore = createPersistenceStore({
@@ -10798,6 +10827,150 @@ app.get('/api/openalice/health', requireRole('viewer'), async (req, res) => {
     adapter: info,
     health
   });
+});
+
+app.get('/api/hyperliquid/testnet/health', requireRole('viewer'), async (req, res) => {
+  const adapterInfo = hyperliquidAdapter.info();
+  const health = await hyperliquidAdapter.health();
+  return res.status(health?.ok ? 200 : 503).json({
+    ok: Boolean(health?.ok),
+    traceId: req.traceId || '',
+    adapter: adapterInfo,
+    health
+  });
+});
+
+app.get('/api/hyperliquid/testnet/mids', requireRole('viewer'), async (req, res) => {
+  try {
+    const mids = await hyperliquidAdapter.allMids();
+    return res.json({
+      ok: true,
+      traceId: req.traceId || '',
+      mode: 'testnet',
+      total: mids && typeof mids === 'object' ? Object.keys(mids).length : 0,
+      mids
+    });
+  } catch (error) {
+    const detail = hyperliquidAdapter.buildAdapterError(error);
+    return res.status(503).json({
+      ok: false,
+      traceId: req.traceId || '',
+      error: detail.error || 'hyperliquid_mids_failed',
+      reason: detail.reason || 'hyperliquid mids failed',
+      response: detail.response || null
+    });
+  }
+});
+
+app.get('/api/hyperliquid/testnet/open-orders', requireRole('viewer'), async (req, res) => {
+  try {
+    const result = await hyperliquidAdapter.openOrders({
+      user: req.query.user || '',
+      symbol: req.query.symbol || ''
+    });
+    return res.json({
+      ok: true,
+      traceId: req.traceId || '',
+      mode: 'testnet',
+      ...result
+    });
+  } catch (error) {
+    const detail = hyperliquidAdapter.buildAdapterError(error);
+    return res.status(400).json({
+      ok: false,
+      traceId: req.traceId || '',
+      error: detail.error || 'hyperliquid_open_orders_failed',
+      reason: detail.reason || 'hyperliquid open-orders failed',
+      response: detail.response || null
+    });
+  }
+});
+
+app.get('/api/hyperliquid/testnet/order-status', requireRole('viewer'), async (req, res) => {
+  try {
+    const oid = req.query.oid || req.query.orderId || req.query.cloid || '';
+    const result = await hyperliquidAdapter.orderStatus({
+      user: req.query.user || '',
+      oid
+    });
+    return res.json({
+      ok: true,
+      traceId: req.traceId || '',
+      mode: 'testnet',
+      ...result
+    });
+  } catch (error) {
+    const detail = hyperliquidAdapter.buildAdapterError(error);
+    return res.status(400).json({
+      ok: false,
+      traceId: req.traceId || '',
+      error: detail.error || 'hyperliquid_order_status_failed',
+      reason: detail.reason || 'hyperliquid order-status failed',
+      response: detail.response || null
+    });
+  }
+});
+
+app.post('/api/hyperliquid/testnet/order', requireRole('agent'), async (req, res) => {
+  try {
+    const body = req.body || {};
+    const result = await hyperliquidAdapter.placePerpOrder({
+      symbol: body.symbol || body.coin || 'BTCUSDT',
+      side: body.side || '',
+      orderType: body.orderType || body.type || 'limit',
+      size: body.size ?? body.sz ?? '',
+      price: body.price ?? '',
+      tif: body.tif || '',
+      reduceOnly: body.reduceOnly === true || String(body.reduceOnly || '').trim().toLowerCase() === 'true',
+      slippageBps: body.slippageBps ?? body.marketSlippageBps,
+      cloid: body.cloid || body.clientOrderId || '',
+      simulate: body.simulate === true || body.dryRun === true,
+      reloadMeta: body.reloadMeta === true
+    });
+    return res.json({
+      ok: true,
+      traceId: req.traceId || '',
+      mode: 'testnet',
+      result
+    });
+  } catch (error) {
+    const detail = hyperliquidAdapter.buildAdapterError(error);
+    return res.status(400).json({
+      ok: false,
+      traceId: req.traceId || '',
+      error: detail.error || 'hyperliquid_order_failed',
+      reason: detail.reason || 'hyperliquid order failed',
+      response: detail.response || null
+    });
+  }
+});
+
+app.post('/api/hyperliquid/testnet/cancel', requireRole('agent'), async (req, res) => {
+  try {
+    const body = req.body || {};
+    const result = await hyperliquidAdapter.cancelPerpOrders({
+      symbol: body.symbol || body.coin || 'BTCUSDT',
+      oid: body.oid ?? body.orderId,
+      oids: body.oids,
+      simulate: body.simulate === true || body.dryRun === true,
+      reloadMeta: body.reloadMeta === true
+    });
+    return res.json({
+      ok: true,
+      traceId: req.traceId || '',
+      mode: 'testnet',
+      result
+    });
+  } catch (error) {
+    const detail = hyperliquidAdapter.buildAdapterError(error);
+    return res.status(400).json({
+      ok: false,
+      traceId: req.traceId || '',
+      error: detail.error || 'hyperliquid_cancel_failed',
+      reason: detail.reason || 'hyperliquid cancel failed',
+      response: detail.response || null
+    });
+  }
 });
 
 app.post('/api/agent001/chat/run', requireRole('agent'), async (req, res) => {

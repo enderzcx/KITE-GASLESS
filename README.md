@@ -156,6 +156,12 @@ Upgrade authority remains with each proxy owner; this project does not grant per
 - `GET /api/openalice/health`
 - `POST /api/analysis/info/run`
 - `POST /api/analysis/technical/run`
+- `GET /api/hyperliquid/testnet/health`
+- `GET /api/hyperliquid/testnet/mids`
+- `GET /api/hyperliquid/testnet/open-orders`
+- `GET /api/hyperliquid/testnet/order-status`
+- `POST /api/hyperliquid/testnet/order`
+- `POST /api/hyperliquid/testnet/cancel`
 - `GET /api/xmtp/status`
 - `POST /api/xmtp/start`
 - `POST /api/xmtp/stop`
@@ -272,6 +278,21 @@ curl.exe -sS -X POST "http://127.0.0.1:3001/api/analysis/technical/run" `
   -H "x-api-key: <agent_key>" `
   -H "Content-Type: application/json" `
   --data-binary "{\"symbol\":\"BTCUSDT\",\"source\":\"hyperliquid\",\"horizonMin\":60}"
+```
+
+### Hyperliquid Testnet Trading Verify (Local)
+
+```powershell
+curl.exe -sS "http://127.0.0.1:3001/api/hyperliquid/testnet/health" `
+  -H "x-api-key: <viewer_key>"
+
+curl.exe -sS -X POST "http://127.0.0.1:3001/api/hyperliquid/testnet/order" `
+  -H "x-api-key: <agent_key>" `
+  -H "Content-Type: application/json" `
+  --data-binary "{\"symbol\":\"BTCUSDT\",\"side\":\"buy\",\"orderType\":\"market\",\"size\":0.0002,\"simulate\":true}"
+
+curl.exe -sS "http://127.0.0.1:3001/api/hyperliquid/testnet/open-orders" `
+  -H "x-api-key: <viewer_key>"
 ```
 
 ### XMTP Router->Info+Technical Verify (Local)
@@ -434,6 +455,20 @@ OPENALICE_RETRY=1
 # Optional outbound proxy if direct access to OpenAI/Google is blocked:
 OPENALICE_PROXY_URL=http://127.0.0.1:7890
 OPENALICE_NO_PROXY=127.0.0.1,localhost
+```
+
+Hyperliquid testnet trading (optional, for live order/cancel API):
+
+```env
+HYPERLIQUID_TESTNET_ENABLED=1
+HYPERLIQUID_TESTNET_PRIVATE_KEY=0x<api_wallet_private_key>
+# master account address (recommended when using approved API wallet)
+HYPERLIQUID_TESTNET_ACCOUNT_ADDRESS=0x<master_wallet_address>
+# optional override, default: https://api.hyperliquid-testnet.xyz
+HYPERLIQUID_TESTNET_API_URL=
+HYPERLIQUID_TESTNET_TIMEOUT_MS=12000
+# used for synthetic market order limit price guard
+HYPERLIQUID_TESTNET_MARKET_SLIPPAGE_BPS=30
 ```
 
 Local dual-runtime quickstart (Windows PowerShell):

@@ -12,6 +12,7 @@
     "aa:upgrade": "node scripts/aa-upgrade.js"
   },
   "dependencies": {
+    "@nktkas/hyperliquid": "^0.31.0",
     "@xmtp/agent-sdk": "^2.2.0",
     "cors": "^2.8.5",
     "dotenv": "^17.3.1",
