@@ -65,13 +65,16 @@ function buildRoleConfig(role = '', baseUrl = '', apiKey = '') {
 }
 
 function buildInfoChatMessage(input = {}) {
-  const url = normalizeText(input.url || input.resourceUrl || input.topic || 'unknown');
+  const url = normalizeText(input.url || input.resourceUrl || '');
+  const topic = normalizeText(input.topic || input.query || url || 'market topic');
+  const inputType = normalizeText(input.inputType || (url ? 'url' : 'topic')).toLowerCase() || 'topic';
   const traceId = normalizeText(input.traceId || '');
   const mode = normalizeText(input.mode || 'auto');
   const maxChars = Number.isFinite(Number(input.maxChars)) ? Number(input.maxChars) : 1200;
   return [
     'You are Message Agent for crypto information analysis.',
     'Return ONLY one compact JSON object. No markdown, no code fence, no extra text.',
+    'If inputType=topic, do topic/news sentiment analysis directly without requiring webpage browsing.',
     'JSON schema:',
     '{"provider":"openalice","traceId":"","topic":"","sentimentScore":0,"confidence":0.5,"headlines":[],"keyFactors":[],"summary":"","asOf":""}',
     'Rules:',
@@ -81,7 +84,9 @@ function buildInfoChatMessage(input = {}) {
     '- asOf must be ISO-8601 timestamp',
     '',
     `Input traceId=${traceId || 'n/a'}`,
-    `Input url=${url}`,
+    `Input inputType=${inputType}`,
+    `Input topic=${topic}`,
+    `Input url=${url || 'n/a'}`,
     `Input mode=${mode}`,
     `Input maxChars=${maxChars}`
   ].join('\n');

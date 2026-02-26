@@ -1691,24 +1691,32 @@ function normalizeRiskScoreParams(input = {}) {
 }
 
 function normalizeXReaderParams(input = {}) {
-  const rawUrl = String(input.url || input.resourceUrl || input.targetUrl || '').trim();
-  if (!rawUrl) {
-    throw new Error('info-analysis task requires url.');
+  const rawInput = String(
+    input.url || input.resourceUrl || input.targetUrl || input.topic || input.query || input.keyword || ''
+  ).trim();
+  if (!rawInput) {
+    throw new Error('info-analysis task requires url or topic.');
   }
   let normalizedUrl = '';
+  let topic = '';
+  let inputType = 'url';
   try {
-    const parsed = new URL(rawUrl);
+    const parsed = new URL(rawInput);
     if (!['http:', 'https:'].includes(String(parsed.protocol || '').toLowerCase())) {
       throw new Error('invalid protocol');
     }
     normalizedUrl = parsed.toString();
+    topic = normalizedUrl;
+    inputType = 'url';
   } catch {
-    throw new Error('info-analysis task requires a valid http/https url.');
+    normalizedUrl = '';
+    topic = rawInput;
+    inputType = 'topic';
   }
 
   const requestedMode = String(input.mode || input.source || 'openalice').trim().toLowerCase();
   const rawMode =
-    requestedMode === 'jina' || requestedMode === 'xreader' || requestedMode === 'legacy'
+    requestedMode === 'jina' || requestedMode === 'xreader' || requestedMode === 'legacy' || requestedMode === 'news'
       ? 'openalice'
       : requestedMode;
   if (!['auto', 'openalice'].includes(rawMode)) {
@@ -1721,6 +1729,8 @@ function normalizeXReaderParams(input = {}) {
 
   return {
     url: normalizedUrl,
+    topic,
+    inputType,
     mode: rawMode,
     maxChars
   };
@@ -1873,7 +1883,7 @@ function normalizeInfoAnalysisResult(raw = {}, task = {}) {
     headlines: candidateHeadlines,
     keyFactors: candidateFactors,
     summary,
-    asOf: String(source.asOf || source.timestamp || source.fetchedAt || '').trim() || new Date().toISOString()
+    asOf: normalizeFreshIsoTimestamp(source.asOf || source.timestamp || source.fetchedAt || '')
   };
 }
 
@@ -1985,7 +1995,8 @@ function isWeakInfoAnalysis(info = {}) {
   const confidence = Number(source.confidence ?? NaN);
   const headlines = Array.isArray(source.headlines) ? source.headlines.filter(Boolean) : [];
   const keyFactors = Array.isArray(source.keyFactors) ? source.keyFactors.filter(Boolean) : [];
-  const lowSignal = confidence <= 0.55 && headlines.length === 0 && keyFactors.length === 0;
+  const summaryLen = summary.length;
+  const lowSignal = confidence <= 0.35 && headlines.length === 0 && keyFactors.length === 0 && summaryLen < 80;
   const staleAsOf = isStaleTimestamp(source.asOf);
   return Boolean(hasWeakSummary || lowSignal || staleAsOf);
 }
@@ -2029,35 +2040,51 @@ function isWeakTechnicalAnalysis(technical = {}) {
 
 async function runInfoAnalysis(params = {}) {
   const task = normalizeXReaderParams(params);
-  let fallbackReason = 'openalice_info_failed';
-  const remote = await openAliceAdapter.analyzeInfo({
+  const resolvedTopic = String(params?.topic || task.topic || task.url).trim();
+  const infoPayload = {
     url: task.url,
+    topic: resolvedTopic,
+    inputType: task.inputType,
     mode: task.mode,
     maxChars: task.maxChars,
-    traceId: String(params?.traceId || '').trim(),
-    topic: String(params?.topic || task.url).trim()
-  });
+    traceId: String(params?.traceId || '').trim()
+  };
+  let fallbackReason = 'openalice_info_failed';
+  let remote = await openAliceAdapter.analyzeInfo(infoPayload);
   if (remote?.ok) {
-    const normalized = normalizeInfoAnalysisResult(remote.data || {}, {
+    let normalized = normalizeInfoAnalysisResult(remote.data || {}, {
       ...task,
       traceId: String(params?.traceId || '').trim()
     });
-    if (!isWeakInfoAnalysis(normalized)) {
+    if (isWeakInfoAnalysis(normalized)) {
+      await waitMs(1200);
+      remote = await openAliceAdapter.analyzeInfo(infoPayload);
+      if (remote?.ok) {
+        normalized = normalizeInfoAnalysisResult(remote.data || {}, {
+          ...task,
+          traceId: String(params?.traceId || '').trim()
+        });
+      }
+      if (isWeakInfoAnalysis(normalized)) {
+        fallbackReason = 'openalice returned low-signal info output';
+      } else {
+        return normalized;
+      }
+    } else {
       return normalized;
     }
-    fallbackReason = 'openalice returned low-signal info output';
   } else {
     fallbackReason = String(remote?.reason || remote?.error || fallbackReason).trim();
   }
   return normalizeInfoAnalysisResult(
     {
       provider: 'openalice-fallback',
-      topic: task.url,
+      topic: task.topic || task.url,
       sentimentScore: 0,
       confidence: 0.25,
       headlines: [`OpenAlice unavailable`],
       keyFactors: [fallbackReason.slice(0, 180)],
-      summary: `OpenAlice temporary unavailable, fallback summary for ${task.url}`,
+      summary: `OpenAlice temporary unavailable, fallback summary for ${task.topic || task.url}`,
       asOf: new Date().toISOString()
     },
     task
@@ -2077,6 +2104,8 @@ async function fetchXReaderDigest(params = {}) {
     provider: info.provider || 'openalice',
     backend: 'openalice',
     url: task.url,
+    topic: task.topic,
+    inputType: task.inputType,
     title: String(headline || '').trim(),
     excerpt,
     contentLength: excerpt.length,

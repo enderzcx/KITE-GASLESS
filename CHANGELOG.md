@@ -98,6 +98,10 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 - Low-signal detection for technical analysis now treats stale `asOf/quote.fetchedAt` timestamps (>7 days old) and `TOOL_ERROR` summaries as fallback triggers.
 - Low-signal detection for info analysis now falls back when OpenAlice returns stale timestamps or "cannot retrieve information" placeholder summaries.
 - Technical analysis normalization now rewrites stale/future OpenAlice timestamps to a fresh ISO time window, preventing false `low-signal` fallback when indicators are otherwise valid.
+- Info-analysis input normalization now accepts either `http/https` URL or topic/query text (e.g. `btc market sentiment today`), enabling DM keyword tests without hard URL validation failures.
+- OpenAlice info chat prompt now includes explicit `inputType/topic` semantics so topic-mode requests are handled without webpage fetch dependency.
+- Info-analysis timestamp normalization now rewrites stale/future OpenAlice `asOf` to a fresh ISO time window, preventing false fallback on otherwise usable topic analysis.
+- Info-analysis now performs one delayed retry before fallback when first OpenAlice result is low-signal, improving DM stability during warm-up/transient model responses.
 - XMTP runtime now supports explicit network endpoint overrides:
   - `XMTP_API_URL`
   - `XMTP_HISTORY_SYNC_URL` (supports `null` to disable history sync endpoint)
