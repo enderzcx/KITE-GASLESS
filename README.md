@@ -420,6 +420,24 @@ OPENALICE_TIMEOUT_MS=12000
 OPENALICE_RETRY=1
 ```
 
+Local dual-runtime quickstart (Windows PowerShell):
+
+```powershell
+# one-time: prepare two OpenAlice workdirs
+# G:\KKK\services\openalice-message
+# G:\KKK\services\openalice-technical
+
+# start both runtimes
+cd "G:\KKK\KITE GASLESS\backend"
+powershell -ExecutionPolicy Bypass -File .\scripts\start-openalice-dual.ps1
+
+# verify both runtimes + backend adapter
+powershell -ExecutionPolicy Bypass -File .\scripts\verify-openalice-dual.ps1
+
+# stop both runtimes
+powershell -ExecutionPolicy Bypass -File .\scripts\stop-openalice-dual.ps1
+```
+
 Notes:
 - `OPENCLAW_CHAT_PROTOCOL` and `OPENCLAW_CHAT_PATH` must match your runtime API shape.
 - `OPENCLAW_MODEL` should be your local/remote model id (do not hardcode one contributor's model in shared deployments).
