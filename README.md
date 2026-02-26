@@ -177,6 +177,8 @@ Operational implications:
 - `GET /api/hyperliquid/testnet/order-status`
 - `POST /api/hyperliquid/testnet/order`
 - `POST /api/hyperliquid/testnet/cancel`
+- `GET /api/agent001/hyperliquid/status`
+- `POST /api/agent001/hyperliquid/order`
 - `GET /api/xmtp/status`
 - `POST /api/xmtp/start`
 - `POST /api/xmtp/stop`
@@ -345,6 +347,20 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-agent001-closed-loop-demo
   -AgentApiKey "<agent_key>" `
   -ViewerApiKey "<viewer_key>" `
   -Message "基于消息面和技术面给我 BTCUSDT 60m 挂单计划并自动执行"
+```
+
+### AGENT001 -> API Hyperliquid Verify
+
+Use API mode directly (without DM), still keeping strict x402 before order execution:
+
+```powershell
+curl.exe -sS "http://127.0.0.1:3001/api/agent001/hyperliquid/status" `
+  -H "x-api-key: <viewer_key>"
+
+curl.exe -sS -X POST "http://127.0.0.1:3001/api/agent001/hyperliquid/order" `
+  -H "x-api-key: <agent_key>" `
+  -H "Content-Type: application/json" `
+  --data-binary "{\"symbol\":\"BTCUSDT\",\"side\":\"buy\",\"orderType\":\"limit\",\"price\":65000,\"size\":0.001,\"tif\":\"Gtc\",\"simulate\":true}"
 ```
 
 ### Network Commands Quick Verify (Local)

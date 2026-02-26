@@ -4514,12 +4514,13 @@ async function runAgent001HyperliquidOrderWorkflow({
         tif: plan.tif || 'Gtc',
         price: plan.entryPrice,
         size: plan.size,
+        reduceOnly: plan.reduceOnly === true || String(plan.reduceOnly || '').trim().toLowerCase() === 'true',
         payer,
         sourceAgentId,
         targetAgentId,
         bindRealX402: true,
         strictBinding: true,
-        simulate: false
+        simulate: plan.simulate === true || plan.dryRun === true
       })
     }
   );
@@ -9299,6 +9300,7 @@ function resolveAgent001CapabilityByAction(action = '') {
   const normalized = String(action || '').trim().toLowerCase();
   if (normalized === 'risk-score-feed' || normalized === 'technical-analysis-feed') return 'technical-analysis-feed';
   if (normalized === 'x-reader-feed' || normalized === 'info-analysis-feed') return 'info-analysis-feed';
+  if (normalized === 'hyperliquid-order-testnet') return 'hyperliquid-order-testnet';
   return '';
 }
 
@@ -9334,6 +9336,13 @@ async function computeAgent001PaidResult({
       summary: String(info?.summary || '').trim(),
       info,
       analysisType: 'info'
+    };
+  }
+  if (normalizedCapability === 'hyperliquid-order-testnet') {
+    return {
+      summary: 'hyperliquid-order-testnet result is not recomputable; use stored workflow/order result.',
+      analysisType: 'order',
+      recomputable: false
     };
   }
   throw new Error(`unsupported_agent001_capability:${normalizedCapability || 'unknown'}`);
@@ -13608,6 +13617,161 @@ app.post('/api/hyperliquid/testnet/cancel', requireRole('agent'), async (req, re
       error: detail.error || 'hyperliquid_cancel_failed',
       reason: detail.reason || 'hyperliquid cancel failed',
       response: detail.response || null
+    });
+  }
+});
+
+app.get('/api/agent001/hyperliquid/status', requireRole('viewer'), async (req, res) => {
+  const runtime = readSessionRuntime();
+  const adapter = hyperliquidAdapter.info();
+  const health = await hyperliquidAdapter.health();
+  return res.json({
+    ok: true,
+    traceId: req.traceId || '',
+    adapter,
+    health,
+    agent001: {
+      payer: normalizeAddress(runtime?.aaWallet || ''),
+      sessionAddress: normalizeAddress(runtime?.sessionAddress || ''),
+      sessionId: String(runtime?.sessionId || '').trim()
+    }
+  });
+});
+
+app.post('/api/agent001/hyperliquid/order', requireRole('agent'), async (req, res) => {
+  const body = req.body || {};
+  const input = body?.plan && typeof body.plan === 'object' && !Array.isArray(body.plan) ? body.plan : body;
+  const symbol = String(input.symbol || input.pair || 'BTCUSDT').trim().toUpperCase() || 'BTCUSDT';
+  const side = String(input.side || '').trim().toLowerCase();
+  const orderType = String(input.orderType || input.type || 'limit').trim().toLowerCase() || 'limit';
+  const tif = String(input.tif || (orderType === 'market' ? 'Ioc' : 'Gtc')).trim() || (orderType === 'market' ? 'Ioc' : 'Gtc');
+  const size = Number(input.size ?? input.sz ?? NaN);
+  const entryPrice = Number(input.entryPrice ?? input.price ?? NaN);
+  const reduceOnly = input.reduceOnly === true || String(input.reduceOnly || '').trim().toLowerCase() === 'true';
+  const simulate = input.simulate === true || input.dryRun === true;
+  const runtime = readSessionRuntime();
+  const payer = normalizeAddress(body.payer || runtime?.aaWallet || '');
+  const traceId = resolveWorkflowTraceId(body.traceId || createTraceId('agent001_api_hl_order'));
+
+  if (!payer) {
+    return res.status(400).json({
+      ok: false,
+      traceId: req.traceId || '',
+      error: 'payer_missing',
+      reason: 'AA payer is required. Configure session runtime first.'
+    });
+  }
+  if (!['buy', 'sell'].includes(side)) {
+    return res.status(400).json({
+      ok: false,
+      traceId: req.traceId || '',
+      error: 'invalid_side',
+      reason: 'side must be buy/sell'
+    });
+  }
+  if (!['limit', 'market'].includes(orderType)) {
+    return res.status(400).json({
+      ok: false,
+      traceId: req.traceId || '',
+      error: 'invalid_order_type',
+      reason: 'orderType must be limit/market'
+    });
+  }
+  if (!Number.isFinite(size) || size <= 0) {
+    return res.status(400).json({
+      ok: false,
+      traceId: req.traceId || '',
+      error: 'invalid_size',
+      reason: 'size must be a positive number'
+    });
+  }
+  if (orderType === 'limit' && (!Number.isFinite(entryPrice) || entryPrice <= 0)) {
+    return res.status(400).json({
+      ok: false,
+      traceId: req.traceId || '',
+      error: 'invalid_price',
+      reason: 'limit order requires positive price'
+    });
+  }
+
+  const plan = {
+    canPlaceOrder: true,
+    symbol,
+    side,
+    orderType,
+    tif,
+    size,
+    entryPrice: Number.isFinite(entryPrice) ? entryPrice : null,
+    reduceOnly,
+    simulate
+  };
+
+  try {
+    const result = await runAgent001HyperliquidOrderWorkflow({
+      plan,
+      payer,
+      sourceAgentId: 'router-agent',
+      targetAgentId: 'executor-agent',
+      traceId
+    });
+    const payment = result?.payment || null;
+    const receiptRef = result?.receiptRef || null;
+    if (!hasStrictX402Evidence(payment)) {
+      return res.status(502).json({
+        ok: false,
+        traceId: req.traceId || '',
+        error: 'x402_evidence_missing',
+        reason: 'hyperliquid workflow finished without strict x402 evidence',
+        payment,
+        workflow: result?.workflow || null
+      });
+    }
+    const requestId = String(payment?.requestId || result?.requestId || '').trim();
+    const txHash = String(payment?.txHash || result?.txHash || '').trim();
+    const saved = upsertAgent001ResultRecord({
+      requestId,
+      capability: 'hyperliquid-order-testnet',
+      stage: 'dispatch',
+      status: 'done',
+      toAgentId: 'executor-agent',
+      payer,
+      input: {
+        symbol,
+        side,
+        orderType,
+        tif,
+        size,
+        price: Number.isFinite(entryPrice) ? entryPrice : null,
+        reduceOnly,
+        simulate
+      },
+      payment,
+      receiptRef,
+      result: {
+        summary: `Hyperliquid ${orderType} ${side} ${symbol} executed via agent001 api.`,
+        workflowTraceId: String(result?.traceId || traceId).trim(),
+        workflowState: String(result?.state || result?.workflow?.state || '').trim(),
+        orderResult: result?.orderResult || null
+      },
+      source: 'agent001_api_order'
+    });
+    return res.json({
+      ok: true,
+      traceId: req.traceId || '',
+      requestId,
+      txHash,
+      payment,
+      receiptRef,
+      workflow: result?.workflow || null,
+      orderResult: result?.orderResult || null,
+      agent001Result: saved
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      traceId: req.traceId || '',
+      error: 'agent001_hyperliquid_order_failed',
+      reason: String(error?.message || 'agent001 hyperliquid order failed').trim()
     });
   }
 });
