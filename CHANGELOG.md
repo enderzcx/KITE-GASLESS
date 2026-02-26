@@ -85,6 +85,7 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
   - `backend/scripts/start-openalice-dual.ps1`
   - `backend/scripts/stop-openalice-dual.ps1`
   - `backend/scripts/verify-openalice-dual.ps1`
+- `start-openalice-dual.ps1` now supports outbound proxy (`OPENALICE_PROXY_URL` / `OPENALICE_NO_PROXY`) for model API access behind restricted networks.
 - XMTP runtime now supports explicit network endpoint overrides:
   - `XMTP_API_URL`
   - `XMTP_HISTORY_SYNC_URL` (supports `null` to disable history sync endpoint)

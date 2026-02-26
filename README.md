@@ -418,6 +418,9 @@ OPENALICE_TECHNICAL_BASE_URL=http://127.0.0.1:3312
 OPENALICE_TECHNICAL_API_KEY=
 OPENALICE_TIMEOUT_MS=12000
 OPENALICE_RETRY=1
+# Optional outbound proxy if direct access to OpenAI/Google is blocked:
+OPENALICE_PROXY_URL=http://127.0.0.1:7890
+OPENALICE_NO_PROXY=127.0.0.1,localhost
 ```
 
 Local dual-runtime quickstart (Windows PowerShell):
