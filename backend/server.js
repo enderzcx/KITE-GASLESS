@@ -4429,22 +4429,20 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
     let technicalPayPlan = null;
     let infoPayPlan = null;
     try {
-      [technicalPayPlan, infoPayPlan] = await Promise.all([
-        buildAgent001StrictPaymentPlan({
-          capability: 'technical-analysis-feed',
-          rawText,
-          intent,
-          payer,
-          targetAgentId: technicalProvider.toAgentId
-        }),
-        buildAgent001StrictPaymentPlan({
-          capability: 'info-analysis-feed',
-          rawText,
-          intent,
-          payer,
-          targetAgentId: infoProvider.toAgentId
-        })
-      ]);
+      technicalPayPlan = await buildAgent001StrictPaymentPlan({
+        capability: 'technical-analysis-feed',
+        rawText,
+        intent,
+        payer,
+        targetAgentId: technicalProvider.toAgentId
+      });
+      infoPayPlan = await buildAgent001StrictPaymentPlan({
+        capability: 'info-analysis-feed',
+        rawText,
+        intent,
+        payer,
+        targetAgentId: infoProvider.toAgentId
+      });
     } catch (error) {
       return `交易链路中断：x402 预绑定失败（严格模式）。原因: ${String(error?.message || 'bind_failed').trim()}`;
     }
@@ -5539,6 +5537,31 @@ function waitMs(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const sessionUserOpQueue = new Map();
+
+async function withSessionUserOpLock(lockKey = '', task = async () => null) {
+  const key = String(lockKey || 'default').trim().toLowerCase() || 'default';
+  const slot = sessionUserOpQueue.get(key) || { tail: Promise.resolve(), gate: null };
+  let release = () => {};
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const tail = slot.tail
+    .catch(() => {})
+    .then(() => gate);
+  sessionUserOpQueue.set(key, { tail, gate });
+  await slot.tail.catch(() => {});
+  try {
+    return await task();
+  } finally {
+    release();
+    const current = sessionUserOpQueue.get(key);
+    if (current && current.gate === gate) {
+      sessionUserOpQueue.delete(key);
+    }
+  }
+}
+
 function isTransientTransportError(reason = '') {
   const text = String(reason || '').trim().toLowerCase();
   if (!text) return false;
@@ -5548,6 +5571,17 @@ function isTransientTransportError(reason = '') {
     text.includes('timeout') ||
     text.includes('socket hang up') ||
     text.includes('network')
+  );
+}
+
+function isUserOpReplacementFeeError(reason = '') {
+  const text = String(reason || '').trim().toLowerCase();
+  if (!text) return false;
+  return (
+    text.includes('cannot be replaced') ||
+    text.includes('fee too low') ||
+    text.includes('replacement underpriced') ||
+    text.includes('replacement fee too low')
   );
 }
 
@@ -12670,32 +12704,39 @@ app.post('/api/session/pay', requireRole('agent'), async (req, res) => {
     const signFunction = async (userOpHash) =>
       sessionWallet.signMessage(ethers.getBytes(userOpHash));
 
-    const maxAttempts = Math.max(1, Math.min(Number(process.env.KITE_SESSION_PAY_RETRIES || 2), 3));
-    let result = null;
-    let attempts = 0;
-    for (let i = 0; i < maxAttempts; i += 1) {
-      attempts = i + 1;
-      result = await sdk.sendSessionTransferWithAuthorizationAndProvider(
-        {
-          sessionId,
-          auth: authPayload,
-          authSignature,
-          serviceProvider,
-          metadata
-        },
-        signFunction,
-        {
-          callGasLimit: 320000n,
-          verificationGasLimit: 450000n,
-          preVerificationGas: 120000n
-        }
-      );
-      if (result?.status === 'success' && result?.transactionHash) break;
-      const reason = String(result?.reason || '').trim();
-      const retriable = isTransientTransportError(reason);
-      if (!retriable || i >= maxAttempts - 1) break;
-      await waitMs(600 * (i + 1));
-    }
+    const maxAttempts = Math.max(1, Math.min(Number(process.env.KITE_SESSION_PAY_RETRIES || 3), 5));
+    const payerLockKey = normalizeAddress(runtime.aaWallet || '') || String(runtime.aaWallet || '').trim().toLowerCase();
+    const lockStartedAt = Date.now();
+    const { result, attempts } = await withSessionUserOpLock(payerLockKey, async () => {
+      let innerResult = null;
+      let innerAttempts = 0;
+      for (let i = 0; i < maxAttempts; i += 1) {
+        innerAttempts = i + 1;
+        innerResult = await sdk.sendSessionTransferWithAuthorizationAndProvider(
+          {
+            sessionId,
+            auth: authPayload,
+            authSignature,
+            serviceProvider,
+            metadata
+          },
+          signFunction,
+          {
+            callGasLimit: 320000n,
+            verificationGasLimit: 450000n,
+            preVerificationGas: 120000n
+          }
+        );
+        if (innerResult?.status === 'success' && innerResult?.transactionHash) break;
+        const reason = String(innerResult?.reason || '').trim();
+        const retriable = isTransientTransportError(reason) || isUserOpReplacementFeeError(reason);
+        if (!retriable || i >= maxAttempts - 1) break;
+        const backoffMs = isUserOpReplacementFeeError(reason) ? 2200 * (i + 1) : 700 * (i + 1);
+        await waitMs(backoffMs);
+      }
+      return { result: innerResult, attempts: innerAttempts };
+    });
+    const payElapsedMs = Math.max(0, Date.now() - lockStartedAt);
 
     if (!result || result.status !== 'success' || !result.transactionHash) {
       return res.status(500).json({
@@ -12706,7 +12747,8 @@ app.post('/api/session/pay', requireRole('agent'), async (req, res) => {
           userOpHash: result?.userOpHash || '',
           sessionId,
           payer: runtime.aaWallet,
-          attempts
+          attempts,
+          payElapsedMs
         }
       });
     }
@@ -12746,7 +12788,8 @@ app.post('/api/session/pay', requireRole('agent'), async (req, res) => {
         sessionAddress: runtime.sessionAddress,
         sessionId,
         txHash: result.transactionHash,
-        userOpHash: result.userOpHash || ''
+        userOpHash: result.userOpHash || '',
+        payElapsedMs
       },
       message: 'AA session payment submitted and confirmed.'
     });
