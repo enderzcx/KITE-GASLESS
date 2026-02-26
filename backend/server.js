@@ -3408,6 +3408,8 @@ function buildAgent001DispatchSummary(results = {}) {
 async function maybePolishAgent001Reply(rawText = '', draft = '') {
   const cleanDraft = String(draft || '').trim();
   if (!cleanDraft) return '';
+  const hasTechLine = cleanDraft.includes('技术面:');
+  const hasInfoLine = cleanDraft.includes('消息面:');
   const prompt = [
     '你是 AGENT001。',
     '请把以下执行结果整理成简洁中文回复。',
@@ -3415,6 +3417,7 @@ async function maybePolishAgent001Reply(rawText = '', draft = '') {
     '- 保留关键结论',
     '- 不要编造',
     '- 不要输出 markdown 代码块',
+    '- 如果结果同时包含“技术面”和“消息面”，请在回复中明确分成“技术面:”和“消息面:”两段',
     '',
     `用户原话: ${String(rawText || '').trim()}`,
     `执行结果: ${cleanDraft}`
@@ -3425,6 +3428,11 @@ async function maybePolishAgent001Reply(rawText = '', draft = '') {
   });
   if (!chat?.ok) return cleanDraft;
   const text = String(chat.text || '').trim();
+  if (hasTechLine && hasInfoLine) {
+    const hasTechLabel = /技术面[:：]/.test(text);
+    const hasInfoLabel = /消息面[:：]/.test(text);
+    if (!hasTechLabel || !hasInfoLabel) return cleanDraft;
+  }
   return text || cleanDraft;
 }
 
