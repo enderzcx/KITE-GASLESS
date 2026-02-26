@@ -186,6 +186,7 @@ const XMTP_WORKERS_GROUP_NAME = String(process.env.XMTP_WORKERS_GROUP_NAME || 'A
 const XMTP_WORKERS_GROUP_AGENT_IDS = String(
   process.env.XMTP_WORKERS_GROUP_AGENT_IDS || 'risk-agent,reader-agent,price-agent,executor-agent'
 ).trim();
+const AGENT001_REQUIRE_X402 = !/^(0|false|no|off)$/i.test(String(process.env.AGENT001_REQUIRE_X402 || '1').trim());
 
 const ROLE_RANK = {
   viewer: 1,
@@ -4378,6 +4379,9 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
     return buildAgent001HelpText();
   }
   if (intent.intent === 'chat') {
+    if (AGENT001_REQUIRE_X402) {
+      return '当前已开启强制计费：除 help/status 外均需 x402 支付。请发送“分析 BTCUSDT 技术面 60m”或“分析 btc market sentiment today”。';
+    }
     const chat = await openAliceAdapter.chatMessage({
       role: 'message',
       message: `你是 AGENT001，请用简洁中文回复用户。\n用户消息: ${rawText}`
@@ -4541,20 +4545,46 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
 
   const runTechnical = runTrade || intent.intent === 'technical' || intent.intent === 'both';
   const runInfo = runTrade || intent.intent === 'info' || intent.intent === 'both';
-  const technicalPromise = runTechnical
-    ? runAgent001DispatchTask({
-        toAgentId: 'technical-agent',
-        capability: 'technical-analysis-feed',
-        input: {
-          symbol: intent.symbol || 'BTCUSDT',
-          source: intent.source || 'hyperliquid',
-          horizonMin: intent.horizonMin || 60
-        },
+  if (!runTechnical && !runInfo && AGENT001_REQUIRE_X402) {
+    return '当前已开启强制计费：除 help/status 外均需 x402 支付。请发送技术面或消息面分析请求。';
+  }
+
+  let technical = null;
+  let info = null;
+  let technicalPayPlan = null;
+  let infoPayPlan = null;
+  const runtime = readSessionRuntime();
+  const payer = normalizeAddress(runtime?.aaWallet || '');
+
+  if ((runTechnical || runInfo) && AGENT001_REQUIRE_X402 && !payer) {
+    return '计费模式已开启，但未配置 AA payer。请先同步 Session/AA 钱包后再发起分析。';
+  }
+
+  if (runInfo) {
+    if (AGENT001_REQUIRE_X402) {
+      try {
+        infoPayPlan = await buildAgent001StrictPaymentPlan({
+          capability: 'info-analysis-feed',
+          rawText,
+          intent,
+          payer,
+          targetAgentId: 'message-agent'
+        });
+      } catch (error) {
+        return `消息面 x402 预绑定失败（严格模式）。原因: ${String(error?.message || 'bind_failed').trim()}`;
+      }
+      info = await runAgent001DispatchTask({
+        toAgentId: 'message-agent',
+        capability: 'info-analysis-feed',
+        input: infoPayPlan.normalizedTask,
+        paymentIntent: infoPayPlan.paymentIntent,
         waitMsLimit
-      })
-    : Promise.resolve(null);
-  const infoPromise = runInfo
-    ? runAgent001DispatchTask({
+      });
+      if (!isAgent001TaskSuccessful(info)) {
+        return `消息面分析失败（严格模式）：${info?.reason || info?.error || info?.taskResult?.error || 'failed'}`;
+      }
+    } else {
+      info = await runAgent001DispatchTask({
         toAgentId: 'message-agent',
         capability: 'info-analysis-feed',
         input: {
@@ -4563,20 +4593,61 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
           maxChars: 900
         },
         waitMsLimit
-      })
-    : Promise.resolve(null);
+      });
+    }
+  }
 
-  const [technical, info] = await Promise.all([technicalPromise, infoPromise]);
-  const fallbackResolved = await applyAgent001LocalFallback({
-    rawText,
-    intent,
-    runTechnical,
-    runInfo,
-    technical,
-    info
-  });
-  const technicalResolved = fallbackResolved.technical;
-  const infoResolved = fallbackResolved.info;
+  if (runTechnical) {
+    if (AGENT001_REQUIRE_X402) {
+      try {
+        technicalPayPlan = await buildAgent001StrictPaymentPlan({
+          capability: 'technical-analysis-feed',
+          rawText,
+          intent,
+          payer,
+          targetAgentId: 'technical-agent'
+        });
+      } catch (error) {
+        return `技术面 x402 预绑定失败（严格模式）。原因: ${String(error?.message || 'bind_failed').trim()}`;
+      }
+      technical = await runAgent001DispatchTask({
+        toAgentId: 'technical-agent',
+        capability: 'technical-analysis-feed',
+        input: technicalPayPlan.normalizedTask,
+        paymentIntent: technicalPayPlan.paymentIntent,
+        waitMsLimit
+      });
+      if (!isAgent001TaskSuccessful(technical)) {
+        return `技术面分析失败（严格模式）：${technical?.reason || technical?.error || technical?.taskResult?.error || 'failed'}`;
+      }
+    } else {
+      technical = await runAgent001DispatchTask({
+        toAgentId: 'technical-agent',
+        capability: 'technical-analysis-feed',
+        input: {
+          symbol: intent.symbol || 'BTCUSDT',
+          source: intent.source || 'hyperliquid',
+          horizonMin: intent.horizonMin || 60
+        },
+        waitMsLimit
+      });
+    }
+  }
+
+  let technicalResolved = technical;
+  let infoResolved = info;
+  if (!AGENT001_REQUIRE_X402) {
+    const fallbackResolved = await applyAgent001LocalFallback({
+      rawText,
+      intent,
+      runTechnical,
+      runInfo,
+      technical,
+      info
+    });
+    technicalResolved = fallbackResolved.technical;
+    infoResolved = fallbackResolved.info;
+  }
   if (runTrade) {
     return buildAgent001TradePlan({
       rawText,
@@ -4588,6 +4659,18 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
   const summary = buildAgent001DispatchSummary({ technical: technicalResolved, info: infoResolved });
   if (!summary) {
     return 'AGENT001 调度完成，但未拿到可读结果。请稍后重试。';
+  }
+  if (AGENT001_REQUIRE_X402) {
+    const lines = [summary];
+    if (runInfo) {
+      const infoPayment = info?.taskResult?.payment || infoPayPlan?.paymentIntent || null;
+      lines.push(`消息面 x402: requestId=${String(infoPayment?.requestId || '-').trim() || '-'} txHash=${String(infoPayment?.txHash || '-').trim() || '-'}`);
+    }
+    if (runTechnical) {
+      const technicalPayment = technical?.taskResult?.payment || technicalPayPlan?.paymentIntent || null;
+      lines.push(`技术面 x402: requestId=${String(technicalPayment?.requestId || '-').trim() || '-'} txHash=${String(technicalPayment?.txHash || '-').trim() || '-'}`);
+    }
+    return lines.join('\n');
   }
   const polished = await maybePolishAgent001Reply(rawText, summary);
   return polished || summary;
