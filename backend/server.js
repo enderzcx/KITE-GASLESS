@@ -4838,7 +4838,69 @@ function buildAgent001FailureReply({ stage = '', capability = '', reason = '', r
   return lines.join('\n');
 }
 
-async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
+async function maybeSendAgent001ProgressDm({
+  context = null,
+  capability = '',
+  summary = '',
+  payment = null
+} = {}) {
+  const senderAddress = normalizeAddress(context?.senderAddress || '');
+  if (!senderAddress) return { ok: false, skipped: true, reason: 'sender_address_missing' };
+  const requestId = String(payment?.requestId || '').trim();
+  const txHash = String(payment?.txHash || '').trim();
+  const label = capability === 'technical-analysis-feed' ? '技术面' : capability === 'info-analysis-feed' ? '消息面' : '分析';
+  const lines = [
+    `${label}结果已返回`,
+    `summary: ${String(summary || '').trim() || '-'}`,
+    `x402: requestId=${requestId || '-'} txHash=${txHash || '-'}`
+  ];
+  if (requestId) lines.push(`pull: /api/agent001/results/${requestId}`);
+  const result = await xmtpRuntime.sendDm({
+    fromAgentId: 'router-agent',
+    toAddress: senderAddress,
+    toAgentId: 'human-user',
+    channel: 'dm',
+    hopIndex: 1,
+    text: lines.join('\n')
+  });
+  return result?.ok ? { ok: true } : { ok: false, skipped: false, reason: result?.reason || result?.error || 'xmtp_send_failed' };
+}
+
+async function maybeSendAgent001TradePlanDm({
+  context = null,
+  tradePlanText = '',
+  infoPayment = null,
+  technicalPayment = null
+} = {}) {
+  const senderAddress = normalizeAddress(context?.senderAddress || '');
+  if (!senderAddress) return { ok: false, skipped: true, reason: 'sender_address_missing' };
+  const planText = String(tradePlanText || '').trim();
+  if (!planText) return { ok: false, skipped: true, reason: 'trade_plan_missing' };
+  const infoRequestId = String(infoPayment?.requestId || '').trim();
+  const infoTxHash = String(infoPayment?.txHash || '').trim();
+  const technicalRequestId = String(technicalPayment?.requestId || '').trim();
+  const technicalTxHash = String(technicalPayment?.txHash || '').trim();
+  const lines = [
+    'AGENT001 交易计划',
+    planText,
+    '',
+    `消息面 x402: requestId=${infoRequestId || '-'} txHash=${infoTxHash || '-'}`,
+    `技术面 x402: requestId=${technicalRequestId || '-'} txHash=${technicalTxHash || '-'}`
+  ];
+  if (infoRequestId) lines.push(`消息面 pull: /api/agent001/results/${infoRequestId}`);
+  if (technicalRequestId) lines.push(`技术面 pull: /api/agent001/results/${technicalRequestId}`);
+  const result = await xmtpRuntime.sendDm({
+    fromAgentId: 'router-agent',
+    toAddress: senderAddress,
+    toAgentId: 'human-user',
+    channel: 'dm',
+    hopIndex: 1,
+    text: lines.join('\n')
+  });
+  return result?.ok ? { ok: true } : { ok: false, skipped: false, reason: result?.reason || result?.error || 'xmtp_send_failed' };
+}
+
+async function handleRouterRuntimeTextMessage({ text = '', context = null } = {}) {
   const rawText = String(text || '').trim();
   if (!rawText) return buildAgent001HelpText();
 
@@ -5032,6 +5094,12 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
         txHash: String(infoPayPlan?.paymentIntent?.txHash || '').trim()
       });
     }
+    const infoProgressDm = await maybeSendAgent001ProgressDm({
+      context,
+      capability: 'info-analysis-feed',
+      summary: String(info?.taskResult?.result?.summary || '').trim(),
+      payment: infoPayment
+    });
     upsertAgent001ResultRecord({
       requestId: infoPayment.requestId,
       capability: 'info-analysis-feed',
@@ -5046,9 +5114,10 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
       result: info?.taskResult?.result || null,
       source: 'agent001_trade',
       dm: {
-        delivered: true,
+        delivered: Boolean(infoProgressDm?.ok),
         taskId: String(info?.task?.taskId || '').trim(),
-        traceId: String(info?.task?.traceId || '').trim()
+        traceId: String(info?.task?.traceId || '').trim(),
+        reason: String(infoProgressDm?.reason || '').trim()
       }
     });
 
@@ -5167,6 +5236,12 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
         txHash: String(technicalPayPlan?.paymentIntent?.txHash || '').trim()
       });
     }
+    const technicalProgressDm = await maybeSendAgent001ProgressDm({
+      context,
+      capability: 'technical-analysis-feed',
+      summary: String(technical?.taskResult?.result?.summary || '').trim(),
+      payment: technicalPayment
+    });
     upsertAgent001ResultRecord({
       requestId: technicalPayment.requestId,
       capability: 'technical-analysis-feed',
@@ -5181,9 +5256,10 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
       result: technical?.taskResult?.result || null,
       source: 'agent001_trade',
       dm: {
-        delivered: true,
+        delivered: Boolean(technicalProgressDm?.ok),
         taskId: String(technical?.task?.taskId || '').trim(),
-        traceId: String(technical?.task?.traceId || '').trim()
+        traceId: String(technical?.task?.traceId || '').trim(),
+        reason: String(technicalProgressDm?.reason || '').trim()
       }
     });
 
@@ -5210,7 +5286,14 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
 
     if (!tradePlan?.canPlaceOrder) {
       lines.push('执行结果: 不满足自动下单条件，本轮不下单。');
-      return lines.join('\n');
+      const tradeReply = lines.join('\n');
+      await maybeSendAgent001TradePlanDm({
+        context,
+        tradePlanText: tradeReply,
+        infoPayment,
+        technicalPayment
+      });
+      return tradeReply;
     }
 
     try {
@@ -5238,11 +5321,25 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
       lines.push(`x402 requestId: ${String(payment?.requestId || orderResult?.requestId || '').trim() || '-'}`);
       lines.push(`x402 txHash: ${String(payment?.txHash || orderResult?.txHash || '').trim() || '-'}`);
       lines.push(`receipt: ${String(receiptRef?.endpoint || '').trim() || '-'}`);
-      return lines.join('\n');
+      const tradeReply = lines.join('\n');
+      await maybeSendAgent001TradePlanDm({
+        context,
+        tradePlanText: tradeReply,
+        infoPayment,
+        technicalPayment
+      });
+      return tradeReply;
     } catch (error) {
       lines.push('');
       lines.push(`下单执行失败: ${String(error?.message || 'unknown').trim()}`);
-      return lines.join('\n');
+      const tradeReply = lines.join('\n');
+      await maybeSendAgent001TradePlanDm({
+        context,
+        tradePlanText: tradeReply,
+        infoPayment,
+        technicalPayment
+      });
+      return tradeReply;
     }
   }
 
@@ -5425,6 +5522,12 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
           txHash: String(infoPayPlan?.paymentIntent?.txHash || '').trim()
         });
       }
+      const infoProgressDm = await maybeSendAgent001ProgressDm({
+        context,
+        capability: 'info-analysis-feed',
+        summary: String(info?.taskResult?.result?.summary || '').trim(),
+        payment: infoPayment
+      });
       upsertAgent001ResultRecord({
         requestId: infoPayment.requestId,
         capability: 'info-analysis-feed',
@@ -5439,9 +5542,10 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
         result: info?.taskResult?.result || null,
         source: 'agent001_analysis',
         dm: {
-          delivered: true,
+          delivered: Boolean(infoProgressDm?.ok),
           taskId: String(info?.task?.taskId || '').trim(),
-          traceId: String(info?.task?.traceId || '').trim()
+          traceId: String(info?.task?.traceId || '').trim(),
+          reason: String(infoProgressDm?.reason || '').trim()
         }
       });
     } else {
@@ -5565,6 +5669,12 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
           txHash: String(technicalPayPlan?.paymentIntent?.txHash || '').trim()
         });
       }
+      const technicalProgressDm = await maybeSendAgent001ProgressDm({
+        context,
+        capability: 'technical-analysis-feed',
+        summary: String(technical?.taskResult?.result?.summary || '').trim(),
+        payment: technicalPayment
+      });
       upsertAgent001ResultRecord({
         requestId: technicalPayment.requestId,
         capability: 'technical-analysis-feed',
@@ -5579,9 +5689,10 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
         result: technical?.taskResult?.result || null,
         source: 'agent001_analysis',
         dm: {
-          delivered: true,
+          delivered: Boolean(technicalProgressDm?.ok),
           taskId: String(technical?.task?.taskId || '').trim(),
-          traceId: String(technical?.task?.traceId || '').trim()
+          traceId: String(technical?.task?.traceId || '').trim(),
+          reason: String(technicalProgressDm?.reason || '').trim()
         }
       });
     } else {
@@ -5651,6 +5762,23 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
       if (String(technicalPayment?.requestId || '').trim()) {
         lines.push(`技术面 pull: /api/agent001/results/${String(technicalPayment.requestId).trim()}`);
       }
+    }
+    if (runInfo && runTechnical) {
+      const tradePlanText = buildAgent001TradePlan({
+        rawText,
+        intent,
+        technical: technicalResolved,
+        info: infoResolved
+      });
+      await maybeSendAgent001TradePlanDm({
+        context,
+        tradePlanText: String(tradePlanText || '').trim(),
+        infoPayment: info?.taskResult?.payment || infoPayPlan?.paymentIntent || null,
+        technicalPayment: technical?.taskResult?.payment || technicalPayPlan?.paymentIntent || null
+      });
+      lines.push('');
+      lines.push('AGENT001 交易计划:');
+      lines.push(String(tradePlanText || '').trim() || '交易计划生成失败。');
     }
     return lines.join('\n');
   }
