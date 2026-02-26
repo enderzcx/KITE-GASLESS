@@ -4051,26 +4051,31 @@ async function runAgent001HyperliquidOrderWorkflow({
   if (!plan || typeof plan !== 'object') {
     throw new Error('trade_plan_missing');
   }
-  const response = await fetch(`http://127.0.0.1:${PORT}/api/workflow/hyperliquid-order/run`, {
-    method: 'POST',
-    headers: buildInternalAgentHeaders(),
-    body: JSON.stringify({
-      traceId: traceId || createTraceId('agent001_order'),
-      symbol: plan.symbol || 'BTCUSDT',
-      side: plan.side || '',
-      orderType: plan.orderType || 'limit',
-      tif: plan.tif || 'Gtc',
-      price: plan.entryPrice,
-      size: plan.size,
-      payer,
-      sourceAgentId,
-      targetAgentId,
-      bindRealX402: true,
-      strictBinding: true,
-      simulate: false
-    })
-  });
-  const payload = await response.json().catch(() => ({}));
+  const orderTimeoutMs = Math.max(10_000, Math.min(Number(process.env.AGENT001_ORDER_TIMEOUT_MS || 90_000), 300_000));
+  const { response, payload } = await fetchJsonResponseWithTimeout(
+    `http://127.0.0.1:${PORT}/api/workflow/hyperliquid-order/run`,
+    {
+      method: 'POST',
+      headers: buildInternalAgentHeaders(),
+      timeoutMs: orderTimeoutMs,
+      label: 'agent001 hyperliquid-order workflow',
+      body: JSON.stringify({
+        traceId: traceId || createTraceId('agent001_order'),
+        symbol: plan.symbol || 'BTCUSDT',
+        side: plan.side || '',
+        orderType: plan.orderType || 'limit',
+        tif: plan.tif || 'Gtc',
+        price: plan.entryPrice,
+        size: plan.size,
+        payer,
+        sourceAgentId,
+        targetAgentId,
+        bindRealX402: true,
+        strictBinding: true,
+        simulate: false
+      })
+    }
+  );
   if (!response.ok || payload?.ok === false) {
     throw new Error(String(payload?.reason || payload?.error || `workflow/hyperliquid-order/run failed: HTTP ${response.status}`).trim());
   }
@@ -7813,6 +7818,32 @@ function buildInternalAgentHeaders() {
   return headers;
 }
 
+async function fetchJsonResponseWithTimeout(
+  url,
+  { method = 'GET', headers = {}, body = undefined, timeoutMs = 30_000, label = 'request' } = {}
+) {
+  const resolvedTimeout = Math.max(3_000, Math.min(Number(timeoutMs) || 30_000, 300_000));
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), resolvedTimeout);
+  try {
+    const response = await fetch(url, {
+      method,
+      headers,
+      body,
+      signal: controller.signal
+    });
+    const payload = await response.json().catch(() => ({}));
+    return { response, payload };
+  } catch (error) {
+    if (String(error?.name || '').trim() === 'AbortError') {
+      throw new Error(`${label} timeout after ${resolvedTimeout}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function resolveX402EvidenceByRequestId(requestId = '', workflowByRequestId = null) {
   const normalizedRequestId = String(requestId || '').trim();
   if (!normalizedRequestId) return null;
@@ -7895,6 +7926,7 @@ async function buildRiskScorePaymentIntentForTask({
   let workflowBinding = null;
   if (shouldBindRealX402) {
     try {
+      const bindTimeoutMs = Math.max(8_000, Math.min(Number(process.env.AGENT001_BIND_TIMEOUT_MS || 45_000), 300_000));
       const payload = {
         ...normalizedTask,
         traceId: resolveWorkflowTraceId(body?.paymentTraceId || createTraceId('risk_bind')),
@@ -7902,12 +7934,16 @@ async function buildRiskScorePaymentIntentForTask({
         sourceAgentId: String(body?.sourceAgentId || KITE_AGENT1_ID).trim(),
         targetAgentId: String(body?.targetAgentId || KITE_AGENT2_ID).trim()
       };
-      const resp = await fetch(`http://127.0.0.1:${PORT}/api/workflow/risk-score/run`, {
-        method: 'POST',
-        headers: buildInternalAgentHeaders(),
-        body: JSON.stringify(payload)
-      });
-      const result = await resp.json().catch(() => ({}));
+      const { response: resp, payload: result } = await fetchJsonResponseWithTimeout(
+        `http://127.0.0.1:${PORT}/api/workflow/risk-score/run`,
+        {
+          method: 'POST',
+          headers: buildInternalAgentHeaders(),
+          timeoutMs: bindTimeoutMs,
+          label: 'agent001 risk prebind',
+          body: JSON.stringify(payload)
+        }
+      );
       if (!resp.ok || result?.ok === false) {
         throw new Error(result?.reason || result?.error || `workflow/risk-score/run failed: HTTP ${resp.status}`);
       }
@@ -8025,6 +8061,7 @@ async function buildXReaderPaymentIntentForTask({
   let workflowBinding = null;
   if (shouldBindRealX402) {
     try {
+      const bindTimeoutMs = Math.max(8_000, Math.min(Number(process.env.AGENT001_BIND_TIMEOUT_MS || 45_000), 300_000));
       const payload = {
         ...normalizedTask,
         traceId: resolveWorkflowTraceId(body?.paymentTraceId || createTraceId('reader_bind')),
@@ -8032,12 +8069,16 @@ async function buildXReaderPaymentIntentForTask({
         sourceAgentId: String(body?.sourceAgentId || KITE_AGENT1_ID).trim(),
         targetAgentId: String(body?.targetAgentId || KITE_AGENT2_ID).trim()
       };
-      const resp = await fetch(`http://127.0.0.1:${PORT}/api/workflow/x-reader/run`, {
-        method: 'POST',
-        headers: buildInternalAgentHeaders(),
-        body: JSON.stringify(payload)
-      });
-      const result = await resp.json().catch(() => ({}));
+      const { response: resp, payload: result } = await fetchJsonResponseWithTimeout(
+        `http://127.0.0.1:${PORT}/api/workflow/x-reader/run`,
+        {
+          method: 'POST',
+          headers: buildInternalAgentHeaders(),
+          timeoutMs: bindTimeoutMs,
+          label: 'agent001 info prebind',
+          body: JSON.stringify(payload)
+        }
+      );
       if (!resp.ok || result?.ok === false) {
         throw new Error(result?.reason || result?.error || `workflow/x-reader/run failed: HTTP ${resp.status}`);
       }
