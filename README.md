@@ -128,6 +128,7 @@ Upgrade authority remains with each proxy owner; this project does not grant per
 - `POST /api/workflow/btc-price/run`
 - `POST /api/workflow/risk-score/run`
 - `POST /api/workflow/x-reader/run`
+- `POST /api/workflow/hyperliquid-order/run`
 - `POST /api/a2a/tasks/x-reader`
 - `GET /api/demo/price-series?limit=60`
 - `GET /api/demo/trace/:traceId`
@@ -316,6 +317,21 @@ curl.exe -sS -X POST "http://127.0.0.1:3001/api/agent001/chat/run" `
 ```
 
 For xmtp.chat DM, send plain text directly to `router-agent` XMTP address.
+
+### AGENT001 Closed Loop (Quote + x402 + Hyperliquid) Verify
+
+`AGENT001` now supports trade-intent closed loop:
+`discover -> XMTP service-quote -> strict x402 for info/technical -> plan -> strict x402 -> Hyperliquid order`.
+
+```powershell
+cd backend
+powershell -ExecutionPolicy Bypass -File .\scripts\run-agent001-closed-loop-demo.ps1 `
+  -BaseUrl "http://127.0.0.1:3001" `
+  -AdminApiKey "<admin_key>" `
+  -AgentApiKey "<agent_key>" `
+  -ViewerApiKey "<viewer_key>" `
+  -Message "基于消息面和技术面给我 BTCUSDT 60m 挂单计划并自动执行"
+```
 
 ### Network Commands Quick Verify (Local)
 

@@ -1003,7 +1003,7 @@ function App() {
   const onchainExplorerLink = onchainTxHash ? `https://testnet.kitescan.ai/tx/${onchainTxHash}` : '';
   const currentAction = String(currentRequest?.action || '').trim().toLowerCase();
   const flowLabel =
-    currentAction === 'btc-price-feed' || currentAction === 'x-reader-feed'
+    currentAction === 'btc-price-feed' || currentAction === 'x-reader-feed' || currentAction === 'hyperliquid-order-testnet'
       ? 'ATAPI+x402'
       : currentRequest?.a2a
         ? 'a2a+x402'
@@ -1843,6 +1843,7 @@ function App() {
                   <option value="btc-price-feed">btc-price-feed (ATAPI)</option>
                   <option value="risk-score-feed">risk-score-feed (A2A)</option>
                   <option value="x-reader-feed">x-reader-feed (ATAPI)</option>
+                  <option value="hyperliquid-order-testnet">hyperliquid-order-testnet (ATAPI)</option>
                 </select>
               </div>
               <div className="vault-input">

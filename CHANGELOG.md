@@ -7,6 +7,20 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 ## [Unreleased]
 
 ### Added
+- Added AGENT001 closed-loop trade orchestration:
+  - service discovery (`ERC8004 identity preferred + local service catalog fallback`)
+  - XMTP quote negotiation capability `service-quote`
+  - strict x402 binding for technical/info analysis stage
+  - strict x402 binding + Hyperliquid testnet order execution stage
+  - final DM now includes analysis/payment/order evidence refs.
+- Added new trade workflow API:
+  - `POST /api/workflow/hyperliquid-order/run`
+  - flow: `x402 challenge -> session pay -> proof verify -> Hyperliquid order`.
+- Added new market action type:
+  - `hyperliquid-order-testnet` (publish/invoke/reputation/receipt compatible).
+- Added local one-click verification script:
+  - `backend/scripts/run-agent001-closed-loop-demo.ps1`
+  - runs AGENT001 trade-intent chat and prints x402 + open-orders evidence.
 - Added Hyperliquid testnet trading adapter and API endpoints:
   - `GET /api/hyperliquid/testnet/health`
   - `GET /api/hyperliquid/testnet/mids`
@@ -75,6 +89,10 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
   - `backend/docker/openbb/Dockerfile`
 
 ### Changed
+- `network_agents` schema extended with optional identity fields:
+  - `identityRegistry`
+  - `identityAgentId`
+- Reader/Risk XMTP runtimes now support `service-quote` task capability.
 - Demo and Ops UI now provide `Download Receipt` action from API result panels.
 - Market form now supports x-reader fields (`url/mode/maxChars`) and service details render x-reader metadata.
 - Info-analysis runtime path is now OpenAlice-first only:

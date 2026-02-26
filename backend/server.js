@@ -39,6 +39,10 @@ const X402_REACTIVE_PRICE = process.env.X402_REACTIVE_PRICE || '0.03';
 const X402_BTC_PRICE = process.env.X402_BTC_PRICE || '0.00001';
 const X402_RISK_SCORE_PRICE = process.env.X402_RISK_SCORE_PRICE || '0.00002';
 const X402_X_READER_PRICE = process.env.X402_X_READER_PRICE || '0.00001';
+const X402_HYPERLIQUID_ORDER_PRICE = process.env.X402_HYPERLIQUID_ORDER_PRICE || '0.00002';
+const HYPERLIQUID_ORDER_RECIPIENT = normalizeAddress(
+  String(process.env.X402_HYPERLIQUID_ORDER_RECIPIENT || process.env.HYPERLIQUID_ORDER_RECIPIENT || MERCHANT_ADDRESS).trim()
+);
 const X402_TTL_MS = 10 * 60 * 1000;
 const KITE_AGENT1_ID = process.env.KITE_AGENT1_ID || '1';
 const KITE_AGENT2_ID = process.env.KITE_AGENT2_ID || '2';
@@ -1651,6 +1655,14 @@ function getActionConfig(actionRaw = '') {
       summary: 'x-reader digest unlocked by x402 payment'
     };
   }
+  if (action === 'hyperliquid-order-testnet') {
+    return {
+      action: 'hyperliquid-order-testnet',
+      amount: X402_HYPERLIQUID_ORDER_PRICE,
+      recipient: HYPERLIQUID_ORDER_RECIPIENT || MERCHANT_ADDRESS,
+      summary: 'Hyperliquid testnet order unlocked by x402 payment'
+    };
+  }
   return null;
 }
 
@@ -2347,8 +2359,10 @@ function createServiceId() {
 
 function normalizeServiceAction(actionRaw = '') {
   const action = String(actionRaw || 'btc-price-feed').trim().toLowerCase();
-  if (!['btc-price-feed', 'risk-score-feed', 'x-reader-feed'].includes(action)) {
-    throw new Error('Supported service actions: btc-price-feed, risk-score-feed, x-reader-feed.');
+  if (!['btc-price-feed', 'risk-score-feed', 'x-reader-feed', 'hyperliquid-order-testnet'].includes(action)) {
+    throw new Error(
+      'Supported service actions: btc-price-feed, risk-score-feed, x-reader-feed, hyperliquid-order-testnet.'
+    );
   }
   return action;
 }
@@ -2372,6 +2386,7 @@ function sanitizeServiceRecord(input = {}, existing = null) {
   const action = normalizeServiceAction(input.action || existing?.action || 'btc-price-feed');
   const isRisk = action === 'risk-score-feed';
   const isXReader = action === 'x-reader-feed';
+  const isHyperliquidOrder = action === 'hyperliquid-order-testnet';
   const normalizedTask =
     isRisk
       ? normalizeRiskScoreParams({
@@ -2391,10 +2406,18 @@ function sanitizeServiceRecord(input = {}, existing = null) {
             mode: input.mode || input.source || existing?.mode || existing?.source || 'auto',
             maxChars: input.maxChars ?? existing?.maxChars ?? existing?.exampleInput?.maxChars ?? X_READER_MAX_CHARS_DEFAULT
           })
-      : normalizeBtcPriceParams({
-          pair: input.pair || existing?.pair || 'BTCUSDT',
-          source: input.source || existing?.source || 'hyperliquid'
-        });
+      : isHyperliquidOrder
+        ? {
+            pair: String(input.pair || input.symbol || existing?.pair || 'BTCUSDT').trim().toUpperCase() || 'BTCUSDT',
+            source: 'hyperliquid-testnet',
+            sourceRequested: 'hyperliquid-testnet',
+            orderType: String(input.orderType || existing?.orderType || 'limit').trim().toLowerCase() || 'limit',
+            tif: String(input.tif || existing?.tif || 'Gtc').trim() || 'Gtc'
+          }
+        : normalizeBtcPriceParams({
+            pair: input.pair || existing?.pair || 'BTCUSDT',
+            source: input.source || existing?.source || 'hyperliquid'
+          });
   const recipient = normalizeAddress(input.recipient || existing?.recipient || KITE_AGENT2_AA_ADDRESS);
   if (!recipient || !ethers.isAddress(recipient)) {
     throw new Error('service recipient must be a valid address');
@@ -2409,13 +2432,27 @@ function sanitizeServiceRecord(input = {}, existing = null) {
   }
   const name =
     String(input.name || existing?.name || '').trim() ||
-    (isXReader ? 'X Reader Digest Service' : 'BTCUSD Quote Service');
+    (isXReader
+      ? 'X Reader Digest Service'
+      : isHyperliquidOrder
+        ? 'Hyperliquid Testnet Order Service'
+        : 'BTCUSD Quote Service');
   const description =
     String(input.description || existing?.description || '').trim() ||
-    (isXReader ? 'Pay-per-call URL digest powered by x-reader + x402.' : 'Pay-per-call BTCUSD quote service.');
+    (isXReader
+      ? 'Pay-per-call URL digest powered by x-reader + x402.'
+      : isHyperliquidOrder
+        ? 'Pay-per-call Hyperliquid testnet order execution via x402.'
+        : 'Pay-per-call BTCUSD quote service.');
   const providerAgentId = String(input.providerAgentId || existing?.providerAgentId || KITE_AGENT2_ID).trim();
   const tags = normalizeStringList(
-    input.tags || existing?.tags || (isXReader ? ['atapi', 'x402', 'x-reader'] : ['atapi', 'x402', action]),
+    input.tags ||
+      existing?.tags ||
+      (isXReader
+        ? ['atapi', 'x402', 'x-reader']
+        : isHyperliquidOrder
+          ? ['atapi', 'x402', 'hyperliquid', 'order']
+          : ['atapi', 'x402', action]),
     { lower: true, dedup: true }
   );
   const allowlistPayers = normalizeAddresses(input.allowlistPayers || existing?.allowlistPayers || []);
@@ -2431,7 +2468,9 @@ function sanitizeServiceRecord(input = {}, existing = null) {
           ? { symbol: 'BTCUSDT', horizonMin: 60, source: 'hyperliquid' }
           : isXReader
             ? { url: 'https://x.com/Kite_AI', mode: 'auto', maxChars: X_READER_MAX_CHARS_DEFAULT }
-          : { pair: 'BTCUSDT', source: 'hyperliquid' };
+            : isHyperliquidOrder
+              ? { symbol: 'BTCUSDT', side: 'buy', orderType: 'limit', tif: 'Gtc', size: 0.001 }
+              : { pair: 'BTCUSDT', source: 'hyperliquid' };
   const activeInput = input.active;
   const active =
     typeof activeInput === 'boolean'
@@ -2545,6 +2584,29 @@ function createDefaultServiceCatalog() {
       createdAt: now,
       updatedAt: now,
       publishedBy: 'system'
+    },
+    {
+      id: 'svc_hyperliquid_order_testnet',
+      name: 'Hyperliquid Order (Testnet)',
+      description: 'Agent-to-API Hyperliquid testnet order execution via x402 payment.',
+      action: 'hyperliquid-order-testnet',
+      pair: 'BTCUSDT',
+      source: 'hyperliquid-testnet',
+      sourceRequested: 'hyperliquid-testnet',
+      providerAgentId: 'executor-agent',
+      recipient: normalizeAddress(HYPERLIQUID_ORDER_RECIPIENT || MERCHANT_ADDRESS),
+      tokenAddress: normalizeAddress(SETTLEMENT_TOKEN),
+      price: String(Number(Number(X402_HYPERLIQUID_ORDER_PRICE || '0.00002').toFixed(6))),
+      tags: ['atapi', 'x402', 'hyperliquid', 'order'],
+      slaMs: 15000,
+      rateLimitPerMinute: 8,
+      budgetPerDay: 0.08,
+      allowlistPayers: [],
+      exampleInput: { symbol: 'BTCUSDT', side: 'buy', orderType: 'limit', tif: 'Gtc', size: 0.001 },
+      active: true,
+      createdAt: now,
+      updatedAt: now,
+      publishedBy: 'system'
     }
   ];
 }
@@ -2579,6 +2641,55 @@ function ensureServiceCatalog() {
   return seed;
 }
 
+function mapCapabilityToServiceActions(capability = '') {
+  const normalized = String(capability || '').trim().toLowerCase();
+  if (['technical-analysis-feed', 'risk-score-feed', 'volatility-snapshot'].includes(normalized)) {
+    return ['risk-score-feed'];
+  }
+  if (['info-analysis-feed', 'x-reader-feed', 'url-digest'].includes(normalized)) {
+    return ['x-reader-feed'];
+  }
+  if (['btc-price-feed', 'market-quote'].includes(normalized)) {
+    return ['btc-price-feed'];
+  }
+  if (['hyperliquid-order-testnet', 'trade-order-feed', 'execute-plan'].includes(normalized)) {
+    return ['hyperliquid-order-testnet'];
+  }
+  return [];
+}
+
+function defaultAgentIdByCapability(capability = '') {
+  const normalized = String(capability || '').trim().toLowerCase();
+  if (['technical-analysis-feed', 'risk-score-feed', 'volatility-snapshot'].includes(normalized)) {
+    return 'technical-agent';
+  }
+  if (['info-analysis-feed', 'x-reader-feed', 'url-digest'].includes(normalized)) {
+    return 'message-agent';
+  }
+  if (['hyperliquid-order-testnet', 'trade-order-feed', 'execute-plan'].includes(normalized)) {
+    return 'executor-agent';
+  }
+  if (['btc-price-feed', 'market-quote'].includes(normalized)) {
+    return 'price-agent';
+  }
+  return 'router-agent';
+}
+
+function toPriceNumber(value, fallback = NaN) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+function selectServiceCandidatesByCapability(capability = '') {
+  const actions = mapCapabilityToServiceActions(capability);
+  if (actions.length === 0) return [];
+  return ensureServiceCatalog().filter((item) => {
+    if (item?.active === false) return false;
+    const action = String(item?.action || '').trim().toLowerCase();
+    return actions.includes(action);
+  });
+}
+
 function sanitizeNetworkAgentRecord(input = {}, existing = null) {
   const source = input && typeof input === 'object' ? input : {};
   const fallback = existing && typeof existing === 'object' ? existing : {};
@@ -2591,6 +2702,12 @@ function sanitizeNetworkAgentRecord(input = {}, existing = null) {
   const aaAddress = normalizeAddress(source.aaAddress || fallback.aaAddress || '');
   const inboxId = String(source.inboxId || fallback.inboxId || '').trim();
   const ownerWallet = normalizeAddress(source.ownerWallet || fallback.ownerWallet || '');
+  const identityRegistry = normalizeAddress(source.identityRegistry || fallback.identityRegistry || '');
+  const identityAgentIdRaw = source.identityAgentId ?? fallback.identityAgentId ?? '';
+  const identityAgentId =
+    identityAgentIdRaw === '' || identityAgentIdRaw === null || identityAgentIdRaw === undefined
+      ? ''
+      : String(identityAgentIdRaw).trim();
   const description = String(source.description || fallback.description || '').trim();
   const capabilitiesRaw = Array.isArray(source.capabilities)
     ? source.capabilities
@@ -2616,6 +2733,8 @@ function sanitizeNetworkAgentRecord(input = {}, existing = null) {
     aaAddress,
     inboxId,
     ownerWallet,
+    identityRegistry,
+    identityAgentId,
     description,
     capabilities,
     active,
@@ -2633,6 +2752,8 @@ function createDefaultNetworkAgents() {
       mode: 'a2a',
       xmtpAddress: XMTP_ROUTER_RESOLVED_ADDRESS,
       aaAddress: XMTP_ROUTER_AGENT_AA_ADDRESS,
+      identityRegistry: ERC8004_IDENTITY_REGISTRY || '',
+      identityAgentId: ERC8004_AGENT_ID !== null ? String(ERC8004_AGENT_ID || '') : '',
       description: 'AGENT001 orchestrator: direct DM entry for task routing and A2A coordination.',
       capabilities: ['route-task', 'dispatch-a2a']
     },
@@ -2643,6 +2764,8 @@ function createDefaultNetworkAgents() {
       mode: 'a2a',
       xmtpAddress: XMTP_RISK_RESOLVED_ADDRESS,
       aaAddress: XMTP_RISK_AGENT_AA_ADDRESS,
+      identityRegistry: String(process.env.XMTP_RISK_IDENTITY_REGISTRY || '').trim(),
+      identityAgentId: String(process.env.XMTP_RISK_IDENTITY_AGENT_ID || '').trim(),
       description: 'Computes risk-score feed through agent capability.',
       capabilities: ['risk-score-feed', 'volatility-snapshot', 'technical-analysis-feed']
     },
@@ -2653,6 +2776,8 @@ function createDefaultNetworkAgents() {
       mode: 'a2a',
       xmtpAddress: XMTP_RISK_RESOLVED_ADDRESS,
       aaAddress: XMTP_RISK_AGENT_AA_ADDRESS,
+      identityRegistry: String(process.env.XMTP_TECHNICAL_IDENTITY_REGISTRY || process.env.XMTP_RISK_IDENTITY_REGISTRY || '').trim(),
+      identityAgentId: String(process.env.XMTP_TECHNICAL_IDENTITY_AGENT_ID || process.env.XMTP_RISK_IDENTITY_AGENT_ID || '').trim(),
       description: 'Single technical facade over risk/price sub-analysis outputs.',
       capabilities: ['technical-analysis-feed', 'risk-score-feed', 'market-quote']
     },
@@ -2663,6 +2788,8 @@ function createDefaultNetworkAgents() {
       mode: 'a2api',
       xmtpAddress: XMTP_READER_RESOLVED_ADDRESS,
       aaAddress: XMTP_READER_AGENT_AA_ADDRESS,
+      identityRegistry: String(process.env.XMTP_READER_IDENTITY_REGISTRY || '').trim(),
+      identityAgentId: String(process.env.XMTP_READER_IDENTITY_AGENT_ID || '').trim(),
       description: 'Runs x-reader digest for URLs via ATAPI adapter.',
       capabilities: ['x-reader-feed', 'url-digest', 'info-analysis-feed']
     },
@@ -2673,6 +2800,8 @@ function createDefaultNetworkAgents() {
       mode: 'a2api',
       xmtpAddress: XMTP_READER_RESOLVED_ADDRESS,
       aaAddress: XMTP_READER_AGENT_AA_ADDRESS,
+      identityRegistry: String(process.env.XMTP_MESSAGE_IDENTITY_REGISTRY || process.env.XMTP_READER_IDENTITY_REGISTRY || '').trim(),
+      identityAgentId: String(process.env.XMTP_MESSAGE_IDENTITY_AGENT_ID || process.env.XMTP_READER_IDENTITY_AGENT_ID || '').trim(),
       description: 'Message/news sentiment facade over reader runtime.',
       capabilities: ['info-analysis-feed', 'url-digest', 'x-reader-feed']
     },
@@ -3176,6 +3305,81 @@ function buildTaskReceiptRef(payment = {}) {
   };
 }
 
+function pickBestServiceByReputationAndPrice(services = []) {
+  const rows = Array.isArray(services) ? services : [];
+  if (rows.length === 0) return null;
+  const priceValues = rows.map((item) => toPriceNumber(item?.service?.price, NaN)).filter((value) => Number.isFinite(value) && value > 0);
+  const minPrice = priceValues.length > 0 ? Math.min(...priceValues) : NaN;
+  const maxPrice = priceValues.length > 0 ? Math.max(...priceValues) : NaN;
+
+  const ranked = rows.map((item) => {
+    const reputation = Number(item?.reputation?.score ?? 0);
+    const price = toPriceNumber(item?.service?.price, NaN);
+    let priceScore = 100;
+    if (Number.isFinite(price) && Number.isFinite(minPrice) && Number.isFinite(maxPrice) && maxPrice > minPrice) {
+      priceScore = ((maxPrice - price) / (maxPrice - minPrice)) * 100;
+    }
+    const finalScore = Number((reputation * 0.7 + priceScore * 0.3).toFixed(4));
+    return {
+      ...item,
+      metrics: {
+        reputationScore: Number(reputation.toFixed(4)),
+        priceScore: Number(priceScore.toFixed(4)),
+        finalScore
+      }
+    };
+  });
+
+  ranked.sort((a, b) => {
+    const diff = Number(b?.metrics?.finalScore || 0) - Number(a?.metrics?.finalScore || 0);
+    if (Math.abs(diff) > 1e-9) return diff > 0 ? 1 : -1;
+    const slaA = Number(a?.service?.slaMs || 0);
+    const slaB = Number(b?.service?.slaMs || 0);
+    return slaA - slaB;
+  });
+  return ranked[0] || null;
+}
+
+function buildBestServiceQuote({ wantedCapability = '', preferredAgentId = '' } = {}) {
+  const services = selectServiceCandidatesByCapability(wantedCapability);
+  if (services.length === 0) return null;
+  const invocations = readServiceInvocations();
+  const workflows = readWorkflows();
+  const workflowByTraceId = new Map(workflows.map((item) => [String(item?.traceId || '').trim(), item]));
+  const requests = readX402Requests();
+  const requestById = new Map(requests.map((item) => [String(item?.requestId || '').trim(), item]));
+  const preferred = String(preferredAgentId || '').trim().toLowerCase();
+
+  const rows = services.map((service) => {
+    const perServiceInv = invocations.filter(
+      (item) => String(item?.serviceId || '').trim() === String(service?.id || '').trim()
+    );
+    const receipts = perServiceInv.map((item) => mapServiceReceipt(item, workflowByTraceId, requestById));
+    const reputation = computeServiceReputation(service, receipts);
+    const providerAgentId = String(service?.providerAgentId || '').trim().toLowerCase();
+    return {
+      service,
+      reputation,
+      providerAgentId
+    };
+  });
+
+  const filtered = preferred ? rows.filter((item) => item.providerAgentId === preferred) : rows;
+  const picked = pickBestServiceByReputationAndPrice(filtered.length > 0 ? filtered : rows);
+  if (!picked?.service) return null;
+  return {
+    serviceId: String(picked.service.id || '').trim(),
+    providerAgentId: String(picked.service.providerAgentId || defaultAgentIdByCapability(wantedCapability)).trim(),
+    capability: String(wantedCapability || '').trim().toLowerCase(),
+    price: String(picked.service.price || '').trim(),
+    tokenAddress: String(picked.service.tokenAddress || SETTLEMENT_TOKEN || '').trim(),
+    recipient: String(picked.service.recipient || KITE_AGENT2_AA_ADDRESS || '').trim(),
+    slaMs: Number.isFinite(Number(picked.service.slaMs)) ? Number(picked.service.slaMs) : 12000,
+    validForSec: 180,
+    metrics: picked.metrics
+  };
+}
+
 function parseJsonObjectFromText(text = '') {
   const raw = String(text || '').trim();
   if (!raw) return null;
@@ -3438,6 +3642,7 @@ async function runAgent001DispatchTask({
   toAgentId = '',
   capability = '',
   input = {},
+  paymentIntent = null,
   waitMsLimit = 25_000
 } = {}) {
   const resolvedToAgentId = String(toAgentId || '').trim().toLowerCase();
@@ -3493,6 +3698,8 @@ async function runAgent001DispatchTask({
       mode: 'a2a',
       capability: String(capability || '').trim(),
       input: input && typeof input === 'object' && !Array.isArray(input) ? input : {},
+      paymentIntent:
+        paymentIntent && typeof paymentIntent === 'object' && !Array.isArray(paymentIntent) ? paymentIntent : {},
       expectsReply: true,
       timestamp: new Date().toISOString()
     };
@@ -3655,6 +3862,213 @@ async function applyAgent001LocalFallback({
   return { technical: nextTechnical, info: nextInfo };
 }
 
+function isAgent001TaskSuccessful(dispatchResult = null) {
+  if (!dispatchResult || !dispatchResult.ok) return false;
+  const status = String(dispatchResult?.taskResult?.status || 'done').trim().toLowerCase();
+  return !['failed', 'error', 'rejected'].includes(status);
+}
+
+async function readNetworkAgentIdentityStatus(agent = {}) {
+  const registry = normalizeAddress(agent?.identityRegistry || '');
+  const agentId = String(agent?.identityAgentId || '').trim();
+  if (!registry || !agentId) {
+    return { configured: false, verified: false, reason: 'identity_not_configured' };
+  }
+  try {
+    const profile = await readIdentityProfile({ registry, agentId });
+    return {
+      configured: true,
+      verified: true,
+      registry,
+      agentId,
+      wallet: String(profile?.agentWallet || '').trim()
+    };
+  } catch (error) {
+    return {
+      configured: true,
+      verified: false,
+      registry,
+      agentId,
+      reason: String(error?.message || 'identity_verify_failed').trim()
+    };
+  }
+}
+
+async function selectAgent001ProviderPlan({ capability = '' } = {}) {
+  const normalizedCapability = String(capability || '').trim().toLowerCase();
+  const fallbackAgentId = defaultAgentIdByCapability(normalizedCapability);
+  const networkRows = ensureNetworkAgents().filter((item) => item?.active !== false);
+  const candidateAgents = networkRows.filter((item) =>
+    Array.isArray(item?.capabilities)
+      ? item.capabilities.map((c) => String(c || '').trim().toLowerCase()).includes(normalizedCapability)
+      : false
+  );
+  const identityRows = [];
+  for (const agent of candidateAgents) {
+    const identity = await readNetworkAgentIdentityStatus(agent);
+    identityRows.push({ agent, identity });
+  }
+  const verifiedFirst = identityRows.filter((item) => item.identity?.verified);
+  const pickedIdentityRow =
+    (verifiedFirst.length > 0 ? verifiedFirst[0] : identityRows[0]) ||
+    (findNetworkAgentById(fallbackAgentId)
+      ? { agent: findNetworkAgentById(fallbackAgentId), identity: await readNetworkAgentIdentityStatus(findNetworkAgentById(fallbackAgentId)) }
+      : null);
+  const pickedAgent = pickedIdentityRow?.agent || null;
+  const identity = pickedIdentityRow?.identity || { configured: false, verified: false };
+
+  const services = selectServiceCandidatesByCapability(normalizedCapability);
+  if (services.length === 0) {
+    return {
+      ok: false,
+      error: 'service_unavailable',
+      reason: `No active service found for capability ${normalizedCapability}.`
+    };
+  }
+  const invocations = readServiceInvocations();
+  const workflows = readWorkflows();
+  const workflowByTraceId = new Map(workflows.map((item) => [String(item?.traceId || '').trim(), item]));
+  const requests = readX402Requests();
+  const requestById = new Map(requests.map((item) => [String(item?.requestId || '').trim(), item]));
+  const rows = services.map((service) => {
+    const perServiceInv = invocations.filter(
+      (item) => String(item?.serviceId || '').trim() === String(service?.id || '').trim()
+    );
+    const receipts = perServiceInv.map((item) => mapServiceReceipt(item, workflowByTraceId, requestById));
+    const reputation = computeServiceReputation(service, receipts);
+    return { service, reputation };
+  });
+  const pickedService = pickBestServiceByReputationAndPrice(rows);
+  if (!pickedService?.service) {
+    return {
+      ok: false,
+      error: 'service_unavailable',
+      reason: `No selectable service found for capability ${normalizedCapability}.`
+    };
+  }
+
+  return {
+    ok: true,
+    capability: normalizedCapability,
+    toAgentId: String(pickedAgent?.id || fallbackAgentId).trim().toLowerCase(),
+    agent: pickedAgent,
+    identity,
+    service: pickedService.service,
+    reputation: pickedService.reputation,
+    metrics: pickedService.metrics
+  };
+}
+
+async function runAgent001QuoteNegotiation({
+  toAgentId = '',
+  wantedCapability = '',
+  rawText = '',
+  intent = {},
+  waitMsLimit = 12_000
+} = {}) {
+  const input = {
+    wantedCapability: String(wantedCapability || '').trim().toLowerCase(),
+    symbol: String(intent?.symbol || extractBtcSymbolFromText(rawText) || 'BTCUSDT').trim().toUpperCase(),
+    horizonMin: Number.isFinite(Number(intent?.horizonMin))
+      ? Math.max(5, Math.min(Math.round(Number(intent.horizonMin)), 240))
+      : extractHorizonFromText(rawText),
+    topic: String(intent?.topic || rawText || '').trim(),
+    source: String(intent?.source || 'hyperliquid').trim().toLowerCase(),
+    maxChars: 900
+  };
+  return runAgent001DispatchTask({
+    toAgentId,
+    capability: 'service-quote',
+    input,
+    waitMsLimit
+  });
+}
+
+async function buildAgent001StrictPaymentPlan({
+  capability = '',
+  rawText = '',
+  intent = {},
+  payer = '',
+  targetAgentId = ''
+} = {}) {
+  const normalizedCapability = String(capability || '').trim().toLowerCase();
+  if (normalizedCapability === 'technical-analysis-feed') {
+    return buildRiskScorePaymentIntentForTask({
+      body: {
+        input: {
+          symbol: intent?.symbol || extractBtcSymbolFromText(rawText) || 'BTCUSDT',
+          source: intent?.source || 'hyperliquid',
+          horizonMin: intent?.horizonMin || extractHorizonFromText(rawText)
+        },
+        bindRealX402: true,
+        strictBinding: true,
+        payer,
+        sourceAgentId: 'router-agent',
+        targetAgentId: targetAgentId || 'technical-agent'
+      },
+      traceId: createTraceId('agent001_pay_tech'),
+      fallbackRequestId: createTraceId('agent001_req_tech'),
+      defaultTask: { symbol: 'BTCUSDT', source: 'hyperliquid', horizonMin: 60 }
+    });
+  }
+  if (normalizedCapability === 'info-analysis-feed') {
+    return buildXReaderPaymentIntentForTask({
+      body: {
+        input: {
+          url: intent?.topic || extractFirstUrlFromText(rawText) || rawText,
+          mode: 'news',
+          maxChars: 900
+        },
+        bindRealX402: true,
+        strictBinding: true,
+        payer,
+        sourceAgentId: 'router-agent',
+        targetAgentId: targetAgentId || 'message-agent'
+      },
+      traceId: createTraceId('agent001_pay_info'),
+      fallbackRequestId: createTraceId('agent001_req_info'),
+      defaultTask: { url: 'https://www.coindesk.com/', mode: 'news', maxChars: 900 }
+    });
+  }
+  throw new Error(`unsupported_payment_capability:${normalizedCapability}`);
+}
+
+async function runAgent001HyperliquidOrderWorkflow({
+  plan = null,
+  payer = '',
+  sourceAgentId = 'router-agent',
+  targetAgentId = 'executor-agent',
+  traceId = ''
+} = {}) {
+  if (!plan || typeof plan !== 'object') {
+    throw new Error('trade_plan_missing');
+  }
+  const response = await fetch(`http://127.0.0.1:${PORT}/api/workflow/hyperliquid-order/run`, {
+    method: 'POST',
+    headers: buildInternalAgentHeaders(),
+    body: JSON.stringify({
+      traceId: traceId || createTraceId('agent001_order'),
+      symbol: plan.symbol || 'BTCUSDT',
+      side: plan.side || '',
+      orderType: plan.orderType || 'limit',
+      tif: plan.tif || 'Gtc',
+      price: plan.entryPrice,
+      size: plan.size,
+      payer,
+      sourceAgentId,
+      targetAgentId,
+      bindRealX402: true,
+      strictBinding: true,
+      simulate: false
+    })
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload?.ok === false) {
+    throw new Error(String(payload?.reason || payload?.error || `workflow/hyperliquid-order/run failed: HTTP ${response.status}`).trim());
+  }
+  return payload;
+}
+
 function roundPriceByMagnitude(value, fallbackDigits = 2) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric) || numeric <= 0) return '';
@@ -3730,7 +4144,8 @@ function buildAgent001TradePlan({
   rawText = '',
   intent = {},
   technical = null,
-  info = null
+  info = null,
+  returnObject = false
 } = {}) {
   const technicalResult =
     technical?.taskResult?.result && typeof technical.taskResult.result === 'object' && !Array.isArray(technical.taskResult.result)
@@ -3803,7 +4218,7 @@ function buildAgent001TradePlan({
 
   let decision = 'no-order';
   let decisionReason = '';
-  if (riskScore >= 70) {
+  if (riskScore > 65) {
     decision = 'no-order';
     decisionReason = `风险分 ${riskScore}/100 偏高，先观望`;
   } else if (sideDecision.side === 'long') {
@@ -3830,7 +4245,8 @@ function buildAgent001TradePlan({
     takePrice = entryPrice * (1 - takeProfitPct / 100);
   }
 
-  const positionPct = riskScore >= 65 ? 20 : riskScore >= 55 ? 30 : riskScore >= 45 ? 40 : 50;
+  const positionPct = riskScore >= 55 ? 20 : riskScore >= 45 ? 30 : 40;
+  const orderSize = riskScore <= 35 ? 0.004 : riskScore <= 50 ? 0.003 : riskScore <= 65 ? 0.002 : 0;
   const technicalSummary = String(technicalResult?.summary || technical?.reason || technical?.error || '').trim();
   const infoSummary = String(infoResult?.summary || info?.reason || info?.error || '').trim();
   const sentimentText = Number.isFinite(sentimentScore)
@@ -3852,6 +4268,7 @@ function buildAgent001TradePlan({
     lines.push(`入场挂单: ${roundPriceByMagnitude(entryPrice)}`);
     lines.push(`止损: ${roundPriceByMagnitude(stopPrice)} (${stopLossPct.toFixed(2)}%)`);
     lines.push(`止盈: ${roundPriceByMagnitude(takePrice)} (${takeProfitPct.toFixed(2)}%)`);
+    lines.push(`下单数量(BTC): ${orderSize}`);
     lines.push(`建议仓位: 账户可用保证金的 ${positionPct}%`);
     lines.push('订单失效: 30 分钟未成交则撤单重评');
   } else if (decision !== 'no-order') {
@@ -3866,7 +4283,32 @@ function buildAgent001TradePlan({
     lines.push(`规则依据: ${sideDecision.reasons.join('；')}`);
   }
   lines.push('提示: 仅用于研究与演示，不构成投资建议。');
-  return lines.join('\n');
+  const text = lines.join('\n');
+  const canPlaceOrder =
+    decision !== 'no-order' && Number.isFinite(entryPrice) && entryPrice > 0 && Number.isFinite(orderSize) && orderSize > 0;
+  const side = decision === 'long-limit' ? 'buy' : decision === 'short-limit' ? 'sell' : '';
+  if (!returnObject) return text;
+  return {
+    text,
+    symbol,
+    horizonMin,
+    decision,
+    decisionReason,
+    side,
+    riskScore,
+    riskLevel,
+    sentimentScore: Number.isFinite(sentimentScore) ? Number(sentimentScore.toFixed(4)) : null,
+    sentimentConfidence: Number.isFinite(sentimentConfidence) ? Number(sentimentConfidence.toFixed(4)) : null,
+    entryPrice: Number.isFinite(entryPrice) ? Number(entryPrice.toFixed(8)) : null,
+    stopPrice: Number.isFinite(stopPrice) ? Number(stopPrice.toFixed(8)) : null,
+    takePrice: Number.isFinite(takePrice) ? Number(takePrice.toFixed(8)) : null,
+    size: orderSize > 0 ? Number(orderSize.toFixed(6)) : null,
+    orderType: 'limit',
+    tif: 'Gtc',
+    canPlaceOrder,
+    technicalSummary,
+    infoSummary
+  };
 }
 
 async function maybePolishAgent001Reply(rawText = '', draft = '') {
@@ -3933,6 +4375,151 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
 
   const waitMsLimit = 30_000;
   const runTrade = intent.intent === 'trade';
+  if (runTrade) {
+    const runtime = readSessionRuntime();
+    const payer = normalizeAddress(runtime?.aaWallet || '');
+    if (!payer) {
+      return '交易执行前置条件不足：未配置可用 AA payer。请先在 Agent Settings 完成 Session/AA 同步。';
+    }
+
+    const [technicalProvider, infoProvider] = await Promise.all([
+      selectAgent001ProviderPlan({ capability: 'technical-analysis-feed' }),
+      selectAgent001ProviderPlan({ capability: 'info-analysis-feed' })
+    ]);
+    if (!technicalProvider?.ok || !infoProvider?.ok) {
+      return [
+        '交易链路中断：服务发现失败。',
+        `技术面: ${technicalProvider?.reason || technicalProvider?.error || 'unavailable'}`,
+        `消息面: ${infoProvider?.reason || infoProvider?.error || 'unavailable'}`
+      ].join('\n');
+    }
+
+    const [technicalQuoteTask, infoQuoteTask] = await Promise.all([
+      runAgent001QuoteNegotiation({
+        toAgentId: technicalProvider.toAgentId,
+        wantedCapability: 'technical-analysis-feed',
+        rawText,
+        intent,
+        waitMsLimit: 12_000
+      }),
+      runAgent001QuoteNegotiation({
+        toAgentId: infoProvider.toAgentId,
+        wantedCapability: 'info-analysis-feed',
+        rawText,
+        intent,
+        waitMsLimit: 12_000
+      })
+    ]);
+    if (!isAgent001TaskSuccessful(technicalQuoteTask) || !isAgent001TaskSuccessful(infoQuoteTask)) {
+      return [
+        '交易链路中断：XMTP 报价协商失败。',
+        `technical quote: ${technicalQuoteTask?.reason || technicalQuoteTask?.error || 'failed'}`,
+        `message quote: ${infoQuoteTask?.reason || infoQuoteTask?.error || 'failed'}`
+      ].join('\n');
+    }
+
+    let technicalPayPlan = null;
+    let infoPayPlan = null;
+    try {
+      [technicalPayPlan, infoPayPlan] = await Promise.all([
+        buildAgent001StrictPaymentPlan({
+          capability: 'technical-analysis-feed',
+          rawText,
+          intent,
+          payer,
+          targetAgentId: technicalProvider.toAgentId
+        }),
+        buildAgent001StrictPaymentPlan({
+          capability: 'info-analysis-feed',
+          rawText,
+          intent,
+          payer,
+          targetAgentId: infoProvider.toAgentId
+        })
+      ]);
+    } catch (error) {
+      return `交易链路中断：x402 预绑定失败（严格模式）。原因: ${String(error?.message || 'bind_failed').trim()}`;
+    }
+
+    const [technical, info] = await Promise.all([
+      runAgent001DispatchTask({
+        toAgentId: technicalProvider.toAgentId,
+        capability: 'technical-analysis-feed',
+        input: technicalPayPlan.normalizedTask,
+        paymentIntent: technicalPayPlan.paymentIntent,
+        waitMsLimit
+      }),
+      runAgent001DispatchTask({
+        toAgentId: infoProvider.toAgentId,
+        capability: 'info-analysis-feed',
+        input: infoPayPlan.normalizedTask,
+        paymentIntent: infoPayPlan.paymentIntent,
+        waitMsLimit
+      })
+    ]);
+
+    if (!isAgent001TaskSuccessful(technical) || !isAgent001TaskSuccessful(info)) {
+      return [
+        '交易链路中断：分析任务未成功返回（严格模式不降级）。',
+        `technical: ${technical?.reason || technical?.error || technical?.taskResult?.error || 'failed'}`,
+        `message: ${info?.reason || info?.error || info?.taskResult?.error || 'failed'}`
+      ].join('\n');
+    }
+
+    const tradePlan = buildAgent001TradePlan({
+      rawText,
+      intent,
+      technical,
+      info,
+      returnObject: true
+    });
+    const technicalQuote = technicalQuoteTask?.taskResult?.result?.quote || null;
+    const infoQuote = infoQuoteTask?.taskResult?.result?.quote || null;
+    const technicalPayment = technical?.taskResult?.payment || technicalPayPlan?.paymentIntent || null;
+    const infoPayment = info?.taskResult?.payment || infoPayPlan?.paymentIntent || null;
+    const lines = [
+      String(tradePlan?.text || '').trim() || '交易计划生成失败。',
+      '',
+      '报价协商:',
+      `technical: ${technicalQuote?.serviceId || '-'} @ ${technicalQuote?.price || '-'} | 评分 ${technicalProvider?.metrics?.finalScore ?? '-'}`,
+      `message: ${infoQuote?.serviceId || '-'} @ ${infoQuote?.price || '-'} | 评分 ${infoProvider?.metrics?.finalScore ?? '-'}`,
+      '',
+      '分析段 x402 证据:',
+      `technical requestId: ${String(technicalPayment?.requestId || '').trim() || '-'}`,
+      `technical txHash: ${String(technicalPayment?.txHash || '').trim() || '-'}`,
+      `message requestId: ${String(infoPayment?.requestId || '').trim() || '-'}`,
+      `message txHash: ${String(infoPayment?.txHash || '').trim() || '-'}`
+    ];
+
+    if (!tradePlan?.canPlaceOrder) {
+      lines.push('执行结果: 不满足自动下单条件，本轮不下单。');
+      return lines.join('\n');
+    }
+
+    try {
+      const orderResult = await runAgent001HyperliquidOrderWorkflow({
+        plan: tradePlan,
+        payer,
+        sourceAgentId: 'router-agent',
+        targetAgentId: 'executor-agent',
+        traceId: createTraceId('agent001_trade_order')
+      });
+      const payment = orderResult?.payment || null;
+      const receiptRef = orderResult?.receiptRef || null;
+      lines.push('');
+      lines.push('下单执行: 已触发 Hyperliquid 测试网下单。');
+      lines.push(`order state: ${String(orderResult?.state || orderResult?.workflow?.state || '').trim() || '-'}`);
+      lines.push(`x402 requestId: ${String(payment?.requestId || orderResult?.requestId || '').trim() || '-'}`);
+      lines.push(`x402 txHash: ${String(payment?.txHash || orderResult?.txHash || '').trim() || '-'}`);
+      lines.push(`receipt: ${String(receiptRef?.endpoint || '').trim() || '-'}`);
+      return lines.join('\n');
+    } catch (error) {
+      lines.push('');
+      lines.push(`下单执行失败: ${String(error?.message || 'unknown').trim()}`);
+      return lines.join('\n');
+    }
+  }
+
   const runTechnical = runTrade || intent.intent === 'technical' || intent.intent === 'both';
   const runInfo = runTrade || intent.intent === 'info' || intent.intent === 'both';
   const technicalPromise = runTechnical
@@ -3991,6 +4578,26 @@ async function handleRiskRuntimeTaskEnvelope({ envelope = {} } = {}) {
   const capability = String(envelope?.capability || '').trim().toLowerCase();
   const payment = buildTaskPaymentFromIntent(envelope);
   const receiptRef = buildTaskReceiptRef(payment);
+  if (capability === 'service-quote') {
+    const input = getTaskEnvelopeInput(envelope);
+    const wantedCapability = String(input?.wantedCapability || 'technical-analysis-feed').trim().toLowerCase();
+    const quote = buildBestServiceQuote({ wantedCapability, preferredAgentId: 'technical-agent' });
+    return {
+      status: quote ? 'done' : 'failed',
+      result: quote
+        ? {
+            summary: `technical quote ready: ${quote.serviceId} @ ${quote.price}`,
+            quote
+          }
+        : {
+            summary: `No quote available for capability ${wantedCapability}.`,
+            quote: null
+          },
+      error: quote ? '' : 'quote_unavailable',
+      payment,
+      receiptRef
+    };
+  }
   if (!['risk-score-feed', 'volatility-snapshot', 'technical-analysis-feed'].includes(capability)) {
     return {
       status: 'done',
@@ -4024,6 +4631,26 @@ async function handleReaderRuntimeTaskEnvelope({ envelope = {} } = {}) {
   const capability = String(envelope?.capability || '').trim().toLowerCase();
   const payment = buildTaskPaymentFromIntent(envelope);
   const receiptRef = buildTaskReceiptRef(payment);
+  if (capability === 'service-quote') {
+    const input = getTaskEnvelopeInput(envelope);
+    const wantedCapability = String(input?.wantedCapability || 'info-analysis-feed').trim().toLowerCase();
+    const quote = buildBestServiceQuote({ wantedCapability, preferredAgentId: 'message-agent' });
+    return {
+      status: quote ? 'done' : 'failed',
+      result: quote
+        ? {
+            summary: `message quote ready: ${quote.serviceId} @ ${quote.price}`,
+            quote
+          }
+        : {
+            summary: `No quote available for capability ${wantedCapability}.`,
+            quote: null
+          },
+      error: quote ? '' : 'quote_unavailable',
+      payment,
+      receiptRef
+    };
+  }
   if (!['x-reader-feed', 'url-digest', 'info-analysis-feed'].includes(capability)) {
     return {
       status: 'done',
@@ -4582,6 +5209,19 @@ function buildA2ACapabilities() {
         },
         price: X402_REACTIVE_PRICE,
         recipient: KITE_AGENT2_AA_ADDRESS
+      },
+      {
+        id: 'hyperliquid-order-testnet',
+        input: {
+          symbol: 'string (default BTCUSDT)',
+          side: 'buy/sell',
+          orderType: 'limit/market',
+          size: 'number > 0',
+          price: 'number > 0 (required for limit)',
+          tif: 'Gtc/Ioc/Alo'
+        },
+        price: X402_HYPERLIQUID_ORDER_PRICE,
+        recipient: HYPERLIQUID_ORDER_RECIPIENT || MERCHANT_ADDRESS
       }
     ]
   };
@@ -6865,6 +7505,228 @@ app.post('/api/workflow/x-reader/run', requireRole('agent'), async (req, res) =>
               { state: 'failed', phase: 'failed', error: error.message, traceId }
             )
           : null
+    });
+  }
+});
+
+app.post('/api/workflow/hyperliquid-order/run', requireRole('agent'), async (req, res) => {
+  const symbol = String(req.body?.symbol || req.body?.pair || 'BTCUSDT').trim().toUpperCase() || 'BTCUSDT';
+  const side = String(req.body?.side || '').trim().toLowerCase();
+  const orderType = String(req.body?.orderType || req.body?.type || 'limit').trim().toLowerCase() || 'limit';
+  const tif = String(req.body?.tif || 'Gtc').trim() || 'Gtc';
+  const size = Number(req.body?.size ?? req.body?.sz ?? NaN);
+  const price = Number(req.body?.price ?? NaN);
+  const reduceOnly = req.body?.reduceOnly === true || String(req.body?.reduceOnly || '').trim().toLowerCase() === 'true';
+  const sourceAgentId = String(req.body?.sourceAgentId || 'router-agent').trim();
+  const targetAgentId = String(req.body?.targetAgentId || 'executor-agent').trim();
+  const traceId = resolveWorkflowTraceId(req.body?.traceId);
+  const runtime = readSessionRuntime();
+  const payer = normalizeAddress(req.body?.payer || runtime.aaWallet || '');
+  const tokenAddress = normalizeAddress(req.body?.tokenAddress || SETTLEMENT_TOKEN);
+  const recipient = normalizeAddress(req.body?.recipient || HYPERLIQUID_ORDER_RECIPIENT || MERCHANT_ADDRESS);
+  const amount = String(req.body?.amount || X402_HYPERLIQUID_ORDER_PRICE).trim();
+  const bindRealX402 = parseBooleanFlag(req.body?.bindRealX402, true);
+  const strictBinding = parseBooleanFlag(req.body?.strictBinding, true);
+  const simulate = req.body?.simulate === true || req.body?.dryRun === true;
+
+  if (!['buy', 'sell'].includes(side)) {
+    return res.status(400).json({ ok: false, error: 'invalid_side', reason: 'side must be buy/sell' });
+  }
+  if (!['limit', 'market'].includes(orderType)) {
+    return res.status(400).json({ ok: false, error: 'invalid_order_type', reason: 'orderType must be limit/market' });
+  }
+  if (!Number.isFinite(size) || size <= 0) {
+    return res.status(400).json({ ok: false, error: 'invalid_size', reason: 'size must be a positive number' });
+  }
+  if (orderType === 'limit' && (!Number.isFinite(price) || price <= 0)) {
+    return res.status(400).json({ ok: false, error: 'invalid_price', reason: 'limit order requires positive price' });
+  }
+  if (!tokenAddress || !recipient) {
+    return res.status(400).json({ ok: false, error: 'invalid_settlement_target', reason: 'tokenAddress/recipient invalid' });
+  }
+  if (!bindRealX402 || !strictBinding) {
+    return res.status(400).json({
+      ok: false,
+      error: 'x402_strict_required',
+      reason: 'hyperliquid-order workflow requires bindRealX402=true and strictBinding=true.'
+    });
+  }
+
+  const workflow = {
+    traceId,
+    type: 'hyperliquid-order',
+    state: 'running',
+    sourceAgentId,
+    targetAgentId,
+    payer,
+    input: {
+      symbol,
+      side,
+      orderType,
+      tif,
+      size,
+      price: Number.isFinite(price) ? price : null,
+      reduceOnly,
+      simulate
+    },
+    requestId: '',
+    txHash: '',
+    userOpHash: '',
+    steps: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  upsertWorkflow(workflow);
+  broadcastEvent('workflow_started', { traceId, state: workflow.state, input: workflow.input });
+
+  try {
+    const challengeResp = await fetch(`http://127.0.0.1:${PORT}/api/x402/transfer-intent`, {
+      method: 'POST',
+      headers: buildInternalAgentHeaders(),
+      body: JSON.stringify({
+        payer,
+        recipient,
+        amount,
+        tokenAddress,
+        action: 'hyperliquid-order-testnet',
+        query: `ATAPI hyperliquid order ${symbol} ${side} ${orderType} size=${size}`,
+        identity: req.body?.identity && typeof req.body.identity === 'object' ? req.body.identity : {}
+      })
+    });
+    const challengeBody = await challengeResp.json().catch(() => ({}));
+    if (challengeResp.status !== 402) {
+      throw new Error(
+        challengeBody?.reason || challengeBody?.error || `Expected 402 challenge, got ${challengeResp.status}`
+      );
+    }
+    const challenge = challengeBody?.x402;
+    const requestId = String(challenge?.requestId || '').trim();
+    const accept = Array.isArray(challenge?.accepts) ? challenge.accepts[0] : null;
+    if (!requestId || !accept?.tokenAddress || !accept?.recipient || !accept?.amount) {
+      throw new Error('Malformed x402 challenge payload.');
+    }
+    workflow.requestId = requestId;
+    appendWorkflowStep(workflow, 'challenge_issued', 'ok', {
+      requestId,
+      amount: accept.amount,
+      recipient: accept.recipient
+    });
+    workflow.updatedAt = new Date().toISOString();
+    upsertWorkflow(workflow);
+
+    const pay = await postSessionPayWithRetry(
+      {
+        tokenAddress: accept.tokenAddress,
+        recipient: accept.recipient,
+        amount: accept.amount,
+        requestId,
+        action: 'hyperliquid-order-testnet',
+        query: `ATAPI hyperliquid order ${symbol} ${side} ${orderType} size=${size}`
+      },
+      { maxAttempts: 3, timeoutMs: 210_000 }
+    );
+    const payBody = pay.body || {};
+    const txHash = String(payBody?.payment?.txHash || '').trim();
+    const userOpHash = String(payBody?.payment?.userOpHash || '').trim();
+    if (!txHash) throw new Error('session pay returned empty txHash.');
+    workflow.txHash = txHash;
+    workflow.userOpHash = userOpHash;
+    appendWorkflowStep(workflow, 'payment_sent', 'ok', { txHash, userOpHash });
+    workflow.updatedAt = new Date().toISOString();
+    upsertWorkflow(workflow);
+
+    const proofResp = await fetch(`http://127.0.0.1:${PORT}/api/x402/transfer-intent`, {
+      method: 'POST',
+      headers: buildInternalAgentHeaders(),
+      body: JSON.stringify({
+        requestId,
+        paymentProof: {
+          requestId,
+          txHash,
+          payer,
+          tokenAddress: accept.tokenAddress,
+          recipient: accept.recipient,
+          amount: accept.amount
+        }
+      })
+    });
+    const proofBody = await proofResp.json().catch(() => ({}));
+    if (!proofResp.ok || proofBody?.ok === false) {
+      throw new Error(proofBody?.reason || proofBody?.error || `proof submit failed: ${proofResp.status}`);
+    }
+    appendWorkflowStep(workflow, 'proof_submitted', 'ok', { verified: true });
+    workflow.updatedAt = new Date().toISOString();
+    upsertWorkflow(workflow);
+
+    const orderResult = await hyperliquidAdapter.placePerpOrder({
+      symbol,
+      side,
+      orderType,
+      size,
+      ...(orderType === 'limit' ? { price } : {}),
+      tif,
+      reduceOnly,
+      simulate
+    });
+    appendWorkflowStep(workflow, 'unlocked', 'ok', {
+      result: `Hyperliquid ${orderType} ${side} ${symbol} executed`
+    });
+    workflow.state = 'unlocked';
+    workflow.result = {
+      summary: `Hyperliquid ${orderType} ${side} ${symbol} executed`,
+      order: orderResult
+    };
+    workflow.updatedAt = new Date().toISOString();
+    upsertWorkflow(workflow);
+    const evidence = resolveX402EvidenceByRequestId(requestId);
+    return res.json({
+      ok: true,
+      traceId,
+      requestId,
+      txHash,
+      userOpHash,
+      state: workflow.state,
+      workflow,
+      payment: evidence
+        ? {
+            mode: 'x402',
+            requestId: evidence.requestId,
+            txHash: evidence.txHash,
+            block: evidence.block,
+            status: evidence.status,
+            explorer: evidence.explorer,
+            verifiedAt: evidence.verifiedAt
+          }
+        : null,
+      receiptRef: evidence?.receiptRef || null,
+      orderResult
+    });
+  } catch (error) {
+    appendWorkflowStep(workflow, 'failed', 'error', { reason: error.message });
+    workflow.state = 'failed';
+    workflow.error = error.message;
+    workflow.updatedAt = new Date().toISOString();
+    upsertWorkflow(workflow);
+    const evidence = workflow.requestId ? resolveX402EvidenceByRequestId(workflow.requestId) : null;
+    return res.status(500).json({
+      ok: false,
+      traceId,
+      state: workflow.state,
+      error: 'workflow_failed',
+      reason: error.message,
+      workflow,
+      payment: evidence
+        ? {
+            mode: 'x402',
+            requestId: evidence.requestId,
+            txHash: evidence.txHash,
+            block: evidence.block,
+            status: evidence.status,
+            explorer: evidence.explorer,
+            verifiedAt: evidence.verifiedAt
+          }
+        : null,
+      receiptRef: evidence?.receiptRef || null
     });
   }
 });
@@ -11140,11 +12002,11 @@ app.post('/api/services/:serviceId/invoke', requireRole('agent'), async (req, re
     return res.status(409).json({ ok: false, error: 'service_inactive', reason: 'Service is not active.' });
   }
   const action = String(service.action || '').trim().toLowerCase();
-  if (!['btc-price-feed', 'risk-score-feed', 'x-reader-feed'].includes(action)) {
+  if (!['btc-price-feed', 'risk-score-feed', 'x-reader-feed', 'hyperliquid-order-testnet'].includes(action)) {
     return res.status(400).json({
       ok: false,
       error: 'unsupported_service_action',
-      reason: 'Supported action: btc-price-feed, risk-score-feed, x-reader-feed.'
+      reason: 'Supported action: btc-price-feed, risk-score-feed, x-reader-feed, hyperliquid-order-testnet.'
     });
   }
 
@@ -11218,6 +12080,25 @@ app.post('/api/services/:serviceId/invoke', requireRole('agent'), async (req, re
               maxChars: Number(service.maxChars || service.exampleInput?.maxChars || X_READER_MAX_CHARS_DEFAULT),
               payer
             }
+        : action === 'hyperliquid-order-testnet'
+          ? {
+              traceId,
+              sourceAgentId,
+              targetAgentId,
+              symbol: body.symbol || body.pair || service.pair || service.exampleInput?.symbol || 'BTCUSDT',
+              side: body.side || service.exampleInput?.side || 'buy',
+              orderType: body.orderType || body.type || service.exampleInput?.orderType || 'limit',
+              price: body.price ?? service.exampleInput?.price ?? '',
+              size: body.size ?? body.sz ?? service.exampleInput?.size ?? '',
+              tif: body.tif || service.exampleInput?.tif || 'Gtc',
+              reduceOnly:
+                body.reduceOnly === true || String(body.reduceOnly || '').trim().toLowerCase() === 'true',
+              slippageBps: body.slippageBps ?? body.marketSlippageBps,
+              payer,
+              bindRealX402: body.bindRealX402 !== false,
+              strictBinding: body.strictBinding !== false,
+              simulate: body.simulate === true || body.dryRun === true
+            }
         : {
             traceId,
             sourceAgentId,
@@ -11231,6 +12112,8 @@ app.post('/api/services/:serviceId/invoke', requireRole('agent'), async (req, re
         ? '/api/workflow/risk-score/run'
         : action === 'x-reader-feed'
           ? '/api/workflow/x-reader/run'
+          : action === 'hyperliquid-order-testnet'
+            ? '/api/workflow/hyperliquid-order/run'
           : '/api/workflow/btc-price/run';
 
     const resp = await fetch(`http://127.0.0.1:${PORT}${workflowPath}`, {
