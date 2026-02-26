@@ -3309,86 +3309,222 @@ async function waitRouterTaskResultByTaskId(taskId = '', waitMsLimit = 25_000) {
   return null;
 }
 
+function isXmtpRuntimeUnhealthy(status = {}) {
+  if (!status || typeof status !== 'object') return true;
+  if (!status.enabled) return true;
+  if (!status.configured) return true;
+  if (!status.running) return true;
+  const reason = String(status.lastError || '').trim().toLowerCase();
+  if (!reason) return false;
+  return (
+    reason.includes('conversation streaming') ||
+    reason.includes('streaming') ||
+    reason.includes('incoming_handler') ||
+    reason.includes('unhandled') ||
+    reason.includes('connection') ||
+    reason.includes('genericfailure')
+  );
+}
+
+function isRecoverableXmtpFailure(error = '', reason = '') {
+  const text = `${String(error || '').trim()} ${String(reason || '').trim()}`.toLowerCase();
+  if (!text) return false;
+  return (
+    text.includes('stream') ||
+    text.includes('timeout') ||
+    text.includes('xmtp_') ||
+    text.includes('not_running') ||
+    text.includes('unhandled') ||
+    text.includes('connection') ||
+    text.includes('h2 protocol') ||
+    text.includes('genericfailure') ||
+    text.includes('router_send_failed')
+  );
+}
+
+function resolveDispatchRuntimeByAgentId(agentId = '') {
+  const id = String(agentId || '').trim().toLowerCase();
+  if (id === 'risk-agent' || id === 'technical-agent') {
+    return { runtime: xmtpRiskRuntime, label: 'risk' };
+  }
+  if (id === 'reader-agent' || id === 'message-agent') {
+    return { runtime: xmtpReaderRuntime, label: 'reader' };
+  }
+  return { runtime: null, label: '' };
+}
+
+async function healXmtpRuntime(runtime, label = '') {
+  if (!runtime || typeof runtime.getStatus !== 'function') {
+    return { label, attempted: false, recovered: false, reason: 'runtime_not_found' };
+  }
+  const before = runtime.getStatus();
+  if (!isXmtpRuntimeUnhealthy(before)) {
+    return {
+      label,
+      attempted: false,
+      recovered: true,
+      before,
+      after: before
+    };
+  }
+  let stopError = '';
+  try {
+    await runtime.stop();
+  } catch (error) {
+    stopError = String(error?.message || 'stop_failed').trim();
+  }
+  let after = null;
+  let startError = '';
+  try {
+    after = await runtime.start();
+  } catch (error) {
+    startError = String(error?.message || 'start_failed').trim();
+  }
+  const latest = runtime.getStatus();
+  return {
+    label,
+    attempted: true,
+    recovered: Boolean(latest?.running),
+    before,
+    after: after || latest,
+    reason: startError || stopError || ''
+  };
+}
+
+async function ensureDispatchRuntimesHealthy(toAgentId = '') {
+  const actions = [];
+  actions.push(await healXmtpRuntime(xmtpRuntime, 'router'));
+  const target = resolveDispatchRuntimeByAgentId(toAgentId);
+  if (target?.runtime) {
+    actions.push(await healXmtpRuntime(target.runtime, target.label || 'target'));
+  }
+  return {
+    actions,
+    router: xmtpRuntime.getStatus(),
+    target: target?.runtime ? target.runtime.getStatus() : null
+  };
+}
+
 async function runAgent001DispatchTask({
   toAgentId = '',
   capability = '',
   input = {},
   waitMsLimit = 25_000
 } = {}) {
+  const resolvedToAgentId = String(toAgentId || '').trim().toLowerCase();
+  const preflight = await ensureDispatchRuntimesHealthy(resolvedToAgentId);
+  const recovery = Array.isArray(preflight?.actions) ? [...preflight.actions] : [];
   const routerStatus = xmtpRuntime.getStatus();
   if (!routerStatus.running) {
     return {
       ok: false,
       error: 'xmtp_router_not_running',
-      reason: routerStatus.lastError || 'router runtime is not running'
+      reason: routerStatus.lastError || 'router runtime is not running',
+      recovery
     };
   }
-  const resolvedToAgentId = String(toAgentId || '').trim().toLowerCase();
+  const targetRuntime = resolveDispatchRuntimeByAgentId(resolvedToAgentId);
+  const targetStatus =
+    targetRuntime?.runtime && typeof targetRuntime.runtime.getStatus === 'function'
+      ? targetRuntime.runtime.getStatus()
+      : null;
+  if (targetStatus && !targetStatus.running) {
+    return {
+      ok: false,
+      error: 'xmtp_target_not_running',
+      reason: targetStatus.lastError || `${targetRuntime.label || resolvedToAgentId} runtime is not running`,
+      recovery
+    };
+  }
   const toAddress = resolveAgentAddressByIdForRouter(resolvedToAgentId);
   if (!toAddress) {
     return {
       ok: false,
       error: 'target_agent_address_missing',
-      reason: `missing xmtp address for ${resolvedToAgentId || 'unknown'}`
+      reason: `missing xmtp address for ${resolvedToAgentId || 'unknown'}`,
+      recovery
     };
   }
-  const traceId = createTraceId('agent001_trace');
-  const requestId = createTraceId('agent001_req');
-  const taskId = createTraceId('agent001_task');
-  const envelope = {
-    kind: 'task-envelope',
-    protocolVersion: 'kite-agent-task-v1',
-    traceId,
-    requestId,
-    taskId,
-    fromAgentId: 'router-agent',
-    toAgentId: resolvedToAgentId,
-    channel: 'dm',
-    hopIndex: 1,
-    mode: 'a2a',
-    capability: String(capability || '').trim(),
-    input: input && typeof input === 'object' && !Array.isArray(input) ? input : {},
-    expectsReply: true,
-    timestamp: new Date().toISOString()
-  };
-  const sent = await xmtpRuntime.sendDm({
-    fromAgentId: 'router-agent',
-    toAgentId: resolvedToAgentId,
-    toAddress,
-    channel: 'dm',
-    hopIndex: 1,
-    envelope,
-    traceId,
-    requestId,
-    taskId
-  });
-  if (!sent?.ok) {
-    return {
-      ok: false,
-      error: sent?.error || 'router_send_failed',
-      reason: sent?.reason || 'router send failed',
-      sent
+  const maxAttempts = 2;
+  let lastFailure = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const traceId = createTraceId('agent001_trace');
+    const requestId = createTraceId('agent001_req');
+    const taskId = createTraceId('agent001_task');
+    const envelope = {
+      kind: 'task-envelope',
+      protocolVersion: 'kite-agent-task-v1',
+      traceId,
+      requestId,
+      taskId,
+      fromAgentId: 'router-agent',
+      toAgentId: resolvedToAgentId,
+      channel: 'dm',
+      hopIndex: 1,
+      mode: 'a2a',
+      capability: String(capability || '').trim(),
+      input: input && typeof input === 'object' && !Array.isArray(input) ? input : {},
+      expectsReply: true,
+      timestamp: new Date().toISOString()
     };
+    const sent = await xmtpRuntime.sendDm({
+      fromAgentId: 'router-agent',
+      toAgentId: resolvedToAgentId,
+      toAddress,
+      channel: 'dm',
+      hopIndex: 1,
+      envelope,
+      traceId,
+      requestId,
+      taskId
+    });
+    if (!sent?.ok) {
+      lastFailure = {
+        ok: false,
+        error: sent?.error || 'router_send_failed',
+        reason: sent?.reason || 'router send failed',
+        sent,
+        task: { traceId, requestId, taskId, toAgentId: resolvedToAgentId, capability },
+        attempt
+      };
+    } else {
+      const resultEvent = await waitRouterTaskResultByTaskId(taskId, waitMsLimit);
+      const taskResult = resultEvent?.parsed && typeof resultEvent.parsed === 'object' && !Array.isArray(resultEvent.parsed)
+        ? resultEvent.parsed
+        : null;
+      if (taskResult) {
+        return {
+          ok: true,
+          sent,
+          task: { traceId, requestId, taskId, toAgentId: resolvedToAgentId, capability },
+          resultEvent,
+          taskResult,
+          attempt,
+          recovery
+        };
+      }
+      lastFailure = {
+        ok: false,
+        error: 'task_result_timeout',
+        reason: `no task-result within ${Math.max(1_000, Math.min(Number(waitMsLimit || 25_000), 60_000))}ms`,
+        sent,
+        task: { traceId, requestId, taskId, toAgentId: resolvedToAgentId, capability },
+        attempt
+      };
+    }
+
+    if (attempt < maxAttempts && isRecoverableXmtpFailure(lastFailure?.error, lastFailure?.reason)) {
+      const extra = await ensureDispatchRuntimesHealthy(resolvedToAgentId);
+      if (Array.isArray(extra?.actions)) recovery.push(...extra.actions);
+      await waitMs(650);
+      continue;
+    }
+    break;
   }
-  const resultEvent = await waitRouterTaskResultByTaskId(taskId, waitMsLimit);
-  const taskResult = resultEvent?.parsed && typeof resultEvent.parsed === 'object' && !Array.isArray(resultEvent.parsed)
-    ? resultEvent.parsed
-    : null;
-  if (!taskResult) {
-    return {
-      ok: false,
-      error: 'task_result_timeout',
-      reason: `no task-result within ${Math.max(1_000, Math.min(Number(waitMsLimit || 25_000), 60_000))}ms`,
-      sent,
-      task: { traceId, requestId, taskId, toAgentId: resolvedToAgentId, capability }
-    };
-  }
+
   return {
-    ok: true,
-    sent,
-    task: { traceId, requestId, taskId, toAgentId: resolvedToAgentId, capability },
-    resultEvent,
-    taskResult
+    ...(lastFailure || { ok: false, error: 'dispatch_failed', reason: 'unknown dispatch failure' }),
+    recovery
   };
 }
 
@@ -3407,6 +3543,87 @@ function buildAgent001DispatchSummary(results = {}) {
     lines.push(`消息面失败: ${String(info.reason || info.error || 'unknown').trim()}`);
   }
   return lines.join('\n').trim();
+}
+
+function shouldUseAgent001LocalFallback(result = null) {
+  if (!result || result.ok) return false;
+  return isRecoverableXmtpFailure(result?.error, result?.reason);
+}
+
+async function applyAgent001LocalFallback({
+  rawText = '',
+  intent = {},
+  runTechnical = false,
+  runInfo = false,
+  technical = null,
+  info = null
+} = {}) {
+  let nextTechnical = technical;
+  let nextInfo = info;
+  const symbol = String(intent?.symbol || extractBtcSymbolFromText(rawText) || 'BTCUSDT').trim().toUpperCase() || 'BTCUSDT';
+  const horizonMin = Number.isFinite(Number(intent?.horizonMin))
+    ? Math.max(5, Math.min(Math.round(Number(intent.horizonMin)), 240))
+    : extractHorizonFromText(rawText);
+
+  if (runTechnical && shouldUseAgent001LocalFallback(technical)) {
+    try {
+      const localTechnical = await runRiskScoreAnalysis({
+        symbol,
+        source: String(intent?.source || 'hyperliquid').trim().toLowerCase() || 'hyperliquid',
+        horizonMin
+      });
+      nextTechnical = {
+        ok: true,
+        fallback: 'local-analysis',
+        taskResult: {
+          result: {
+            ...localTechnical,
+            analysisType: 'technical',
+            analysis: localTechnical?.technical && typeof localTechnical.technical === 'object' ? localTechnical.technical : null
+          }
+        }
+      };
+    } catch (error) {
+      nextTechnical = {
+        ...(technical && typeof technical === 'object' ? technical : {}),
+        ok: false,
+        error: technical?.error || 'technical_local_fallback_failed',
+        reason: `${String(technical?.reason || technical?.error || 'dispatch_failed').trim()}; local=${String(error?.message || 'failed').trim()}`
+      };
+    }
+  }
+
+  if (runInfo && shouldUseAgent001LocalFallback(info)) {
+    try {
+      const infoTask = normalizeXReaderParams({
+        url: intent?.topic || extractFirstUrlFromText(rawText) || rawText,
+        mode: 'news',
+        maxChars: 900
+      });
+      const reader = await fetchXReaderDigest(infoTask);
+      nextInfo = {
+        ok: true,
+        fallback: 'local-analysis',
+        taskResult: {
+          result: {
+            summary: String(reader?.analysis?.summary || reader?.excerpt || '').trim() || 'info digest ready',
+            analysisType: 'info',
+            info: reader?.analysis || null,
+            reader
+          }
+        }
+      };
+    } catch (error) {
+      nextInfo = {
+        ...(info && typeof info === 'object' ? info : {}),
+        ok: false,
+        error: info?.error || 'info_local_fallback_failed',
+        reason: `${String(info?.reason || info?.error || 'dispatch_failed').trim()}; local=${String(error?.message || 'failed').trim()}`
+      };
+    }
+  }
+
+  return { technical: nextTechnical, info: nextInfo };
 }
 
 function roundPriceByMagnitude(value, fallbackDigits = 2) {
@@ -3715,15 +3932,25 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
     : Promise.resolve(null);
 
   const [technical, info] = await Promise.all([technicalPromise, infoPromise]);
+  const fallbackResolved = await applyAgent001LocalFallback({
+    rawText,
+    intent,
+    runTechnical,
+    runInfo,
+    technical,
+    info
+  });
+  const technicalResolved = fallbackResolved.technical;
+  const infoResolved = fallbackResolved.info;
   if (runTrade) {
     return buildAgent001TradePlan({
       rawText,
       intent,
-      technical,
-      info
+      technical: technicalResolved,
+      info: infoResolved
     });
   }
-  const summary = buildAgent001DispatchSummary({ technical, info });
+  const summary = buildAgent001DispatchSummary({ technical: technicalResolved, info: infoResolved });
   if (!summary) {
     return 'AGENT001 调度完成，但未拿到可读结果。请稍后重试。';
   }
