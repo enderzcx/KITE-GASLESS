@@ -80,6 +80,7 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 - Network agents bootstrap now includes `technical-agent` facade (capability-level compatibility over risk/price internals).
 - `router-info-technical` now uses longer wait window (`30s` default, up to `60s`) and waits info/technical task results in parallel.
 - XMTP worker runtimes now support rule-based plain-text DM replies (greeting/help/status/pricing hints) while keeping `task-envelope -> task-result` behavior unchanged.
+- OpenAlice adapter now supports dual endpoints (`message/info` + `technical`) and can fallback to `/api/chat` with strict JSON contracts when dedicated analysis endpoints are unavailable.
 - XMTP runtime now supports explicit network endpoint overrides:
   - `XMTP_API_URL`
   - `XMTP_HISTORY_SYNC_URL` (supports `null` to disable history sync endpoint)

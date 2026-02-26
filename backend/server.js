@@ -72,6 +72,18 @@ const OPENCLAW_MODEL = String(process.env.OPENCLAW_MODEL || '').trim();
 const OPENCLAW_SYSTEM_PROMPT = String(process.env.OPENCLAW_SYSTEM_PROMPT || '').trim();
 const OPENALICE_BASE_URL = String(process.env.OPENALICE_BASE_URL || '').trim();
 const OPENALICE_API_KEY = String(process.env.OPENALICE_API_KEY || '').trim();
+const OPENALICE_INFO_BASE_URL = String(
+  process.env.OPENALICE_INFO_BASE_URL || process.env.OPENALICE_MESSAGE_BASE_URL || OPENALICE_BASE_URL
+).trim();
+const OPENALICE_INFO_API_KEY = String(
+  process.env.OPENALICE_INFO_API_KEY || process.env.OPENALICE_MESSAGE_API_KEY || OPENALICE_API_KEY
+).trim();
+const OPENALICE_TECHNICAL_BASE_URL = String(
+  process.env.OPENALICE_TECHNICAL_BASE_URL || process.env.OPENALICE_TECH_BASE_URL || OPENALICE_BASE_URL
+).trim();
+const OPENALICE_TECHNICAL_API_KEY = String(
+  process.env.OPENALICE_TECHNICAL_API_KEY || process.env.OPENALICE_TECH_API_KEY || OPENALICE_API_KEY
+).trim();
 const OPENALICE_TIMEOUT_MS = Number(process.env.OPENALICE_TIMEOUT_MS || 12000);
 const OPENALICE_RETRY = Number(process.env.OPENALICE_RETRY || 1);
 const ANALYSIS_PROVIDER = 'openalice';
@@ -168,6 +180,10 @@ const openclawAdapter = createOpenClawAdapter({
 const openAliceAdapter = createOpenAliceAdapter({
   baseUrl: OPENALICE_BASE_URL,
   apiKey: OPENALICE_API_KEY,
+  infoBaseUrl: OPENALICE_INFO_BASE_URL,
+  infoApiKey: OPENALICE_INFO_API_KEY,
+  technicalBaseUrl: OPENALICE_TECHNICAL_BASE_URL,
+  technicalApiKey: OPENALICE_TECHNICAL_API_KEY,
   timeoutMs: OPENALICE_TIMEOUT_MS,
   retry: OPENALICE_RETRY
 });

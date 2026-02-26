@@ -407,8 +407,15 @@ OpenAlice sidecar (required for full info + technical quality):
 
 ```env
 ANALYSIS_PROVIDER=openalice
-OPENALICE_BASE_URL=http://127.0.0.1:18100
+OPENALICE_BASE_URL=
 OPENALICE_API_KEY=
+# Recommended split deployment:
+# - message/info agent runtime
+OPENALICE_INFO_BASE_URL=http://127.0.0.1:3212
+OPENALICE_INFO_API_KEY=
+# - technical agent runtime
+OPENALICE_TECHNICAL_BASE_URL=http://127.0.0.1:3312
+OPENALICE_TECHNICAL_API_KEY=
 OPENALICE_TIMEOUT_MS=12000
 OPENALICE_RETRY=1
 ```
@@ -418,6 +425,8 @@ Notes:
 - `OPENCLAW_MODEL` should be your local/remote model id (do not hardcode one contributor's model in shared deployments).
 - If `OPENCLAW_HEALTH_PATH=/v1/models` returns HTML instead of JSON, you likely hit a control UI route instead of an OpenAI-compatible API route.
 - Info analysis no longer uses Jina x-reader path; backend routes info tasks to OpenAlice adapter.
+- If OpenAlice only exposes `/api/chat`, backend adapter will auto-switch to chat mode and parse strict JSON contracts.
+- OpenBB is optional. Without OpenBB, OpenAlice can still answer, but quantitative indicator depth/market coverage is usually weaker.
 - For XMTP local backend, you can additionally set `XMTP_API_URL/XMTP_HISTORY_SYNC_URL/XMTP_GATEWAY_HOST`.
 
 ## Tencent Lighthouse Web Deployment (Low Cost)
