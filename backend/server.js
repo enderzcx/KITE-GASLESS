@@ -4431,16 +4431,9 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
       ].join('\n');
     }
 
-    let technicalPayPlan = null;
     let infoPayPlan = null;
+    let info = null;
     try {
-      technicalPayPlan = await buildAgent001StrictPaymentPlan({
-        capability: 'technical-analysis-feed',
-        rawText,
-        intent,
-        payer,
-        targetAgentId: technicalProvider.toAgentId
-      });
       infoPayPlan = await buildAgent001StrictPaymentPlan({
         capability: 'info-analysis-feed',
         rawText,
@@ -4449,31 +4442,46 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
         targetAgentId: infoProvider.toAgentId
       });
     } catch (error) {
-      return `交易链路中断：x402 预绑定失败（严格模式）。原因: ${String(error?.message || 'bind_failed').trim()}`;
+      return `交易链路中断：消息面 x402 预绑定失败（严格模式）。原因: ${String(error?.message || 'bind_failed').trim()}`;
+    }
+    info = await runAgent001DispatchTask({
+      toAgentId: infoProvider.toAgentId,
+      capability: 'info-analysis-feed',
+      input: infoPayPlan.normalizedTask,
+      paymentIntent: infoPayPlan.paymentIntent,
+      waitMsLimit
+    });
+    if (!isAgent001TaskSuccessful(info)) {
+      return [
+        '交易链路中断：消息面任务未成功返回（严格模式不降级）。',
+        `message: ${info?.reason || info?.error || info?.taskResult?.error || 'failed'}`
+      ].join('\n');
     }
 
-    const [technical, info] = await Promise.all([
-      runAgent001DispatchTask({
-        toAgentId: technicalProvider.toAgentId,
+    let technicalPayPlan = null;
+    let technical = null;
+    try {
+      technicalPayPlan = await buildAgent001StrictPaymentPlan({
         capability: 'technical-analysis-feed',
-        input: technicalPayPlan.normalizedTask,
-        paymentIntent: technicalPayPlan.paymentIntent,
-        waitMsLimit
-      }),
-      runAgent001DispatchTask({
-        toAgentId: infoProvider.toAgentId,
-        capability: 'info-analysis-feed',
-        input: infoPayPlan.normalizedTask,
-        paymentIntent: infoPayPlan.paymentIntent,
-        waitMsLimit
-      })
-    ]);
-
-    if (!isAgent001TaskSuccessful(technical) || !isAgent001TaskSuccessful(info)) {
+        rawText,
+        intent,
+        payer,
+        targetAgentId: technicalProvider.toAgentId
+      });
+    } catch (error) {
+      return `交易链路中断：技术面 x402 预绑定失败（严格模式）。原因: ${String(error?.message || 'bind_failed').trim()}`;
+    }
+    technical = await runAgent001DispatchTask({
+      toAgentId: technicalProvider.toAgentId,
+      capability: 'technical-analysis-feed',
+      input: technicalPayPlan.normalizedTask,
+      paymentIntent: technicalPayPlan.paymentIntent,
+      waitMsLimit
+    });
+    if (!isAgent001TaskSuccessful(technical)) {
       return [
-        '交易链路中断：分析任务未成功返回（严格模式不降级）。',
-        `technical: ${technical?.reason || technical?.error || technical?.taskResult?.error || 'failed'}`,
-        `message: ${info?.reason || info?.error || info?.taskResult?.error || 'failed'}`
+        '交易链路中断：技术面任务未成功返回（严格模式不降级）。',
+        `technical: ${technical?.reason || technical?.error || technical?.taskResult?.error || 'failed'}`
       ].join('\n');
     }
 
@@ -5540,6 +5548,21 @@ function parseHexNumber(value) {
 
 function waitMs(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function awaitWithTimeout(promise, timeoutMs = 30_000, label = 'operation') {
+  const ms = Math.max(1_000, Math.min(Number(timeoutMs) || 30_000, 300_000));
+  let timer = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timeout after ${ms}ms`)), ms);
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 const sessionUserOpQueue = new Map();
