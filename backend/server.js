@@ -103,6 +103,9 @@ const OPENALICE_TIMEOUT_MS = Math.max(
   Math.min(Number(process.env.OPENALICE_TIMEOUT_MS || 30_000), 120_000)
 );
 const OPENALICE_RETRY = Number(process.env.OPENALICE_RETRY || 1);
+const OPENALICE_STRICT_REQUIRED = !/^(0|false|no|off)$/i.test(
+  String(process.env.OPENALICE_STRICT_REQUIRED || '1').trim()
+);
 const HYPERLIQUID_TESTNET_ENABLED = /^(1|true|yes|on)$/i.test(
   String(process.env.HYPERLIQUID_TESTNET_ENABLED || '0').trim()
 );
@@ -2316,6 +2319,21 @@ function isWeakTechnicalAnalysis(technical = {}) {
   return false;
 }
 
+function buildOpenAliceRequiredError(code = 'openalice_required', reason = '') {
+  const error = new Error(String(reason || code || 'openalice_required').trim());
+  error.code = String(code || 'openalice_required').trim().toLowerCase();
+  return error;
+}
+
+function resolveAnalysisErrorStatus(error = null, fallback = 500) {
+  const code = String(error?.code || '').trim().toLowerCase();
+  if (code.startsWith('openalice_required')) return 502;
+  if (code.startsWith('invalid_')) return 400;
+  const message = String(error?.message || '').trim().toLowerCase();
+  if (message.includes('invalid_') || message.includes('invalid ')) return 400;
+  return Number.isFinite(Number(fallback)) ? Number(fallback) : 500;
+}
+
 async function runInfoAnalysis(params = {}) {
   const task = normalizeXReaderParams(params);
   const resolvedTopic = String(params?.topic || task.topic || task.url).trim();
@@ -2353,6 +2371,12 @@ async function runInfoAnalysis(params = {}) {
     }
   } else {
     fallbackReason = String(remote?.reason || remote?.error || fallbackReason).trim();
+  }
+  if (OPENALICE_STRICT_REQUIRED) {
+    throw buildOpenAliceRequiredError(
+      'openalice_required_info_unavailable',
+      `OpenAlice info analysis unavailable: ${fallbackReason || 'unknown_reason'}`
+    );
   }
   return normalizeInfoAnalysisResult(
     {
@@ -2497,6 +2521,12 @@ async function runRiskScoreAnalysis(input = {}) {
   }
 
   if (!technical) {
+    if (OPENALICE_STRICT_REQUIRED) {
+      throw buildOpenAliceRequiredError(
+        'openalice_required_technical_unavailable',
+        `OpenAlice technical analysis unavailable: ${openAliceFallbackReason || openAliceFallbackLabel || 'unknown_reason'}`
+      );
+    }
     const quote = await fetchBtcPriceQuote({
       pair: task.symbol,
       source: task.sourceRequested
@@ -2552,13 +2582,31 @@ async function runRiskScoreAnalysis(input = {}) {
     }
   }
 
+  if (
+    OPENALICE_STRICT_REQUIRED &&
+    (!technical?.quote || !Number.isFinite(Number(technical?.quote?.priceUsd)) || Number(technical?.quote?.priceUsd) <= 0)
+  ) {
+    throw buildOpenAliceRequiredError(
+      'openalice_required_technical_quote_missing',
+      'OpenAlice technical response missing usable quote.priceUsd'
+    );
+  }
+
   const quote =
     technical?.quote && Number.isFinite(Number(technical.quote.priceUsd)) && Number(technical.quote.priceUsd) > 0
       ? technical.quote
-      : await fetchBtcPriceQuote({
-          pair: task.symbol,
-          source: task.sourceRequested
-        });
+      : OPENALICE_STRICT_REQUIRED
+        ? null
+        : await fetchBtcPriceQuote({
+            pair: task.symbol,
+            source: task.sourceRequested
+          });
+  if (OPENALICE_STRICT_REQUIRED && !quote) {
+    throw buildOpenAliceRequiredError(
+      'openalice_required_technical_quote_missing',
+      'OpenAlice technical response missing quote'
+    );
+  }
   const scoreRaw = Number(technical?.riskScore ?? NaN);
   const bounded = Number.isFinite(scoreRaw)
     ? Math.max(5, Math.min(95, Math.round(scoreRaw)))
@@ -3629,6 +3677,12 @@ function buildTaskReceiptRef(payment = {}) {
   };
 }
 
+function normalizeTaskFailure(error = null, fallbackCode = 'task_failed') {
+  const code = String(error?.code || fallbackCode || 'task_failed').trim().toLowerCase() || 'task_failed';
+  const reason = String(error?.message || code).trim() || code;
+  return { code, reason };
+}
+
 function pickBestServiceByReputationAndPrice(services = []) {
   const rows = Array.isArray(services) ? services : [];
   if (rows.length === 0) return null;
@@ -4106,6 +4160,7 @@ function buildAgent001DispatchSummary(results = {}) {
 }
 
 function shouldUseAgent001LocalFallback(result = null) {
+  if (OPENALICE_STRICT_REQUIRED) return false;
   if (!result || result.ok) return false;
   return isRecoverableXmtpFailure(result?.error, result?.reason);
 }
@@ -5577,17 +5632,32 @@ async function handleRiskRuntimeTaskEnvelope({ envelope = {} } = {}) {
     source: input.source || 'hyperliquid',
     horizonMin: input.horizonMin ?? 60
   });
-  const result = await runRiskScoreAnalysis(task);
-  return {
-    status: 'done',
-    result: {
-      ...result,
-      analysisType: 'technical',
-      analysis: result?.technical && typeof result.technical === 'object' ? result.technical : null
-    },
-    payment,
-    receiptRef
-  };
+  try {
+    const result = await runRiskScoreAnalysis(task);
+    return {
+      status: 'done',
+      result: {
+        ...result,
+        analysisType: 'technical',
+        analysis: result?.technical && typeof result.technical === 'object' ? result.technical : null
+      },
+      payment,
+      receiptRef
+    };
+  } catch (error) {
+    const failure = normalizeTaskFailure(error, 'technical_analysis_failed');
+    return {
+      status: 'failed',
+      error: failure.code,
+      result: {
+        summary: `technical analysis failed: ${failure.reason}`,
+        analysisType: 'technical',
+        failure
+      },
+      payment,
+      receiptRef
+    };
+  }
 }
 
 async function handleReaderRuntimeTaskEnvelope({ envelope = {} } = {}) {
@@ -5631,20 +5701,35 @@ async function handleReaderRuntimeTaskEnvelope({ envelope = {} } = {}) {
     mode: input.mode || input.source || 'auto',
     maxChars: input.maxChars ?? X_READER_MAX_CHARS_DEFAULT
   });
-  const reader = await fetchXReaderDigest(task);
-  return {
-    status: 'done',
-    result: {
-      summary:
-        String(reader?.analysis?.summary || '').trim() ||
-        `info digest ready: ${reader?.title || reader?.url || task.url}`,
-      analysisType: 'info',
-      info: reader?.analysis || null,
-      reader
-    },
-    payment,
-    receiptRef
-  };
+  try {
+    const reader = await fetchXReaderDigest(task);
+    return {
+      status: 'done',
+      result: {
+        summary:
+          String(reader?.analysis?.summary || '').trim() ||
+          `info digest ready: ${reader?.title || reader?.url || task.url}`,
+        analysisType: 'info',
+        info: reader?.analysis || null,
+        reader
+      },
+      payment,
+      receiptRef
+    };
+  } catch (error) {
+    const failure = normalizeTaskFailure(error, 'info_analysis_failed');
+    return {
+      status: 'failed',
+      error: failure.code,
+      result: {
+        summary: `info analysis failed: ${failure.reason}`,
+        analysisType: 'info',
+        failure
+      },
+      payment,
+      receiptRef
+    };
+  }
 }
 
 async function handlePriceRuntimeTaskEnvelope({ envelope = {} } = {}) {
@@ -13183,6 +13268,7 @@ app.get('/api/openalice/health', requireRole('viewer'), async (req, res) => {
     ok: health.ok,
     traceId: req.traceId || '',
     provider: ANALYSIS_PROVIDER,
+    strictRequired: OPENALICE_STRICT_REQUIRED,
     adapter: info,
     health
   });
@@ -13424,10 +13510,10 @@ app.post('/api/analysis/info/run', requireRole('agent'), async (req, res) => {
       result
     });
   } catch (error) {
-    return res.status(400).json({
+    return res.status(resolveAnalysisErrorStatus(error, 400)).json({
       ok: false,
       traceId: req.traceId || '',
-      error: 'info_analysis_failed',
+      error: String(error?.code || 'info_analysis_failed').trim() || 'info_analysis_failed',
       reason: error?.message || 'info analysis failed'
     });
   }
@@ -13453,10 +13539,10 @@ app.post('/api/analysis/technical/run', requireRole('agent'), async (req, res) =
       result: result?.technical || result
     });
   } catch (error) {
-    return res.status(400).json({
+    return res.status(resolveAnalysisErrorStatus(error, 400)).json({
       ok: false,
       traceId: req.traceId || '',
-      error: 'technical_analysis_failed',
+      error: String(error?.code || 'technical_analysis_failed').trim() || 'technical_analysis_failed',
       reason: error?.message || 'technical analysis failed'
     });
   }
