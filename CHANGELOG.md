@@ -89,6 +89,17 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
   - `backend/docker/openbb/Dockerfile`
 
 ### Changed
+- AGENT001 strict x402 is now hard-enforced in router text flow:
+  - non-`help/status` requests no longer allow free analysis/chat path.
+- AGENT001 prebind now uses payment-first fast path:
+  - risk/x-reader workflow prebind supports `prebindOnly=true` to settle x402 evidence first, skipping slow analysis in bind stage.
+- AGENT001 bind timeout default aligned with session-pay path:
+  - `AGENT001_BIND_TIMEOUT_MS` default raised from `45s` to `210s` to avoid premature prebind timeout under queued session userOps.
+
+### Fixed
+- AGENT001 timeout/failure replies are now structured in DM:
+  - include `stage + capability + code + reason`,
+  - and provide explicit `need` hints for session sync / balance / queue-timeout diagnostics.
 - `network_agents` schema extended with optional identity fields:
   - `identityRegistry`
   - `identityAgentId`

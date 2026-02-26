@@ -186,7 +186,14 @@ const XMTP_WORKERS_GROUP_NAME = String(process.env.XMTP_WORKERS_GROUP_NAME || 'A
 const XMTP_WORKERS_GROUP_AGENT_IDS = String(
   process.env.XMTP_WORKERS_GROUP_AGENT_IDS || 'risk-agent,reader-agent,price-agent,executor-agent'
 ).trim();
-const AGENT001_REQUIRE_X402 = !/^(0|false|no|off)$/i.test(String(process.env.AGENT001_REQUIRE_X402 || '1').trim());
+const AGENT001_REQUIRE_X402 = true;
+const AGENT001_PREBIND_ONLY = !/^(0|false|no|off)$/i.test(
+  String(process.env.AGENT001_PREBIND_ONLY || '1').trim()
+);
+const AGENT001_BIND_TIMEOUT_MS = Math.max(
+  30_000,
+  Math.min(Number(process.env.AGENT001_BIND_TIMEOUT_MS || 210_000), 300_000)
+);
 
 const ROLE_RANK = {
   viewer: 1,
@@ -4005,6 +4012,7 @@ async function buildAgent001StrictPaymentPlan({
         },
         bindRealX402: true,
         strictBinding: true,
+        prebindOnly: true,
         payer,
         sourceAgentId: 'router-agent',
         targetAgentId: targetAgentId || 'technical-agent'
@@ -4030,6 +4038,7 @@ async function buildAgent001StrictPaymentPlan({
         },
         bindRealX402: true,
         strictBinding: true,
+        prebindOnly: true,
         payer,
         sourceAgentId: 'router-agent',
         targetAgentId: targetAgentId || 'message-agent'
@@ -4356,6 +4365,34 @@ async function maybePolishAgent001Reply(rawText = '', draft = '') {
   return text || cleanDraft;
 }
 
+function buildAgent001FailureReply({ stage = '', capability = '', reason = '' } = {}) {
+  const safeStage = String(stage || '').trim() || '-';
+  const safeCapability = String(capability || '').trim() || '-';
+  const safeReason = String(reason || 'unknown_error').trim() || 'unknown_error';
+  const lowered = safeReason.toLowerCase();
+  let code = 'agent001_failed';
+  if (lowered.includes('timeout')) code = 'timeout';
+  else if (lowered.includes('session_not_found')) code = 'session_not_found';
+  else if (lowered.includes('session_agent_mismatch')) code = 'session_agent_mismatch';
+  else if (lowered.includes('session_rule_failed')) code = 'session_rule_failed';
+  else if (lowered.includes('invalid_session_id')) code = 'invalid_session_id';
+  else if (lowered.includes('insufficient_funds')) code = 'insufficient_funds';
+  else if (lowered.includes('insufficient_kite_gas')) code = 'insufficient_kite_gas';
+
+  const lines = [
+    `失败: stage=${safeStage} capability=${safeCapability} code=${code}`,
+    `reason: ${safeReason}`
+  ];
+  if (code === 'timeout') {
+    lines.push('need: 请提供 /api/session/runtime 与最近 5 条 /api/x402/requests，定位 session/pay 队列阻塞。');
+  } else if (['session_not_found', 'session_agent_mismatch', 'session_rule_failed', 'invalid_session_id'].includes(code)) {
+    lines.push('need: 请先在 Agent Settings 同步 sessionId/sessionKey/AA payer。');
+  } else if (['insufficient_funds', 'insufficient_kite_gas'].includes(code)) {
+    lines.push('need: 请给 AA payer 充值 USDT 与 KITE gas。');
+  }
+  return lines.join('\n');
+}
+
 async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
   const rawText = String(text || '').trim();
   if (!rawText) return buildAgent001HelpText();
@@ -4446,7 +4483,11 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
         targetAgentId: infoProvider.toAgentId
       });
     } catch (error) {
-      return `交易链路中断：消息面 x402 预绑定失败（严格模式）。原因: ${String(error?.message || 'bind_failed').trim()}`;
+      return buildAgent001FailureReply({
+        stage: 'trade_prebind',
+        capability: 'info-analysis-feed',
+        reason: error?.message || 'bind_failed'
+      });
     }
     info = await runAgent001DispatchTask({
       toAgentId: infoProvider.toAgentId,
@@ -4456,10 +4497,11 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
       waitMsLimit
     });
     if (!isAgent001TaskSuccessful(info)) {
-      return [
-        '交易链路中断：消息面任务未成功返回（严格模式不降级）。',
-        `message: ${info?.reason || info?.error || info?.taskResult?.error || 'failed'}`
-      ].join('\n');
+      return buildAgent001FailureReply({
+        stage: 'trade_dispatch',
+        capability: 'info-analysis-feed',
+        reason: info?.reason || info?.error || info?.taskResult?.error || 'failed'
+      });
     }
 
     let technicalPayPlan = null;
@@ -4473,7 +4515,11 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
         targetAgentId: technicalProvider.toAgentId
       });
     } catch (error) {
-      return `交易链路中断：技术面 x402 预绑定失败（严格模式）。原因: ${String(error?.message || 'bind_failed').trim()}`;
+      return buildAgent001FailureReply({
+        stage: 'trade_prebind',
+        capability: 'technical-analysis-feed',
+        reason: error?.message || 'bind_failed'
+      });
     }
     technical = await runAgent001DispatchTask({
       toAgentId: technicalProvider.toAgentId,
@@ -4483,10 +4529,11 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
       waitMsLimit
     });
     if (!isAgent001TaskSuccessful(technical)) {
-      return [
-        '交易链路中断：技术面任务未成功返回（严格模式不降级）。',
-        `technical: ${technical?.reason || technical?.error || technical?.taskResult?.error || 'failed'}`
-      ].join('\n');
+      return buildAgent001FailureReply({
+        stage: 'trade_dispatch',
+        capability: 'technical-analysis-feed',
+        reason: technical?.reason || technical?.error || technical?.taskResult?.error || 'failed'
+      });
     }
 
     const tradePlan = buildAgent001TradePlan({
@@ -4571,7 +4618,11 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
           targetAgentId: 'message-agent'
         });
       } catch (error) {
-        return `消息面 x402 预绑定失败（严格模式）。原因: ${String(error?.message || 'bind_failed').trim()}`;
+        return buildAgent001FailureReply({
+          stage: 'analysis_prebind',
+          capability: 'info-analysis-feed',
+          reason: error?.message || 'bind_failed'
+        });
       }
       info = await runAgent001DispatchTask({
         toAgentId: 'message-agent',
@@ -4581,7 +4632,11 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
         waitMsLimit
       });
       if (!isAgent001TaskSuccessful(info)) {
-        return `消息面分析失败（严格模式）：${info?.reason || info?.error || info?.taskResult?.error || 'failed'}`;
+        return buildAgent001FailureReply({
+          stage: 'analysis_dispatch',
+          capability: 'info-analysis-feed',
+          reason: info?.reason || info?.error || info?.taskResult?.error || 'failed'
+        });
       }
     } else {
       info = await runAgent001DispatchTask({
@@ -4608,7 +4663,11 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
           targetAgentId: 'technical-agent'
         });
       } catch (error) {
-        return `技术面 x402 预绑定失败（严格模式）。原因: ${String(error?.message || 'bind_failed').trim()}`;
+        return buildAgent001FailureReply({
+          stage: 'analysis_prebind',
+          capability: 'technical-analysis-feed',
+          reason: error?.message || 'bind_failed'
+        });
       }
       technical = await runAgent001DispatchTask({
         toAgentId: 'technical-agent',
@@ -4618,7 +4677,11 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
         waitMsLimit
       });
       if (!isAgent001TaskSuccessful(technical)) {
-        return `技术面分析失败（严格模式）：${technical?.reason || technical?.error || technical?.taskResult?.error || 'failed'}`;
+        return buildAgent001FailureReply({
+          stage: 'analysis_dispatch',
+          capability: 'technical-analysis-feed',
+          reason: technical?.reason || technical?.error || technical?.taskResult?.error || 'failed'
+        });
       }
     } else {
       technical = await runAgent001DispatchTask({
@@ -7265,6 +7328,7 @@ app.post('/api/workflow/risk-score/run', requireRole('agent'), async (req, res) 
 
   const sourceAgentId = String(req.body?.sourceAgentId || KITE_AGENT1_ID).trim();
   const targetAgentId = String(req.body?.targetAgentId || KITE_AGENT2_ID).trim();
+  const prebindOnly = parseBooleanFlag(req.body?.prebindOnly, false);
   const traceId = resolveWorkflowTraceId(req.body?.traceId);
   const runtime = readSessionRuntime();
   const payer = normalizeAddress(req.body?.payer || runtime.aaWallet || '');
@@ -7364,6 +7428,7 @@ app.post('/api/workflow/risk-score/run', requireRole('agent'), async (req, res) 
       sourceAgentId,
       targetAgentId,
       traceId,
+      prebindOnly,
       requestId,
       paymentProof: {
         requestId,
@@ -7406,6 +7471,7 @@ app.post('/api/workflow/risk-score/run', requireRole('agent'), async (req, res) 
       requestId,
       txHash,
       userOpHash,
+      prebindOnly,
       state: workflow.state,
       workflow,
       receipt: proofResult?.body?.receipt || null
@@ -7476,6 +7542,7 @@ app.post('/api/workflow/x-reader/run', requireRole('agent'), async (req, res) =>
 
   const sourceAgentId = String(req.body?.sourceAgentId || KITE_AGENT1_ID).trim();
   const targetAgentId = String(req.body?.targetAgentId || KITE_AGENT2_ID).trim();
+  const prebindOnly = parseBooleanFlag(req.body?.prebindOnly, false);
   const traceId = resolveWorkflowTraceId(req.body?.traceId);
   const runtime = readSessionRuntime();
   const payer = normalizeAddress(req.body?.payer || runtime.aaWallet || '');
@@ -7573,6 +7640,7 @@ app.post('/api/workflow/x-reader/run', requireRole('agent'), async (req, res) =>
       sourceAgentId,
       targetAgentId,
       traceId,
+      prebindOnly,
       requestId,
       paymentProof: {
         requestId,
@@ -7613,6 +7681,7 @@ app.post('/api/workflow/x-reader/run', requireRole('agent'), async (req, res) =>
       requestId,
       txHash,
       userOpHash,
+      prebindOnly,
       state: workflow.state,
       workflow,
       receipt: proofResult?.body?.receipt || null
@@ -8013,6 +8082,7 @@ async function buildRiskScorePaymentIntentForTask({
       : {};
   const bindRealX402 = parseBooleanFlag(body?.bindRealX402, false);
   const strictBinding = parseBooleanFlag(body?.strictBinding, false);
+  const prebindOnly = parseBooleanFlag(body?.prebindOnly, AGENT001_PREBIND_ONLY);
   const shouldBindRealX402 =
     bindRealX402 ||
     (String(rawIntent?.mode || '').trim().toLowerCase() === 'x402' &&
@@ -8032,13 +8102,14 @@ async function buildRiskScorePaymentIntentForTask({
   let workflowBinding = null;
   if (shouldBindRealX402) {
     try {
-      const bindTimeoutMs = Math.max(8_000, Math.min(Number(process.env.AGENT001_BIND_TIMEOUT_MS || 45_000), 300_000));
+      const bindTimeoutMs = AGENT001_BIND_TIMEOUT_MS;
       const payload = {
         ...normalizedTask,
         traceId: resolveWorkflowTraceId(body?.paymentTraceId || createTraceId('risk_bind')),
         payer: normalizeAddress(body?.payer || ''),
         sourceAgentId: String(body?.sourceAgentId || KITE_AGENT1_ID).trim(),
-        targetAgentId: String(body?.targetAgentId || KITE_AGENT2_ID).trim()
+        targetAgentId: String(body?.targetAgentId || KITE_AGENT2_ID).trim(),
+        prebindOnly
       };
       const { response: resp, payload: result } = await fetchJsonResponseWithTimeout(
         `http://127.0.0.1:${PORT}/api/workflow/risk-score/run`,
@@ -8148,6 +8219,7 @@ async function buildXReaderPaymentIntentForTask({
       : {};
   const bindRealX402 = parseBooleanFlag(body?.bindRealX402, false);
   const strictBinding = parseBooleanFlag(body?.strictBinding, false);
+  const prebindOnly = parseBooleanFlag(body?.prebindOnly, AGENT001_PREBIND_ONLY);
   const shouldBindRealX402 =
     bindRealX402 ||
     (String(rawIntent?.mode || '').trim().toLowerCase() === 'x402' &&
@@ -8167,13 +8239,14 @@ async function buildXReaderPaymentIntentForTask({
   let workflowBinding = null;
   if (shouldBindRealX402) {
     try {
-      const bindTimeoutMs = Math.max(8_000, Math.min(Number(process.env.AGENT001_BIND_TIMEOUT_MS || 45_000), 300_000));
+      const bindTimeoutMs = AGENT001_BIND_TIMEOUT_MS;
       const payload = {
         ...normalizedTask,
         traceId: resolveWorkflowTraceId(body?.paymentTraceId || createTraceId('reader_bind')),
         payer: normalizeAddress(body?.payer || ''),
         sourceAgentId: String(body?.sourceAgentId || KITE_AGENT1_ID).trim(),
-        targetAgentId: String(body?.targetAgentId || KITE_AGENT2_ID).trim()
+        targetAgentId: String(body?.targetAgentId || KITE_AGENT2_ID).trim(),
+        prebindOnly
       };
       const { response: resp, payload: result } = await fetchJsonResponseWithTimeout(
         `http://127.0.0.1:${PORT}/api/workflow/x-reader/run`,
@@ -9031,6 +9104,7 @@ async function handleA2ARiskScore(body = {}) {
   const traceId = String(body.traceId || '').trim();
   const requestId = String(body.requestId || '').trim();
   const paymentProof = body.paymentProof;
+  const prebindOnly = parseBooleanFlag(body.prebindOnly, false);
   const taskInput = body.task || {};
   const identityInput = body.identity || {};
 
@@ -9158,10 +9232,46 @@ async function handleA2ARiskScore(body = {}) {
   }
 
   if (reqItem.status === 'paid') {
+    if (prebindOnly) {
+      return {
+        status: 200,
+        body: {
+          ok: true,
+          mode: 'x402',
+          requestId: reqItem.requestId,
+          reused: true,
+          prebindOnly: true,
+          result: {
+            summary: reqItem?.result?.summary || 'A2A risk score payment settled (prebind-only)',
+            prebindOnly: true
+          },
+          a2a: reqItem.a2a || null,
+          receipt: buildA2AReceipt(reqItem, null, {
+            traceId,
+            sourceAgentId,
+            targetAgentId,
+            capability: 'risk-score-feed',
+            phase: 'settled',
+            state: 'success',
+            summary: reqItem?.result?.summary || 'A2A risk score payment settled (prebind-only)'
+          })
+        }
+      };
+    }
     let riskResult = reqItem?.result || null;
-    if (!riskResult) {
+    const needsFreshResult =
+      !riskResult ||
+      parseBooleanFlag(riskResult?.prebindOnly, false) ||
+      !String(riskResult?.summary || '').trim();
+    if (needsFreshResult) {
       try {
-        riskResult = await runRiskScoreAnalysis(reqItem.actionParams || task);
+        const computed = await runRiskScoreAnalysis(reqItem.actionParams || task);
+        riskResult = {
+          summary: `A2A risk score unlocked by x402 payment: ${computed.summary}`,
+          ...computed
+        };
+        reqItem.result = riskResult;
+        writeX402Requests(requests);
       } catch {
         riskResult = null;
       }
@@ -9204,8 +9314,6 @@ async function handleA2ARiskScore(body = {}) {
     };
   }
 
-  const riskResult = await runRiskScoreAnalysis(reqItem.actionParams || task);
-
   reqItem.status = 'paid';
   reqItem.paidAt = Date.now();
   reqItem.paymentTxHash = paymentProof.txHash;
@@ -9229,10 +9337,18 @@ async function handleA2ARiskScore(body = {}) {
     taskType: String(reqItem?.a2a?.taskType || 'risk-score-feed').trim(),
     traceId: String(reqItem?.a2a?.traceId || traceId).trim()
   };
-  reqItem.result = {
-    summary: `A2A risk score unlocked by x402 payment: ${riskResult.summary}`,
-    ...riskResult
-  };
+  if (prebindOnly) {
+    reqItem.result = {
+      summary: 'A2A risk score payment settled (prebind-only)',
+      prebindOnly: true
+    };
+  } else {
+    const riskResult = await runRiskScoreAnalysis(reqItem.actionParams || task);
+    reqItem.result = {
+      summary: `A2A risk score unlocked by x402 payment: ${riskResult.summary}`,
+      ...riskResult
+    };
+  }
   writeX402Requests(requests);
 
   const receipt = buildA2AReceipt(reqItem, null, {
@@ -9275,6 +9391,7 @@ async function handleA2AXReader(body = {}) {
   const traceId = String(body.traceId || '').trim();
   const requestId = String(body.requestId || '').trim();
   const paymentProof = body.paymentProof;
+  const prebindOnly = parseBooleanFlag(body.prebindOnly, false);
   const taskInput = body.task || {};
   const identityInput = body.identity || {};
 
@@ -9413,10 +9530,45 @@ async function handleA2AXReader(body = {}) {
   }
 
   if (reqItem.status === 'paid') {
+    if (prebindOnly) {
+      return {
+        status: 200,
+        body: {
+          ok: true,
+          mode: 'x402',
+          requestId: reqItem.requestId,
+          reused: true,
+          prebindOnly: true,
+          result: {
+            summary: reqItem?.result?.summary || 'ATAPI x-reader payment settled (prebind-only)',
+            prebindOnly: true
+          },
+          a2a: reqItem.a2a || null,
+          receipt: buildA2AReceipt(reqItem, null, {
+            traceId,
+            sourceAgentId,
+            targetAgentId,
+            capability: 'x-reader-feed',
+            phase: 'settled',
+            state: 'success',
+            summary: reqItem?.result?.summary || 'ATAPI x-reader payment settled (prebind-only)'
+          })
+        }
+      };
+    }
     let reader = reqItem?.result?.reader || null;
-    if (!reader) {
+    const needsFreshResult =
+      !reader ||
+      parseBooleanFlag(reqItem?.result?.prebindOnly, false) ||
+      !String(reqItem?.result?.summary || '').trim();
+    if (needsFreshResult) {
       try {
         reader = await fetchXReaderDigest(reqItem.actionParams || task);
+        reqItem.result = {
+          summary: `ATAPI x-reader digest unlocked by x402 payment: ${reader.title || reader.url || 'x-reader digest'}`,
+          reader
+        };
+        writeX402Requests(requests);
       } catch {
         reader = null;
       }
@@ -9462,9 +9614,6 @@ async function handleA2AXReader(body = {}) {
     };
   }
 
-  const reader = await fetchXReaderDigest(reqItem.actionParams || task);
-  const summaryTail = reader.title || reader.url || 'x-reader digest';
-
   reqItem.status = 'paid';
   reqItem.paidAt = Date.now();
   reqItem.paymentTxHash = paymentProof.txHash;
@@ -9488,10 +9637,21 @@ async function handleA2AXReader(body = {}) {
     taskType: String(reqItem?.a2a?.taskType || 'x-reader-feed').trim(),
     traceId: String(reqItem?.a2a?.traceId || traceId).trim()
   };
-  reqItem.result = {
-    summary: `ATAPI x-reader digest unlocked by x402 payment: ${summaryTail}`,
-    reader
-  };
+  let summaryTail = 'x-reader digest';
+  if (prebindOnly) {
+    reqItem.result = {
+      summary: 'ATAPI x-reader payment settled (prebind-only)',
+      prebindOnly: true
+    };
+    summaryTail = 'ATAPI x-reader payment settled (prebind-only)';
+  } else {
+    const reader = await fetchXReaderDigest(reqItem.actionParams || task);
+    summaryTail = reader.title || reader.url || 'x-reader digest';
+    reqItem.result = {
+      summary: `ATAPI x-reader digest unlocked by x402 payment: ${summaryTail}`,
+      reader
+    };
+  }
   writeX402Requests(requests);
 
   const receipt = buildA2AReceipt(reqItem, null, {
