@@ -103,6 +103,20 @@ So for this project, `aa-v2` represents both the secure implementation mechanism
 Others can reuse our `GokiteAccountV2` implementation address to upgrade their own owner-controlled proxies.
 Upgrade authority remains with each proxy owner; this project does not grant permission to upgrade third-party proxies.
 
+### AA Version Baseline (Mandatory)
+
+Starting from **2026-02-26**, this repository treats **AA V2 as mandatory baseline** for all active/new AA proxies.
+
+- Required runtime version string: `GokiteAccountV2-session-userop`
+- Canonical V2 implementation currently used in this project:
+  - `0xD0dA36a3B402160901dC03a0B9B9f88D6cffA7b6`
+- Legacy implementations are not accepted for session-userop payment path in `POST /api/session/pay` (unless explicitly disabling `KITE_REQUIRE_AA_V2` for temporary diagnostics).
+
+Operational implications:
+- New AA provisioning/verification must pass V2 check (`npm run aa:ensure`).
+- Session creation must run on V2 AA only (`npm run aa:session:router` now blocks legacy AA).
+- If an existing AA is still legacy, upgrade proxy implementation before production use.
+
 ## Real Demo Flow (Current Implementation)
 
 1. Open `/` and click `Run Demo` (success path) or `Fail Demo` (graceful failure path).

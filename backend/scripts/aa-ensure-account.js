@@ -19,8 +19,11 @@ const BACKEND_SIGNER_KEY = process.env.KITECLAW_BACKEND_SIGNER_PRIVATE_KEY || ''
 const IMPLEMENTATION_SLOT =
   '0x360894A13BA1A3210667C828492DB98DCA3E2076CC3735A920A3CA505D382BBC';
 const EXPECTED_IMPLEMENTATION = ethers.getAddress(
-  String(process.env.KITE_AA_EXPECTED_IMPLEMENTATION || '0xF7681F4f70a2F2d114D03e6B93189cb549B8A503')
+  String(process.env.KITE_AA_EXPECTED_IMPLEMENTATION || '0xD0dA36a3B402160901dC03a0B9B9f88D6cffA7b6')
 );
+const EXPECTED_VERSION = String(
+  process.env.KITE_AA_REQUIRED_VERSION || 'GokiteAccountV2-session-userop'
+).trim();
 
 function parseArg(name) {
   const idx = process.argv.findIndex((item) => item === `--${name}`);
@@ -53,6 +56,15 @@ async function assertUpgradedImplementation(provider, proxyAddress) {
     throw new Error(
       `AA implementation mismatch. expected=${EXPECTED_IMPLEMENTATION}, actual=${implementation}`
     );
+  }
+}
+
+async function assertAccountVersion(provider, proxyAddress) {
+  const c = new ethers.Contract(proxyAddress, ['function version() view returns (string)'], provider);
+  const version = String(await c.version()).trim();
+  console.log(`version: ${version}`);
+  if (version !== EXPECTED_VERSION) {
+    throw new Error(`AA version mismatch. expected=${EXPECTED_VERSION}, actual=${version || 'unknown'}`);
   }
 }
 
@@ -96,6 +108,7 @@ async function main() {
 
   if (isDeployed) {
     await assertUpgradedImplementation(provider, accountAddress);
+    await assertAccountVersion(provider, accountAddress);
     console.log('AA account already deployed. No action needed.');
     return;
   }
@@ -114,6 +127,7 @@ async function main() {
     throw new Error('createAccount tx confirmed, but no code found at predicted AA address.');
   }
   await assertUpgradedImplementation(provider, accountAddress);
+  await assertAccountVersion(provider, accountAddress);
   console.log('AA account deployed successfully.');
 }
 

@@ -23,6 +23,9 @@ const SETTLEMENT_TOKEN = String(
 const GATEWAY_RECIPIENT = String(
   process.env.KITE_MERCHANT_ADDRESS || '0x6D705b93F0Da7DC26e46cB39Decc3baA4fb4dd29'
 ).trim();
+const REQUIRED_AA_VERSION = String(
+  process.env.KITE_AA_REQUIRED_VERSION || 'GokiteAccountV2-session-userop'
+).trim();
 
 function parseArg(name) {
   const idx = process.argv.findIndex((item) => item === `--${name}`);
@@ -81,6 +84,22 @@ async function main() {
   const code = await provider.getCode(aaWallet);
   if (!code || code === '0x') {
     throw new Error(`AA wallet not deployed: ${aaWallet}. Run npm run aa:ensure first.`);
+  }
+  const versionContract = new ethers.Contract(
+    aaWallet,
+    ['function version() view returns (string)'],
+    provider
+  );
+  let version = '';
+  try {
+    version = String(await versionContract.version()).trim();
+  } catch {
+    version = '';
+  }
+  if (version !== REQUIRED_AA_VERSION) {
+    throw new Error(
+      `AA version mismatch. required=${REQUIRED_AA_VERSION}, current=${version || 'unknown_or_legacy'}. Run aa-upgrade first.`
+    );
   }
 
   const account = new ethers.Contract(
@@ -189,4 +208,3 @@ main().catch((error) => {
   console.error('[aa-create-router-session] failed:', error?.message || String(error));
   process.exit(1);
 });
-

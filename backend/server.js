@@ -66,6 +66,12 @@ const BACKEND_BUNDLER_URL =
 const BACKEND_ENTRYPOINT_ADDRESS =
   process.env.KITE_ENTRYPOINT_ADDRESS || '0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108';
 const KITE_MIN_NATIVE_GAS = String(process.env.KITE_MIN_NATIVE_GAS || '0.0001').trim();
+const AA_V2_VERSION_TAG = String(
+  process.env.KITE_AA_REQUIRED_VERSION || 'GokiteAccountV2-session-userop'
+).trim();
+const KITE_REQUIRE_AA_V2 = !/^(0|false|no|off)$/i.test(
+  String(process.env.KITE_REQUIRE_AA_V2 || '1').trim()
+);
 const PROOF_RPC_TIMEOUT_MS = Number(process.env.KITE_PROOF_RPC_TIMEOUT_MS || 10_000);
 const PROOF_RPC_RETRIES = Number(process.env.KITE_PROOF_RPC_RETRIES || 3);
 const OPENCLAW_BASE_URL = String(process.env.OPENCLAW_BASE_URL || '').trim();
@@ -13775,6 +13781,26 @@ app.post('/api/session/pay', requireRole('agent'), async (req, res) => {
         }
       });
     }
+    let aaVersion = '';
+    try {
+      const versionReadAbi = ['function version() view returns (string)'];
+      const versionContract = new ethers.Contract(runtime.aaWallet, versionReadAbi, provider);
+      aaVersion = String(await versionContract.version()).trim();
+    } catch {
+      aaVersion = '';
+    }
+    if (KITE_REQUIRE_AA_V2 && aaVersion !== AA_V2_VERSION_TAG) {
+      return res.status(400).json({
+        ok: false,
+        error: 'aa_version_mismatch',
+        reason: `AA must be upgraded to V2 for session-userop payments. required=${AA_V2_VERSION_TAG}, current=${aaVersion || 'unknown_or_legacy'}`,
+        details: {
+          aaWallet: runtime.aaWallet,
+          requiredVersion: AA_V2_VERSION_TAG,
+          currentVersion: aaVersion || ''
+        }
+      });
+    }
 
     const sessionReadAbi = [
       'function sessionExists(bytes32 sessionId) view returns (bool)',
@@ -14009,6 +14035,7 @@ app.post('/api/session/pay', requireRole('agent'), async (req, res) => {
         aaWallet: runtime.aaWallet,
         sessionAddress: runtime.sessionAddress,
         sessionId,
+        aaVersion,
         txHash: finalResult.transactionHash,
         userOpHash: extractedUserOpHash,
         payElapsedMs,
