@@ -11649,7 +11649,7 @@ app.post('/api/network/demo/router-risk/run', requireRole('agent'), async (req, 
       fallbackRequestId: requestId,
       defaultTask: {
         symbol: 'BTCUSDT',
-        source: 'router-risk-demo',
+        source: 'hyperliquid',
         horizonMin: 60
       }
     });
@@ -11816,7 +11816,7 @@ app.post('/api/network/demo/router-risk-group/run', requireRole('agent'), async 
       fallbackRequestId: requestId,
       defaultTask: {
         symbol: 'BTCUSDT',
-        source: 'router-risk-group-demo',
+        source: 'hyperliquid',
         horizonMin: 60
       }
     });
