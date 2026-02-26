@@ -7,6 +7,9 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 ## [Unreleased]
 
 ### Added
+- Added AGENT001 paid-result pull API:
+  - `GET /api/agent001/results/:requestId`
+  - supports requestId-based retrieval when DM delivery fails after x402 payment.
 - Added AGENT001 closed-loop trade orchestration:
   - service discovery (`ERC8004 identity preferred + local service catalog fallback`)
   - XMTP quote negotiation capability `service-quote`
@@ -89,6 +92,11 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
   - `backend/docker/openbb/Dockerfile`
 
 ### Changed
+- AGENT001 analysis path is now quote-first (`service-quote`) before strict x402 prebind for both:
+  - `technical-analysis-feed`
+  - `info-analysis-feed`
+- AGENT001 prebind execution now retries transient failures (`timeout`/`ECONNRESET`/bundler revert windows) before failing.
+- AGENT001 main path no longer depends on `x-reader` naming; user-facing flow is `info-analysis-feed`.
 - AGENT001 strict x402 is now hard-enforced in router text flow:
   - non-`help/status` requests no longer allow free analysis/chat path.
 - AGENT001 prebind now uses payment-first fast path:
@@ -97,6 +105,9 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
   - `AGENT001_BIND_TIMEOUT_MS` default raised from `45s` to `210s` to avoid premature prebind timeout under queued session userOps.
 
 ### Fixed
+- AGENT001 paid-but-no-DM gap:
+  - paid analysis request is persisted by `requestId` with status/result/error,
+  - dispatch timeout now returns structured failure with pull endpoint hint.
 - AGENT001 timeout/failure replies are now structured in DM:
   - include `stage + capability + code + reason`,
   - and provide explicit `need` hints for session sync / balance / queue-timeout diagnostics.

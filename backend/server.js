@@ -27,6 +27,7 @@ const networkAgentsPath = path.resolve('data', 'network_agents.json');
 const xmtpEventsPath = path.resolve('data', 'xmtp_events.json');
 const xmtpGroupsPath = path.resolve('data', 'xmtp_groups.json');
 const networkCommandsPath = path.resolve('data', 'network_commands.json');
+const agent001ResultsPath = path.resolve('data', 'agent001_results.json');
 
 const SETTLEMENT_TOKEN =
   process.env.KITE_SETTLEMENT_TOKEN || '0x0fF5393387ad2f9f691FD6Fd28e07E3969e27e63';
@@ -249,7 +250,8 @@ const PERSIST_ARRAY_PATHS = [
   networkAgentsPath,
   xmtpEventsPath,
   xmtpGroupsPath,
-  networkCommandsPath
+  networkCommandsPath,
+  agent001ResultsPath
 ];
 const PERSIST_OBJECT_PATHS = [policyConfigPath, sessionRuntimePath];
 const persistArrayCache = new Map();
@@ -1020,6 +1022,83 @@ function readNetworkCommands() {
 
 function writeNetworkCommands(records) {
   writeJsonArray(networkCommandsPath, records);
+}
+
+function readAgent001Results() {
+  return readJsonArray(agent001ResultsPath);
+}
+
+function writeAgent001Results(records) {
+  writeJsonArray(agent001ResultsPath, records);
+}
+
+function upsertAgent001ResultRecord(input = {}) {
+  const requestId = String(input?.requestId || '').trim();
+  if (!requestId) return null;
+  const rows = readAgent001Results();
+  const now = new Date().toISOString();
+  const existingIndex = rows.findIndex((item) => String(item?.requestId || '').trim() === requestId);
+  const prev = existingIndex >= 0 ? rows[existingIndex] : null;
+  const merged = {
+    requestId,
+    capability: String(input?.capability || prev?.capability || '').trim().toLowerCase(),
+    stage: String(input?.stage || prev?.stage || '').trim().toLowerCase(),
+    status: String(input?.status || prev?.status || '').trim().toLowerCase(),
+    traceId: String(input?.traceId || prev?.traceId || '').trim(),
+    taskId: String(input?.taskId || prev?.taskId || '').trim(),
+    toAgentId: String(input?.toAgentId || prev?.toAgentId || '').trim().toLowerCase(),
+    payer: normalizeAddress(input?.payer || prev?.payer || ''),
+    input:
+      input?.input && typeof input.input === 'object' && !Array.isArray(input.input)
+        ? input.input
+        : prev?.input && typeof prev.input === 'object' && !Array.isArray(prev.input)
+          ? prev.input
+          : {},
+    quote:
+      input?.quote && typeof input.quote === 'object' && !Array.isArray(input.quote)
+        ? input.quote
+        : prev?.quote && typeof prev.quote === 'object' && !Array.isArray(prev.quote)
+          ? prev.quote
+          : null,
+    payment:
+      input?.payment && typeof input.payment === 'object' && !Array.isArray(input.payment)
+        ? input.payment
+        : prev?.payment && typeof prev.payment === 'object' && !Array.isArray(prev.payment)
+          ? prev.payment
+          : null,
+    receiptRef:
+      input?.receiptRef && typeof input.receiptRef === 'object' && !Array.isArray(input.receiptRef)
+        ? input.receiptRef
+        : prev?.receiptRef && typeof prev.receiptRef === 'object' && !Array.isArray(prev.receiptRef)
+          ? prev.receiptRef
+          : null,
+    result:
+      input?.result && typeof input.result === 'object' && !Array.isArray(input.result)
+        ? input.result
+        : prev?.result && typeof prev.result === 'object' && !Array.isArray(prev.result)
+          ? prev.result
+          : null,
+    error: String(input?.error || prev?.error || '').trim(),
+    reason: String(input?.reason || prev?.reason || '').trim(),
+    warnings: Array.isArray(input?.warnings)
+      ? input.warnings.map((item) => String(item || '').trim()).filter(Boolean)
+      : Array.isArray(prev?.warnings)
+        ? prev.warnings.map((item) => String(item || '').trim()).filter(Boolean)
+        : [],
+    dm:
+      input?.dm && typeof input.dm === 'object' && !Array.isArray(input.dm)
+        ? input.dm
+        : prev?.dm && typeof prev.dm === 'object' && !Array.isArray(prev.dm)
+          ? prev.dm
+          : null,
+    source: String(input?.source || prev?.source || '').trim().toLowerCase(),
+    createdAt: String(prev?.createdAt || now).trim() || now,
+    updatedAt: now
+  };
+  if (existingIndex >= 0) rows[existingIndex] = merged;
+  else rows.unshift(merged);
+  writeAgent001Results(rows);
+  return merged;
 }
 
 function upsertWorkflow(workflow) {
@@ -4028,7 +4107,7 @@ async function buildAgent001StrictPaymentPlan({
     const fallbackTopic = String(rawText || '').trim();
     const defaultTopic = `${String(intent?.symbol || 'BTCUSDT').trim().toUpperCase()} market sentiment`;
     const resolvedTopic = rawTopic || rawUrl || fallbackTopic || defaultTopic;
-    return buildXReaderPaymentIntentForTask({
+    return buildInfoPaymentIntentForTask({
       body: {
         input: {
           url: /^https?:\/\//i.test(resolvedTopic) ? resolvedTopic : '',
@@ -4365,10 +4444,12 @@ async function maybePolishAgent001Reply(rawText = '', draft = '') {
   return text || cleanDraft;
 }
 
-function buildAgent001FailureReply({ stage = '', capability = '', reason = '' } = {}) {
+function buildAgent001FailureReply({ stage = '', capability = '', reason = '', requestId = '', txHash = '' } = {}) {
   const safeStage = String(stage || '').trim() || '-';
   const safeCapability = String(capability || '').trim() || '-';
   const safeReason = String(reason || 'unknown_error').trim() || 'unknown_error';
+  const safeRequestId = String(requestId || '').trim();
+  const safeTxHash = String(txHash || '').trim();
   const lowered = safeReason.toLowerCase();
   let code = 'agent001_failed';
   if (lowered.includes('timeout')) code = 'timeout';
@@ -4378,17 +4459,23 @@ function buildAgent001FailureReply({ stage = '', capability = '', reason = '' } 
   else if (lowered.includes('invalid_session_id')) code = 'invalid_session_id';
   else if (lowered.includes('insufficient_funds')) code = 'insufficient_funds';
   else if (lowered.includes('insufficient_kite_gas')) code = 'insufficient_kite_gas';
+  else if (lowered.includes('eth_estimateuseroperationgas') || lowered.includes('bundler') || lowered.includes('reverted')) code = 'bundler_reverted';
 
   const lines = [
     `失败: stage=${safeStage} capability=${safeCapability} code=${code}`,
     `reason: ${safeReason}`
   ];
+  if (safeRequestId) lines.push(`requestId: ${safeRequestId}`);
+  if (safeTxHash) lines.push(`txHash: ${safeTxHash}`);
+  if (safeRequestId) lines.push(`pull: /api/agent001/results/${safeRequestId}`);
   if (code === 'timeout') {
     lines.push('need: 请提供 /api/session/runtime 与最近 5 条 /api/x402/requests，定位 session/pay 队列阻塞。');
   } else if (['session_not_found', 'session_agent_mismatch', 'session_rule_failed', 'invalid_session_id'].includes(code)) {
     lines.push('need: 请先在 Agent Settings 同步 sessionId/sessionKey/AA payer。');
   } else if (['insufficient_funds', 'insufficient_kite_gas'].includes(code)) {
     lines.push('need: 请给 AA payer 充值 USDT 与 KITE gas。');
+  } else if (code === 'bundler_reverted') {
+    lines.push('need: 请提供 bundler 错误原文 + /api/session/runtime + 该 requestId 的 receipt。');
   }
   return lines.join('\n');
 }
@@ -4474,6 +4561,7 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
 
     let infoPayPlan = null;
     let info = null;
+    const infoQuote = infoQuoteTask?.taskResult?.result?.quote || null;
     try {
       infoPayPlan = await buildAgent001StrictPaymentPlan({
         capability: 'info-analysis-feed',
@@ -4489,6 +4577,37 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
         reason: error?.message || 'bind_failed'
       });
     }
+    if (!hasStrictX402Evidence(infoPayPlan?.paymentIntent)) {
+      return buildAgent001FailureReply({
+        stage: 'trade_prebind',
+        capability: 'info-analysis-feed',
+        reason: 'x402 evidence missing after prebind',
+        requestId: String(infoPayPlan?.paymentIntent?.requestId || '').trim(),
+        txHash: String(infoPayPlan?.paymentIntent?.txHash || '').trim()
+      });
+    }
+    upsertAgent001ResultRecord({
+      requestId: infoPayPlan.paymentIntent.requestId,
+      capability: 'info-analysis-feed',
+      stage: 'prebind',
+      status: 'paid',
+      toAgentId: infoProvider.toAgentId,
+      payer,
+      input: infoPayPlan.normalizedTask,
+      quote: infoQuote,
+      payment: infoPayPlan.paymentIntent,
+      receiptRef: {
+        requestId: infoPayPlan.paymentIntent.requestId,
+        txHash: infoPayPlan.paymentIntent.txHash,
+        block: infoPayPlan.paymentIntent.block,
+        status: infoPayPlan.paymentIntent.status,
+        explorer: infoPayPlan.paymentIntent.explorer,
+        verifiedAt: infoPayPlan.paymentIntent.verifiedAt,
+        endpoint: `/api/receipt/${infoPayPlan.paymentIntent.requestId}`
+      },
+      warnings: infoPayPlan.warnings,
+      source: 'agent001_trade'
+    });
     info = await runAgent001DispatchTask({
       toAgentId: infoProvider.toAgentId,
       capability: 'info-analysis-feed',
@@ -4497,15 +4616,87 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
       waitMsLimit
     });
     if (!isAgent001TaskSuccessful(info)) {
+      upsertAgent001ResultRecord({
+        requestId: infoPayPlan.paymentIntent.requestId,
+        capability: 'info-analysis-feed',
+        stage: 'dispatch',
+        status: 'failed',
+        toAgentId: infoProvider.toAgentId,
+        payer,
+        input: infoPayPlan.normalizedTask,
+        quote: infoQuote,
+        payment: infoPayPlan.paymentIntent,
+        error: info?.error || 'analysis_dispatch_failed',
+        reason: info?.reason || info?.taskResult?.error || 'analysis dispatch failed',
+        source: 'agent001_trade',
+        dm: {
+          delivered: false,
+          taskId: String(info?.task?.taskId || '').trim(),
+          traceId: String(info?.task?.traceId || '').trim(),
+          reason: info?.reason || info?.error || ''
+        }
+      });
       return buildAgent001FailureReply({
         stage: 'trade_dispatch',
         capability: 'info-analysis-feed',
-        reason: info?.reason || info?.error || info?.taskResult?.error || 'failed'
+        reason: info?.reason || info?.error || info?.taskResult?.error || 'failed',
+        requestId: infoPayPlan.paymentIntent.requestId,
+        txHash: infoPayPlan.paymentIntent.txHash
       });
     }
+    const infoPayment = info?.taskResult?.payment || infoPayPlan?.paymentIntent || null;
+    if (!hasStrictX402Evidence(infoPayment)) {
+      upsertAgent001ResultRecord({
+        requestId: infoPayPlan.paymentIntent.requestId,
+        capability: 'info-analysis-feed',
+        stage: 'dispatch',
+        status: 'failed',
+        toAgentId: infoProvider.toAgentId,
+        payer,
+        input: infoPayPlan.normalizedTask,
+        quote: infoQuote,
+        payment: infoPayment || infoPayPlan.paymentIntent,
+        error: 'x402_evidence_missing',
+        reason: 'task-result missing strict x402 evidence',
+        source: 'agent001_trade',
+        dm: {
+          delivered: false,
+          taskId: String(info?.task?.taskId || '').trim(),
+          traceId: String(info?.task?.traceId || '').trim(),
+          reason: 'x402_evidence_missing'
+        }
+      });
+      return buildAgent001FailureReply({
+        stage: 'trade_dispatch',
+        capability: 'info-analysis-feed',
+        reason: 'task-result missing strict x402 evidence',
+        requestId: String(infoPayPlan?.paymentIntent?.requestId || '').trim(),
+        txHash: String(infoPayPlan?.paymentIntent?.txHash || '').trim()
+      });
+    }
+    upsertAgent001ResultRecord({
+      requestId: infoPayment.requestId,
+      capability: 'info-analysis-feed',
+      stage: 'dispatch',
+      status: 'done',
+      toAgentId: infoProvider.toAgentId,
+      payer,
+      input: infoPayPlan.normalizedTask,
+      quote: infoQuote,
+      payment: infoPayment,
+      receiptRef: buildTaskReceiptRef(infoPayment),
+      result: info?.taskResult?.result || null,
+      source: 'agent001_trade',
+      dm: {
+        delivered: true,
+        taskId: String(info?.task?.taskId || '').trim(),
+        traceId: String(info?.task?.traceId || '').trim()
+      }
+    });
 
     let technicalPayPlan = null;
     let technical = null;
+    const technicalQuote = technicalQuoteTask?.taskResult?.result?.quote || null;
     try {
       technicalPayPlan = await buildAgent001StrictPaymentPlan({
         capability: 'technical-analysis-feed',
@@ -4521,6 +4712,37 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
         reason: error?.message || 'bind_failed'
       });
     }
+    if (!hasStrictX402Evidence(technicalPayPlan?.paymentIntent)) {
+      return buildAgent001FailureReply({
+        stage: 'trade_prebind',
+        capability: 'technical-analysis-feed',
+        reason: 'x402 evidence missing after prebind',
+        requestId: String(technicalPayPlan?.paymentIntent?.requestId || '').trim(),
+        txHash: String(technicalPayPlan?.paymentIntent?.txHash || '').trim()
+      });
+    }
+    upsertAgent001ResultRecord({
+      requestId: technicalPayPlan.paymentIntent.requestId,
+      capability: 'technical-analysis-feed',
+      stage: 'prebind',
+      status: 'paid',
+      toAgentId: technicalProvider.toAgentId,
+      payer,
+      input: technicalPayPlan.normalizedTask,
+      quote: technicalQuote,
+      payment: technicalPayPlan.paymentIntent,
+      receiptRef: {
+        requestId: technicalPayPlan.paymentIntent.requestId,
+        txHash: technicalPayPlan.paymentIntent.txHash,
+        block: technicalPayPlan.paymentIntent.block,
+        status: technicalPayPlan.paymentIntent.status,
+        explorer: technicalPayPlan.paymentIntent.explorer,
+        verifiedAt: technicalPayPlan.paymentIntent.verifiedAt,
+        endpoint: `/api/receipt/${technicalPayPlan.paymentIntent.requestId}`
+      },
+      warnings: technicalPayPlan.warnings,
+      source: 'agent001_trade'
+    });
     technical = await runAgent001DispatchTask({
       toAgentId: technicalProvider.toAgentId,
       capability: 'technical-analysis-feed',
@@ -4529,12 +4751,83 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
       waitMsLimit
     });
     if (!isAgent001TaskSuccessful(technical)) {
+      upsertAgent001ResultRecord({
+        requestId: technicalPayPlan.paymentIntent.requestId,
+        capability: 'technical-analysis-feed',
+        stage: 'dispatch',
+        status: 'failed',
+        toAgentId: technicalProvider.toAgentId,
+        payer,
+        input: technicalPayPlan.normalizedTask,
+        quote: technicalQuote,
+        payment: technicalPayPlan.paymentIntent,
+        error: technical?.error || 'analysis_dispatch_failed',
+        reason: technical?.reason || technical?.taskResult?.error || 'analysis dispatch failed',
+        source: 'agent001_trade',
+        dm: {
+          delivered: false,
+          taskId: String(technical?.task?.taskId || '').trim(),
+          traceId: String(technical?.task?.traceId || '').trim(),
+          reason: technical?.reason || technical?.error || ''
+        }
+      });
       return buildAgent001FailureReply({
         stage: 'trade_dispatch',
         capability: 'technical-analysis-feed',
-        reason: technical?.reason || technical?.error || technical?.taskResult?.error || 'failed'
+        reason: technical?.reason || technical?.error || technical?.taskResult?.error || 'failed',
+        requestId: technicalPayPlan.paymentIntent.requestId,
+        txHash: technicalPayPlan.paymentIntent.txHash
       });
     }
+    const technicalPayment = technical?.taskResult?.payment || technicalPayPlan?.paymentIntent || null;
+    if (!hasStrictX402Evidence(technicalPayment)) {
+      upsertAgent001ResultRecord({
+        requestId: technicalPayPlan.paymentIntent.requestId,
+        capability: 'technical-analysis-feed',
+        stage: 'dispatch',
+        status: 'failed',
+        toAgentId: technicalProvider.toAgentId,
+        payer,
+        input: technicalPayPlan.normalizedTask,
+        quote: technicalQuote,
+        payment: technicalPayment || technicalPayPlan.paymentIntent,
+        error: 'x402_evidence_missing',
+        reason: 'task-result missing strict x402 evidence',
+        source: 'agent001_trade',
+        dm: {
+          delivered: false,
+          taskId: String(technical?.task?.taskId || '').trim(),
+          traceId: String(technical?.task?.traceId || '').trim(),
+          reason: 'x402_evidence_missing'
+        }
+      });
+      return buildAgent001FailureReply({
+        stage: 'trade_dispatch',
+        capability: 'technical-analysis-feed',
+        reason: 'task-result missing strict x402 evidence',
+        requestId: String(technicalPayPlan?.paymentIntent?.requestId || '').trim(),
+        txHash: String(technicalPayPlan?.paymentIntent?.txHash || '').trim()
+      });
+    }
+    upsertAgent001ResultRecord({
+      requestId: technicalPayment.requestId,
+      capability: 'technical-analysis-feed',
+      stage: 'dispatch',
+      status: 'done',
+      toAgentId: technicalProvider.toAgentId,
+      payer,
+      input: technicalPayPlan.normalizedTask,
+      quote: technicalQuote,
+      payment: technicalPayment,
+      receiptRef: buildTaskReceiptRef(technicalPayment),
+      result: technical?.taskResult?.result || null,
+      source: 'agent001_trade',
+      dm: {
+        delivered: true,
+        taskId: String(technical?.task?.taskId || '').trim(),
+        traceId: String(technical?.task?.traceId || '').trim()
+      }
+    });
 
     const tradePlan = buildAgent001TradePlan({
       rawText,
@@ -4543,16 +4836,12 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
       info,
       returnObject: true
     });
-    const technicalQuote = technicalQuoteTask?.taskResult?.result?.quote || null;
-    const infoQuote = infoQuoteTask?.taskResult?.result?.quote || null;
-    const technicalPayment = technical?.taskResult?.payment || technicalPayPlan?.paymentIntent || null;
-    const infoPayment = info?.taskResult?.payment || infoPayPlan?.paymentIntent || null;
     const lines = [
       String(tradePlan?.text || '').trim() || '交易计划生成失败。',
       '',
       '报价协商:',
-      `technical: ${technicalQuote?.serviceId || '-'} @ ${technicalQuote?.price || '-'} | 评分 ${technicalProvider?.metrics?.finalScore ?? '-'}`,
-      `message: ${infoQuote?.serviceId || '-'} @ ${infoQuote?.price || '-'} | 评分 ${infoProvider?.metrics?.finalScore ?? '-'}`,
+      `technical: ${technicalQuote?.serviceId || '-'} @ ${technicalQuote?.price || '-'} | SLA ${technicalQuote?.slaMs || '-'}ms`,
+      `message: ${infoQuote?.serviceId || '-'} @ ${infoQuote?.price || '-'} | SLA ${infoQuote?.slaMs || '-'}ms`,
       '',
       '分析段 x402 证据:',
       `technical requestId: ${String(technicalPayment?.requestId || '').trim() || '-'}`,
@@ -4576,6 +4865,15 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
       });
       const payment = orderResult?.payment || null;
       const receiptRef = orderResult?.receiptRef || null;
+      if (!hasStrictX402Evidence(payment)) {
+        return buildAgent001FailureReply({
+          stage: 'trade_order',
+          capability: 'hyperliquid-order-testnet',
+          reason: 'order stage missing strict x402 evidence',
+          requestId: String(payment?.requestId || orderResult?.requestId || '').trim(),
+          txHash: String(payment?.txHash || orderResult?.txHash || '').trim()
+        });
+      }
       lines.push('');
       lines.push('下单执行: 已触发 Hyperliquid 测试网下单。');
       lines.push(`order state: ${String(orderResult?.state || orderResult?.workflow?.state || '').trim() || '-'}`);
@@ -4600,6 +4898,10 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
   let info = null;
   let technicalPayPlan = null;
   let infoPayPlan = null;
+  let technicalProvider = null;
+  let infoProvider = null;
+  let technicalQuoteTask = null;
+  let infoQuoteTask = null;
   const runtime = readSessionRuntime();
   const payer = normalizeAddress(runtime?.aaWallet || '');
 
@@ -4607,15 +4909,67 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
     return '计费模式已开启，但未配置 AA payer。请先同步 Session/AA 钱包后再发起分析。';
   }
 
+  if (AGENT001_REQUIRE_X402) {
+    if (runInfo) {
+      infoProvider = await selectAgent001ProviderPlan({ capability: 'info-analysis-feed' });
+      if (!infoProvider?.ok) {
+        return buildAgent001FailureReply({
+          stage: 'analysis_quote_discovery',
+          capability: 'info-analysis-feed',
+          reason: infoProvider?.reason || infoProvider?.error || 'service_unavailable'
+        });
+      }
+      infoQuoteTask = await runAgent001QuoteNegotiation({
+        toAgentId: infoProvider.toAgentId,
+        wantedCapability: 'info-analysis-feed',
+        rawText,
+        intent,
+        waitMsLimit: 12_000
+      });
+      if (!isAgent001TaskSuccessful(infoQuoteTask)) {
+        return buildAgent001FailureReply({
+          stage: 'analysis_quote_negotiation',
+          capability: 'info-analysis-feed',
+          reason: infoQuoteTask?.reason || infoQuoteTask?.error || 'quote_failed'
+        });
+      }
+    }
+    if (runTechnical) {
+      technicalProvider = await selectAgent001ProviderPlan({ capability: 'technical-analysis-feed' });
+      if (!technicalProvider?.ok) {
+        return buildAgent001FailureReply({
+          stage: 'analysis_quote_discovery',
+          capability: 'technical-analysis-feed',
+          reason: technicalProvider?.reason || technicalProvider?.error || 'service_unavailable'
+        });
+      }
+      technicalQuoteTask = await runAgent001QuoteNegotiation({
+        toAgentId: technicalProvider.toAgentId,
+        wantedCapability: 'technical-analysis-feed',
+        rawText,
+        intent,
+        waitMsLimit: 12_000
+      });
+      if (!isAgent001TaskSuccessful(technicalQuoteTask)) {
+        return buildAgent001FailureReply({
+          stage: 'analysis_quote_negotiation',
+          capability: 'technical-analysis-feed',
+          reason: technicalQuoteTask?.reason || technicalQuoteTask?.error || 'quote_failed'
+        });
+      }
+    }
+  }
+
   if (runInfo) {
     if (AGENT001_REQUIRE_X402) {
+      const infoQuote = infoQuoteTask?.taskResult?.result?.quote || null;
       try {
         infoPayPlan = await buildAgent001StrictPaymentPlan({
           capability: 'info-analysis-feed',
           rawText,
           intent,
           payer,
-          targetAgentId: 'message-agent'
+          targetAgentId: infoProvider?.toAgentId || 'message-agent'
         });
       } catch (error) {
         return buildAgent001FailureReply({
@@ -4624,20 +4978,114 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
           reason: error?.message || 'bind_failed'
         });
       }
+      if (!hasStrictX402Evidence(infoPayPlan?.paymentIntent)) {
+        return buildAgent001FailureReply({
+          stage: 'analysis_prebind',
+          capability: 'info-analysis-feed',
+          reason: 'x402 evidence missing after prebind',
+          requestId: String(infoPayPlan?.paymentIntent?.requestId || '').trim(),
+          txHash: String(infoPayPlan?.paymentIntent?.txHash || '').trim()
+        });
+      }
+      upsertAgent001ResultRecord({
+        requestId: infoPayPlan.paymentIntent.requestId,
+        capability: 'info-analysis-feed',
+        stage: 'prebind',
+        status: 'paid',
+        toAgentId: infoProvider?.toAgentId || 'message-agent',
+        payer,
+        input: infoPayPlan.normalizedTask,
+        quote: infoQuote,
+        payment: infoPayPlan.paymentIntent,
+        receiptRef: buildTaskReceiptRef(infoPayPlan.paymentIntent),
+        warnings: infoPayPlan.warnings,
+        source: 'agent001_analysis'
+      });
       info = await runAgent001DispatchTask({
-        toAgentId: 'message-agent',
+        toAgentId: infoProvider?.toAgentId || 'message-agent',
         capability: 'info-analysis-feed',
         input: infoPayPlan.normalizedTask,
         paymentIntent: infoPayPlan.paymentIntent,
         waitMsLimit
       });
       if (!isAgent001TaskSuccessful(info)) {
+        upsertAgent001ResultRecord({
+          requestId: infoPayPlan.paymentIntent.requestId,
+          capability: 'info-analysis-feed',
+          stage: 'dispatch',
+          status: 'failed',
+          toAgentId: infoProvider?.toAgentId || 'message-agent',
+          payer,
+          input: infoPayPlan.normalizedTask,
+          quote: infoQuote,
+          payment: infoPayPlan.paymentIntent,
+          error: info?.error || 'analysis_dispatch_failed',
+          reason: info?.reason || info?.taskResult?.error || 'analysis dispatch failed',
+          source: 'agent001_analysis',
+          dm: {
+            delivered: false,
+            taskId: String(info?.task?.taskId || '').trim(),
+            traceId: String(info?.task?.traceId || '').trim(),
+            reason: info?.reason || info?.error || ''
+          }
+        });
         return buildAgent001FailureReply({
           stage: 'analysis_dispatch',
           capability: 'info-analysis-feed',
-          reason: info?.reason || info?.error || info?.taskResult?.error || 'failed'
+          reason: info?.reason || info?.error || info?.taskResult?.error || 'failed',
+          requestId: infoPayPlan.paymentIntent.requestId,
+          txHash: infoPayPlan.paymentIntent.txHash
         });
       }
+      const infoPayment = info?.taskResult?.payment || infoPayPlan?.paymentIntent || null;
+      if (!hasStrictX402Evidence(infoPayment)) {
+        upsertAgent001ResultRecord({
+          requestId: infoPayPlan.paymentIntent.requestId,
+          capability: 'info-analysis-feed',
+          stage: 'dispatch',
+          status: 'failed',
+          toAgentId: infoProvider?.toAgentId || 'message-agent',
+          payer,
+          input: infoPayPlan.normalizedTask,
+          quote: infoQuote,
+          payment: infoPayment || infoPayPlan.paymentIntent,
+          error: 'x402_evidence_missing',
+          reason: 'task-result missing strict x402 evidence',
+          source: 'agent001_analysis',
+          dm: {
+            delivered: false,
+            taskId: String(info?.task?.taskId || '').trim(),
+            traceId: String(info?.task?.traceId || '').trim(),
+            reason: 'x402_evidence_missing'
+          }
+        });
+        return buildAgent001FailureReply({
+          stage: 'analysis_dispatch',
+          capability: 'info-analysis-feed',
+          reason: 'task-result missing strict x402 evidence',
+          requestId: String(infoPayPlan?.paymentIntent?.requestId || '').trim(),
+          txHash: String(infoPayPlan?.paymentIntent?.txHash || '').trim()
+        });
+      }
+      upsertAgent001ResultRecord({
+        requestId: infoPayment.requestId,
+        capability: 'info-analysis-feed',
+        stage: 'dispatch',
+        status: 'done',
+        toAgentId: infoProvider?.toAgentId || 'message-agent',
+        payer,
+        input: infoPayPlan.normalizedTask,
+        quote: infoQuote,
+        payment: infoPayment,
+        receiptRef: buildTaskReceiptRef(infoPayment),
+        result: info?.taskResult?.result || null,
+        source: 'agent001_analysis',
+        dm: {
+          delivered: true,
+          taskId: String(info?.task?.taskId || '').trim(),
+          traceId: String(info?.task?.traceId || '').trim()
+        }
+      });
     } else {
       info = await runAgent001DispatchTask({
         toAgentId: 'message-agent',
@@ -4654,13 +5102,14 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
 
   if (runTechnical) {
     if (AGENT001_REQUIRE_X402) {
+      const technicalQuote = technicalQuoteTask?.taskResult?.result?.quote || null;
       try {
         technicalPayPlan = await buildAgent001StrictPaymentPlan({
           capability: 'technical-analysis-feed',
           rawText,
           intent,
           payer,
-          targetAgentId: 'technical-agent'
+          targetAgentId: technicalProvider?.toAgentId || 'technical-agent'
         });
       } catch (error) {
         return buildAgent001FailureReply({
@@ -4669,20 +5118,114 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
           reason: error?.message || 'bind_failed'
         });
       }
+      if (!hasStrictX402Evidence(technicalPayPlan?.paymentIntent)) {
+        return buildAgent001FailureReply({
+          stage: 'analysis_prebind',
+          capability: 'technical-analysis-feed',
+          reason: 'x402 evidence missing after prebind',
+          requestId: String(technicalPayPlan?.paymentIntent?.requestId || '').trim(),
+          txHash: String(technicalPayPlan?.paymentIntent?.txHash || '').trim()
+        });
+      }
+      upsertAgent001ResultRecord({
+        requestId: technicalPayPlan.paymentIntent.requestId,
+        capability: 'technical-analysis-feed',
+        stage: 'prebind',
+        status: 'paid',
+        toAgentId: technicalProvider?.toAgentId || 'technical-agent',
+        payer,
+        input: technicalPayPlan.normalizedTask,
+        quote: technicalQuote,
+        payment: technicalPayPlan.paymentIntent,
+        receiptRef: buildTaskReceiptRef(technicalPayPlan.paymentIntent),
+        warnings: technicalPayPlan.warnings,
+        source: 'agent001_analysis'
+      });
       technical = await runAgent001DispatchTask({
-        toAgentId: 'technical-agent',
+        toAgentId: technicalProvider?.toAgentId || 'technical-agent',
         capability: 'technical-analysis-feed',
         input: technicalPayPlan.normalizedTask,
         paymentIntent: technicalPayPlan.paymentIntent,
         waitMsLimit
       });
       if (!isAgent001TaskSuccessful(technical)) {
+        upsertAgent001ResultRecord({
+          requestId: technicalPayPlan.paymentIntent.requestId,
+          capability: 'technical-analysis-feed',
+          stage: 'dispatch',
+          status: 'failed',
+          toAgentId: technicalProvider?.toAgentId || 'technical-agent',
+          payer,
+          input: technicalPayPlan.normalizedTask,
+          quote: technicalQuote,
+          payment: technicalPayPlan.paymentIntent,
+          error: technical?.error || 'analysis_dispatch_failed',
+          reason: technical?.reason || technical?.taskResult?.error || 'analysis dispatch failed',
+          source: 'agent001_analysis',
+          dm: {
+            delivered: false,
+            taskId: String(technical?.task?.taskId || '').trim(),
+            traceId: String(technical?.task?.traceId || '').trim(),
+            reason: technical?.reason || technical?.error || ''
+          }
+        });
         return buildAgent001FailureReply({
           stage: 'analysis_dispatch',
           capability: 'technical-analysis-feed',
-          reason: technical?.reason || technical?.error || technical?.taskResult?.error || 'failed'
+          reason: technical?.reason || technical?.error || technical?.taskResult?.error || 'failed',
+          requestId: technicalPayPlan.paymentIntent.requestId,
+          txHash: technicalPayPlan.paymentIntent.txHash
         });
       }
+      const technicalPayment = technical?.taskResult?.payment || technicalPayPlan?.paymentIntent || null;
+      if (!hasStrictX402Evidence(technicalPayment)) {
+        upsertAgent001ResultRecord({
+          requestId: technicalPayPlan.paymentIntent.requestId,
+          capability: 'technical-analysis-feed',
+          stage: 'dispatch',
+          status: 'failed',
+          toAgentId: technicalProvider?.toAgentId || 'technical-agent',
+          payer,
+          input: technicalPayPlan.normalizedTask,
+          quote: technicalQuote,
+          payment: technicalPayment || technicalPayPlan.paymentIntent,
+          error: 'x402_evidence_missing',
+          reason: 'task-result missing strict x402 evidence',
+          source: 'agent001_analysis',
+          dm: {
+            delivered: false,
+            taskId: String(technical?.task?.taskId || '').trim(),
+            traceId: String(technical?.task?.traceId || '').trim(),
+            reason: 'x402_evidence_missing'
+          }
+        });
+        return buildAgent001FailureReply({
+          stage: 'analysis_dispatch',
+          capability: 'technical-analysis-feed',
+          reason: 'task-result missing strict x402 evidence',
+          requestId: String(technicalPayPlan?.paymentIntent?.requestId || '').trim(),
+          txHash: String(technicalPayPlan?.paymentIntent?.txHash || '').trim()
+        });
+      }
+      upsertAgent001ResultRecord({
+        requestId: technicalPayment.requestId,
+        capability: 'technical-analysis-feed',
+        stage: 'dispatch',
+        status: 'done',
+        toAgentId: technicalProvider?.toAgentId || 'technical-agent',
+        payer,
+        input: technicalPayPlan.normalizedTask,
+        quote: technicalQuote,
+        payment: technicalPayment,
+        receiptRef: buildTaskReceiptRef(technicalPayment),
+        result: technical?.taskResult?.result || null,
+        source: 'agent001_analysis',
+        dm: {
+          delivered: true,
+          taskId: String(technical?.task?.taskId || '').trim(),
+          traceId: String(technical?.task?.traceId || '').trim()
+        }
+      });
     } else {
       technical = await runAgent001DispatchTask({
         toAgentId: 'technical-agent',
@@ -4726,12 +5269,30 @@ async function handleRouterRuntimeTextMessage({ text = '' } = {}) {
   if (AGENT001_REQUIRE_X402) {
     const lines = [summary];
     if (runInfo) {
+      const infoQuote = infoQuoteTask?.taskResult?.result?.quote || null;
+      if (infoQuote) {
+        lines.push(`消息面 quote: service=${String(infoQuote?.serviceId || '-').trim() || '-'} price=${String(infoQuote?.price || '-').trim() || '-'} slaMs=${Number.isFinite(Number(infoQuote?.slaMs)) ? Number(infoQuote.slaMs) : '-'}`);
+      }
+    }
+    if (runTechnical) {
+      const technicalQuote = technicalQuoteTask?.taskResult?.result?.quote || null;
+      if (technicalQuote) {
+        lines.push(`技术面 quote: service=${String(technicalQuote?.serviceId || '-').trim() || '-'} price=${String(technicalQuote?.price || '-').trim() || '-'} slaMs=${Number.isFinite(Number(technicalQuote?.slaMs)) ? Number(technicalQuote.slaMs) : '-'}`);
+      }
+    }
+    if (runInfo) {
       const infoPayment = info?.taskResult?.payment || infoPayPlan?.paymentIntent || null;
       lines.push(`消息面 x402: requestId=${String(infoPayment?.requestId || '-').trim() || '-'} txHash=${String(infoPayment?.txHash || '-').trim() || '-'}`);
+      if (String(infoPayment?.requestId || '').trim()) {
+        lines.push(`消息面 pull: /api/agent001/results/${String(infoPayment.requestId).trim()}`);
+      }
     }
     if (runTechnical) {
       const technicalPayment = technical?.taskResult?.payment || technicalPayPlan?.paymentIntent || null;
       lines.push(`技术面 x402: requestId=${String(technicalPayment?.requestId || '-').trim() || '-'} txHash=${String(technicalPayment?.txHash || '-').trim() || '-'}`);
+      if (String(technicalPayment?.requestId || '').trim()) {
+        lines.push(`技术面 pull: /api/agent001/results/${String(technicalPayment.requestId).trim()}`);
+      }
     }
     return lines.join('\n');
   }
@@ -8019,6 +8580,53 @@ async function fetchJsonResponseWithTimeout(
   }
 }
 
+function shouldRetryAgent001PrebindReason(reason = '') {
+  const text = String(reason || '').trim().toLowerCase();
+  if (!text) return false;
+  if (shouldRetrySessionPayReason(text)) return true;
+  return (
+    text.includes('eth_estimateuseroperationgas') ||
+    text.includes('reverted') ||
+    text.includes('bundler') ||
+    text.includes('replacement fee too low') ||
+    text.includes('replacement transaction underpriced')
+  );
+}
+
+async function runAgent001PrebindWorkflowWithRetry({
+  endpoint = '',
+  payload = {},
+  label = 'agent001 prebind'
+} = {}) {
+  const url = `http://127.0.0.1:${PORT}${String(endpoint || '').trim()}`;
+  const maxAttempts = Math.max(1, Math.min(Number(process.env.AGENT001_PREBIND_RETRIES || 3), 5));
+  let lastError = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const { response, payload: body } = await fetchJsonResponseWithTimeout(url, {
+        method: 'POST',
+        headers: buildInternalAgentHeaders(),
+        timeoutMs: AGENT001_BIND_TIMEOUT_MS,
+        label,
+        body: JSON.stringify(payload)
+      });
+      if (!response.ok || body?.ok === false) {
+        throw new Error(body?.reason || body?.error || `${label} failed: HTTP ${response.status}`);
+      }
+      return { body, attempt, attempts: attempt };
+    } catch (error) {
+      const reason = String(error?.message || 'agent001_prebind_failed').trim();
+      const retryable = shouldRetryAgent001PrebindReason(reason);
+      lastError = new Error(reason || 'agent001_prebind_failed');
+      lastError.attempt = attempt;
+      lastError.retryable = retryable;
+      if (!retryable || attempt >= maxAttempts) break;
+      await waitMs(700 * attempt);
+    }
+  }
+  throw lastError || new Error('agent001_prebind_failed');
+}
+
 function resolveX402EvidenceByRequestId(requestId = '', workflowByRequestId = null) {
   const normalizedRequestId = String(requestId || '').trim();
   if (!normalizedRequestId) return null;
@@ -8058,6 +8666,175 @@ function resolveX402EvidenceByRequestId(requestId = '', workflowByRequestId = nu
       verifiedAt,
       endpoint: `/api/receipt/${normalizedRequestId}`
     }
+  };
+}
+
+function hasStrictX402Evidence(payment = null) {
+  if (!payment || typeof payment !== 'object' || Array.isArray(payment)) return false;
+  const requestId = String(payment.requestId || '').trim();
+  const txHash = String(payment.txHash || '').trim();
+  if (!requestId || !txHash) return false;
+  if (txHash.toLowerCase().startsWith('mock_')) return false;
+  return true;
+}
+
+function resolveAgent001CapabilityByAction(action = '') {
+  const normalized = String(action || '').trim().toLowerCase();
+  if (normalized === 'risk-score-feed') return 'technical-analysis-feed';
+  if (normalized === 'x-reader-feed') return 'info-analysis-feed';
+  return '';
+}
+
+async function computeAgent001PaidResult({
+  capability = '',
+  input = {},
+  traceId = ''
+} = {}) {
+  const normalizedCapability = String(capability || '').trim().toLowerCase();
+  if (normalizedCapability === 'technical-analysis-feed') {
+    const task = normalizeRiskScoreParams({
+      symbol: input?.symbol || input?.pair || 'BTCUSDT',
+      source: input?.source || 'hyperliquid',
+      horizonMin: input?.horizonMin ?? 60
+    });
+    return runRiskScoreAnalysis({
+      ...task,
+      traceId
+    });
+  }
+  if (normalizedCapability === 'info-analysis-feed') {
+    const task = normalizeXReaderParams({
+      url: input?.url || input?.resourceUrl || '',
+      topic: input?.topic || input?.query || input?.keyword || '',
+      mode: input?.mode || input?.source || 'auto',
+      maxChars: input?.maxChars ?? X_READER_MAX_CHARS_DEFAULT
+    });
+    const info = await runInfoAnalysis({
+      ...task,
+      traceId
+    });
+    return {
+      summary: String(info?.summary || '').trim(),
+      info,
+      analysisType: 'info'
+    };
+  }
+  throw new Error(`unsupported_agent001_capability:${normalizedCapability || 'unknown'}`);
+}
+
+async function resolveAgent001ResultByRequestId(requestId = '') {
+  const normalizedRequestId = String(requestId || '').trim();
+  if (!normalizedRequestId) {
+    return {
+      ok: false,
+      statusCode: 400,
+      error: 'requestId_required',
+      reason: 'requestId is required'
+    };
+  }
+  const rows = readAgent001Results();
+  const existing =
+    rows.find((item) => String(item?.requestId || '').trim() === normalizedRequestId) || null;
+  const requests = readX402Requests();
+  const reqItem =
+    requests.find((item) => String(item?.requestId || '').trim() === normalizedRequestId) || null;
+  if (!existing && !reqItem) {
+    return {
+      ok: false,
+      statusCode: 404,
+      error: 'agent001_result_not_found',
+      reason: 'No AGENT001 paid result record found for requestId.',
+      requestId: normalizedRequestId
+    };
+  }
+  const evidence = resolveX402EvidenceByRequestId(normalizedRequestId);
+  if (!evidence?.txHash) {
+    return {
+      ok: false,
+      statusCode: 409,
+      error: 'payment_not_verified',
+      reason: 'x402 payment is not verified yet for this requestId.',
+      requestId: normalizedRequestId
+    };
+  }
+
+  const capability =
+    String(existing?.capability || '').trim().toLowerCase() ||
+    resolveAgent001CapabilityByAction(reqItem?.action || '');
+  if (!capability) {
+    return {
+      ok: false,
+      statusCode: 400,
+      error: 'capability_unknown',
+      reason: 'Cannot resolve capability by requestId.',
+      requestId: normalizedRequestId,
+      payment: evidence
+    };
+  }
+  if (
+    existing?.result &&
+    typeof existing.result === 'object' &&
+    !Array.isArray(existing.result) &&
+    String(existing?.status || '').trim().toLowerCase() === 'done'
+  ) {
+    return {
+      ok: true,
+      requestId: normalizedRequestId,
+      capability,
+      status: 'done',
+      source: 'stored',
+      payment: evidence,
+      receiptRef: evidence.receiptRef || null,
+      result: existing.result,
+      dm: existing?.dm || null,
+      error: String(existing?.error || '').trim(),
+      reason: String(existing?.reason || '').trim()
+    };
+  }
+
+  const taskInput =
+    existing?.input && typeof existing.input === 'object' && !Array.isArray(existing.input)
+      ? existing.input
+      : reqItem?.actionParams && typeof reqItem.actionParams === 'object' && !Array.isArray(reqItem.actionParams)
+        ? reqItem.actionParams
+        : {};
+  const computed = await computeAgent001PaidResult({
+    capability,
+    input: taskInput,
+    traceId: createTraceId('agent001_pull')
+  });
+  const saved = upsertAgent001ResultRecord({
+    requestId: normalizedRequestId,
+    capability,
+    status: 'done',
+    stage: 'request_pull',
+    input: taskInput,
+    payment: {
+      mode: 'x402',
+      requestId: evidence.requestId,
+      txHash: evidence.txHash,
+      block: evidence.block,
+      status: evidence.status,
+      explorer: evidence.explorer,
+      verifiedAt: evidence.verifiedAt
+    },
+    receiptRef: evidence.receiptRef || null,
+    result: computed,
+    source: 'request_pull',
+    dm: existing?.dm || null
+  });
+  return {
+    ok: true,
+    requestId: normalizedRequestId,
+    capability,
+    status: 'done',
+    source: 'computed',
+    payment: evidence,
+    receiptRef: evidence.receiptRef || null,
+    result: saved?.result || computed,
+    dm: saved?.dm || null,
+    error: String(saved?.error || '').trim(),
+    reason: String(saved?.reason || '').trim()
   };
 }
 
@@ -8102,7 +8879,6 @@ async function buildRiskScorePaymentIntentForTask({
   let workflowBinding = null;
   if (shouldBindRealX402) {
     try {
-      const bindTimeoutMs = AGENT001_BIND_TIMEOUT_MS;
       const payload = {
         ...normalizedTask,
         traceId: resolveWorkflowTraceId(body?.paymentTraceId || createTraceId('risk_bind')),
@@ -8111,19 +8887,11 @@ async function buildRiskScorePaymentIntentForTask({
         targetAgentId: String(body?.targetAgentId || KITE_AGENT2_ID).trim(),
         prebindOnly
       };
-      const { response: resp, payload: result } = await fetchJsonResponseWithTimeout(
-        `http://127.0.0.1:${PORT}/api/workflow/risk-score/run`,
-        {
-          method: 'POST',
-          headers: buildInternalAgentHeaders(),
-          timeoutMs: bindTimeoutMs,
-          label: 'agent001 risk prebind',
-          body: JSON.stringify(payload)
-        }
-      );
-      if (!resp.ok || result?.ok === false) {
-        throw new Error(result?.reason || result?.error || `workflow/risk-score/run failed: HTTP ${resp.status}`);
-      }
+      const { body: result, attempts } = await runAgent001PrebindWorkflowWithRetry({
+        endpoint: '/api/workflow/risk-score/run',
+        payload,
+        label: 'agent001 risk prebind'
+      });
       const boundRequestId = String(result?.requestId || result?.workflow?.requestId || '').trim();
       const evidence = resolveX402EvidenceByRequestId(boundRequestId);
       if (!boundRequestId || !evidence?.txHash) {
@@ -8145,7 +8913,8 @@ async function buildRiskScorePaymentIntentForTask({
         txHash: evidence.txHash,
         block: evidence.block,
         status: evidence.status,
-        explorer: evidence.explorer
+        explorer: evidence.explorer,
+        attempts
       };
     } catch (error) {
       const reason = String(error?.message || 'bind_real_x402_failed').trim();
@@ -8239,7 +9008,6 @@ async function buildXReaderPaymentIntentForTask({
   let workflowBinding = null;
   if (shouldBindRealX402) {
     try {
-      const bindTimeoutMs = AGENT001_BIND_TIMEOUT_MS;
       const payload = {
         ...normalizedTask,
         traceId: resolveWorkflowTraceId(body?.paymentTraceId || createTraceId('reader_bind')),
@@ -8248,19 +9016,11 @@ async function buildXReaderPaymentIntentForTask({
         targetAgentId: String(body?.targetAgentId || KITE_AGENT2_ID).trim(),
         prebindOnly
       };
-      const { response: resp, payload: result } = await fetchJsonResponseWithTimeout(
-        `http://127.0.0.1:${PORT}/api/workflow/x-reader/run`,
-        {
-          method: 'POST',
-          headers: buildInternalAgentHeaders(),
-          timeoutMs: bindTimeoutMs,
-          label: 'agent001 info prebind',
-          body: JSON.stringify(payload)
-        }
-      );
-      if (!resp.ok || result?.ok === false) {
-        throw new Error(result?.reason || result?.error || `workflow/x-reader/run failed: HTTP ${resp.status}`);
-      }
+      const { body: result, attempts } = await runAgent001PrebindWorkflowWithRetry({
+        endpoint: '/api/workflow/x-reader/run',
+        payload,
+        label: 'agent001 info prebind'
+      });
       const boundRequestId = String(result?.requestId || result?.workflow?.requestId || '').trim();
       const evidence = resolveX402EvidenceByRequestId(boundRequestId);
       if (!boundRequestId || !evidence?.txHash) {
@@ -8282,7 +9042,8 @@ async function buildXReaderPaymentIntentForTask({
         txHash: evidence.txHash,
         block: evidence.block,
         status: evidence.status,
-        explorer: evidence.explorer
+        explorer: evidence.explorer,
+        attempts
       };
     } catch (error) {
       const reason = String(error?.message || 'bind_real_x402_failed').trim();
@@ -8322,6 +9083,10 @@ async function buildXReaderPaymentIntentForTask({
     workflowBinding,
     warnings
   };
+}
+
+async function buildInfoPaymentIntentForTask(options = {}) {
+  return buildXReaderPaymentIntentForTask(options);
 }
 
 function taskIdSafeToken(value = '') {
@@ -12239,6 +13004,45 @@ app.post('/api/agent001/chat/run', requireRole('agent'), async (req, res) => {
       traceId: req.traceId || '',
       error: 'agent001_chat_failed',
       reason: error?.message || 'agent001 chat failed'
+    });
+  }
+});
+
+app.get('/api/agent001/results/:requestId', requireRole('viewer'), async (req, res) => {
+  const requestId = String(req.params.requestId || '').trim();
+  try {
+    const resolved = await resolveAgent001ResultByRequestId(requestId);
+    if (!resolved?.ok) {
+      return res.status(Number(resolved?.statusCode || 400)).json({
+        ok: false,
+        traceId: req.traceId || '',
+        requestId,
+        error: resolved?.error || 'agent001_result_failed',
+        reason: resolved?.reason || 'agent001 result query failed',
+        payment: resolved?.payment || null
+      });
+    }
+    return res.json({
+      ok: true,
+      traceId: req.traceId || '',
+      requestId: resolved.requestId,
+      capability: resolved.capability,
+      status: resolved.status || 'done',
+      source: resolved.source || 'stored',
+      payment: resolved.payment || null,
+      receiptRef: resolved.receiptRef || null,
+      result: resolved.result || null,
+      dm: resolved.dm || null,
+      error: resolved.error || '',
+      reason: resolved.reason || ''
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      traceId: req.traceId || '',
+      requestId,
+      error: 'agent001_result_failed',
+      reason: error?.message || 'agent001 result query failed'
     });
   }
 });
