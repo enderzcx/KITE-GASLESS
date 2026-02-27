@@ -27,6 +27,7 @@ import {
   CirclePause,
   ClipboardCopy,
   Cpu,
+  Download,
   Play,
   RotateCcw,
   Server,
@@ -131,6 +132,13 @@ interface RealServiceRun {
   info: RealServiceBranch;
   technical: RealServiceBranch;
   warnings: string[];
+}
+
+interface EvidenceArtifact {
+  source: "service_info" | "service_technical" | "api_order";
+  requestId: string;
+  traceId: string;
+  evidence: unknown;
 }
 
 const COLORS: Record<EdgeChannel, string> = {
@@ -241,6 +249,18 @@ function shortHash(v: string): string {
   if (!v) return "-";
   if (v.length < 18) return v;
   return `${v.slice(0, 10)}...${v.slice(-6)}`;
+}
+
+function normalizeRequestId(input: unknown): string {
+  const value = String(input ?? "").trim();
+  return value;
+}
+
+function receiptRefToRequestId(receiptRef: unknown): string {
+  const raw = String(receiptRef ?? "").trim();
+  if (!raw) return "";
+  const [requestId] = raw.split(":");
+  return normalizeRequestId(requestId);
 }
 
 function parseTimestampMs(input: unknown): number {
@@ -495,6 +515,10 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
   const [technicalScore, setTechnicalScore] = useState(0);
   const [receiptRef, setReceiptRef] = useState("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [serviceEvidenceIds, setServiceEvidenceIds] = useState<{ info: string; technical: string }>({ info: "", technical: "" });
+  const [apiEvidenceRequestId, setApiEvidenceRequestId] = useState("");
+  const [downloadingEvidence, setDownloadingEvidence] = useState(false);
+  const [evidenceHint, setEvidenceHint] = useState("");
 
   const timerRef = useRef<number | null>(null);
   const x402TimerRef = useRef<number | null>(null);
@@ -556,6 +580,9 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
     setMessageScore(0);
     setTechnicalScore(0);
     setReceiptRef("");
+    setServiceEvidenceIds({ info: "", technical: "" });
+    setApiEvidenceRequestId("");
+    setEvidenceHint("");
     liveServiceRunRef.current = null;
     liveServiceRunPromiseRef.current = null;
   }, [demoView, setEdges, setNodes]);
@@ -580,6 +607,70 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
       setAudit((prev) => [...prev, row].slice(-auditMaxEntries));
     },
     [auditMaxEntries]
+  );
+
+  const resolveTraceIdByRequestId = useCallback(
+    async (requestId: string): Promise<string> => {
+      const normalized = normalizeRequestId(requestId);
+      if (!normalized) return "";
+      try {
+        const data = await fetchJSON<{ traceId?: string }>(
+          `${baseUrl}/api/demo/trace-by-request/${encodeURIComponent(normalized)}`,
+          {},
+          15_000
+        );
+        return String(data?.traceId || "").trim();
+      } catch {
+        return "";
+      }
+    },
+    [baseUrl]
+  );
+
+  const fetchEvidenceByTraceId = useCallback(
+    async (traceId: string): Promise<unknown> => {
+      const normalized = String(traceId || "").trim();
+      if (!normalized) return null;
+      const data = await fetchJSON<{ evidence?: unknown }>(
+        `${baseUrl}/api/evidence/export?traceId=${encodeURIComponent(normalized)}`,
+        {},
+        20_000
+      );
+      return data?.evidence ?? null;
+    },
+    [baseUrl]
+  );
+
+  const downloadJson = useCallback((fileName: string, payload: unknown) => {
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = fileName;
+    link.click();
+    URL.revokeObjectURL(url);
+  }, []);
+
+  const buildEvidencePack = useCallback(
+    async (sourceRequestIds: Array<{ source: EvidenceArtifact["source"]; requestId: string }>): Promise<EvidenceArtifact[]> => {
+      const normalized = sourceRequestIds
+        .map((item) => ({ source: item.source, requestId: normalizeRequestId(item.requestId) }))
+        .filter((item) => item.requestId.length > 0);
+      const unique = new Map<string, EvidenceArtifact["source"]>();
+      for (const row of normalized) {
+        if (!unique.has(row.requestId)) unique.set(row.requestId, row.source);
+      }
+
+      const artifacts: EvidenceArtifact[] = [];
+      for (const [requestId, source] of unique.entries()) {
+        const traceId = await resolveTraceIdByRequestId(requestId);
+        if (!traceId) continue;
+        const evidence = await fetchEvidenceByTraceId(traceId);
+        artifacts.push({ source, requestId, traceId, evidence });
+      }
+      return artifacts;
+    },
+    [fetchEvidenceByTraceId, resolveTraceIdByRequestId]
   );
 
   const fetchRequestTiming = useCallback(
@@ -711,6 +802,76 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
       liveServiceRunPromiseRef.current = null;
     }
   }, [baseUrl, fetchRequestTiming]);
+
+  const downloadCurrentRunEvidence = useCallback(async () => {
+    const sourceIds: Array<{ source: EvidenceArtifact["source"]; requestId: string }> = [
+      { source: "service_info", requestId: serviceEvidenceIds.info },
+      { source: "service_technical", requestId: serviceEvidenceIds.technical },
+      { source: "api_order", requestId: apiEvidenceRequestId },
+    ];
+    setDownloadingEvidence(true);
+    setEvidenceHint("");
+    try {
+      const artifacts = await buildEvidencePack(sourceIds);
+      if (artifacts.length === 0) {
+        setEvidenceHint("No downloadable evidence found for this run yet.");
+        return;
+      }
+      const fileName = `agent_network_evidence_pack_${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+      downloadJson(fileName, {
+        exportedAt: new Date().toISOString(),
+        run: {
+          infoRequestId: serviceEvidenceIds.info,
+          technicalRequestId: serviceEvidenceIds.technical,
+          apiRequestId: apiEvidenceRequestId,
+        },
+        artifacts,
+      });
+      setEvidenceHint(`Evidence pack downloaded (${artifacts.length} artifact${artifacts.length > 1 ? "s" : ""}).`);
+    } catch (error) {
+      setEvidenceHint(`Evidence export failed: ${String((error as Error)?.message || "unknown_error")}`);
+    } finally {
+      setDownloadingEvidence(false);
+    }
+  }, [apiEvidenceRequestId, buildEvidencePack, downloadJson, serviceEvidenceIds.info, serviceEvidenceIds.technical]);
+
+  const downloadEntryEvidence = useCallback(
+    async (entry: AuditLogEntry) => {
+      const payload = entry.payload || {};
+      const sourceIds: Array<{ source: EvidenceArtifact["source"]; requestId: string }> = [
+        { source: "service_info", requestId: normalizeRequestId(payload["infoRequestId"]) },
+        { source: "service_technical", requestId: normalizeRequestId(payload["technicalRequestId"]) },
+        { source: "api_order", requestId: normalizeRequestId(payload["orderRef"]) },
+        { source: "api_order", requestId: receiptRefToRequestId(entry.receiptRef) },
+      ];
+      setDownloadingEvidence(true);
+      setEvidenceHint("");
+      try {
+        const artifacts = await buildEvidencePack(sourceIds);
+        if (artifacts.length === 0) {
+          setEvidenceHint("No evidence found for this audit item.");
+          return;
+        }
+        const fileName = `agent_network_audit_${entry.stepId}_${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+        downloadJson(fileName, {
+          exportedAt: new Date().toISOString(),
+          auditEntry: {
+            id: entry.id,
+            stepId: entry.stepId,
+            stepName: entry.stepName,
+            tsISO: entry.tsISO,
+          },
+          artifacts,
+        });
+        setEvidenceHint(`Evidence downloaded for ${entry.stepName}.`);
+      } catch (error) {
+        setEvidenceHint(`Evidence export failed: ${String((error as Error)?.message || "unknown_error")}`);
+      } finally {
+        setDownloadingEvidence(false);
+      }
+    },
+    [buildEvidencePack, downloadJson]
+  );
 
   const executeStep = useCallback(
     async function run(idx: number) {
@@ -883,6 +1044,12 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
             }, 550);
 
             const live = liveServiceRunRef.current;
+            if (live?.info.requestId || live?.technical.requestId) {
+              setServiceEvidenceIds({
+                info: normalizeRequestId(live?.info.requestId),
+                technical: normalizeRequestId(live?.technical.requestId),
+              });
+            }
             let receipt = `receipt_${randomHex(10).slice(2)}`;
             let serviceTxHashA = live?.info.txHash || "";
             let serviceTxHashB = live?.technical.txHash || "";
@@ -1133,6 +1300,9 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
                 if (orderRef && apiGateTxHash) {
                   apiGateReceipt = `${orderRef}:${apiGateTxHash}`;
                 }
+                if (orderRef) {
+                  setApiEvidenceRequestId(orderRef);
+                }
                 finalBasis = `${basis} Hyperliquid ${orderType} ${orderSide} submitted (real mode).`;
                 setDecision(finalBasis);
               } catch (error) {
@@ -1200,9 +1370,41 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
   );
 
   const start = useCallback(() => {
+    const shouldResume = playbackRef.current === "paused" && stepIndex >= 0 && stepIndex < FLOW_STEPS.length - 1;
+    if (shouldResume) {
+      setPlayback("playing");
+      void executeStep(stepIndex + 1);
+      return;
+    }
+
+    if (timerRef.current) window.clearTimeout(timerRef.current);
+    if (x402TimerRef.current) window.clearInterval(x402TimerRef.current);
     setPlayback("playing");
-    const target = stepIndex >= 0 && stepIndex < FLOW_STEPS.length - 1 ? stepIndex + 1 : 0;
-    void executeStep(target);
+    setStepIndex(-1);
+    setActiveNodeIds([]);
+    setActiveEdgeIds([]);
+    setAudit([]);
+    setDmOpen(false);
+    setX402Phase("challenge");
+    setQuoteAccepted(null);
+    quoteAcceptedRef.current = null;
+    setShouldOrder(null);
+    shouldOrderRef.current = null;
+    setDecision("Pending quote negotiation.");
+    setVerificationHash("");
+    setMessageQuote(0);
+    setTechnicalQuote(0);
+    setMessageSnippet("");
+    setTechnicalSnippet("");
+    setMessageScore(0);
+    setTechnicalScore(0);
+    setReceiptRef("");
+    setServiceEvidenceIds({ info: "", technical: "" });
+    setApiEvidenceRequestId("");
+    setEvidenceHint("");
+    liveServiceRunRef.current = null;
+    liveServiceRunPromiseRef.current = null;
+    void executeStep(0);
   }, [executeStep, stepIndex]);
 
   const pause = useCallback(() => {
@@ -1240,6 +1442,9 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
     setMessageScore(0);
     setTechnicalScore(0);
     setReceiptRef("");
+    setServiceEvidenceIds({ info: "", technical: "" });
+    setApiEvidenceRequestId("");
+    setEvidenceHint("");
     liveServiceRunRef.current = null;
     liveServiceRunPromiseRef.current = null;
     setTimeout(() => {
@@ -1269,6 +1474,7 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
 
   const current = stepIndex >= 0 ? FLOW_STEPS[stepIndex] : null;
   const progress = stepIndex >= 0 ? ((stepIndex + 1) / FLOW_STEPS.length) * 100 : 0;
+  const hasCurrentRunEvidence = Boolean(serviceEvidenceIds.info || serviceEvidenceIds.technical || apiEvidenceRequestId);
 
   const copyAudit = useCallback(async (entry: AuditLogEntry) => {
     await navigator.clipboard.writeText(JSON.stringify(entry, null, 2));
@@ -1425,111 +1631,148 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
 
         <Card className="h-[70vh] min-h-[620px] border-white/10 bg-black/45 py-0 text-white">
           <CardHeader className="border-b border-white/10 pb-4">
-            <CardTitle className="flex items-center gap-2 text-lg">
-              <Sparkles className="size-4 text-cyan-300" />
-              Audit Trail
-            </CardTitle>
+            <div className="flex items-start justify-between gap-3">
+              <CardTitle className="flex items-center gap-2 text-lg">
+                <Sparkles className="size-4 text-cyan-300" />
+                Audit Trail
+              </CardTitle>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 border-cyan-400/40 bg-cyan-500/10 text-cyan-100 hover:bg-cyan-500/20"
+                onClick={() => void downloadCurrentRunEvidence()}
+                disabled={downloadingEvidence || !hasCurrentRunEvidence}
+                title={hasCurrentRunEvidence ? "Download current run evidence pack" : "No run evidence yet"}
+              >
+                <Download className="size-3.5" />
+                Download Evidence Pack
+              </Button>
+            </div>
             <CardDescription className="text-slate-300">Step-by-step verifiable records from signal ingestion to execution decision.</CardDescription>
+            {evidenceHint ? <p className="text-xs text-cyan-200">{evidenceHint}</p> : null}
           </CardHeader>
           <CardContent className="h-[calc(70vh-92px)] space-y-3 overflow-y-auto px-4 pb-4 pt-4">
             {audit.length === 0 ? <div className="rounded-lg border border-white/10 bg-white/5 p-4 text-sm text-slate-300">No audit entries yet. Start demo playback.</div> : null}
-            {audit.map((entry) => (
-              <motion.div key={entry.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="space-y-2 rounded-xl border border-white/10 bg-white/5 p-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <div className="text-sm font-semibold">{entry.stepName}</div>
-                    <div className="text-xs text-slate-400">
-                      {entry.tsLocal} · {entry.mode.toUpperCase()}
+            {audit.map((entry) => {
+              const payload = entry.payload || {};
+              const entryRequestIds = [
+                normalizeRequestId(payload["infoRequestId"]),
+                normalizeRequestId(payload["technicalRequestId"]),
+                normalizeRequestId(payload["orderRef"]),
+                receiptRefToRequestId(entry.receiptRef),
+              ].filter(Boolean);
+              const canDownloadEntryEvidence = entryRequestIds.length > 0;
+
+              return (
+                <motion.div key={entry.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="space-y-2 rounded-xl border border-white/10 bg-white/5 p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-semibold">{entry.stepName}</div>
+                      <div className="text-xs text-slate-400">
+                        {entry.tsLocal} · {entry.mode.toUpperCase()}
+                      </div>
                     </div>
+                    <Badge className="bg-emerald-500/20 text-emerald-200">Blockchain Verifiable</Badge>
                   </div>
-                  <Badge className="bg-emerald-500/20 text-emerald-200">Blockchain Verifiable</Badge>
-                </div>
-                <Separator className="bg-white/10" />
-                <div className="space-y-1 text-xs text-slate-200">
-                  {entry.verificationHash ? (
-                    <p>
-                      <span className="text-slate-400">verificationHash:</span> <span className="font-mono">{shortHash(entry.verificationHash)}</span>
-                    </p>
-                  ) : null}
-                  {entry.xmtpSnippet ? (
-                    <p>
-                      <span className="text-slate-400">xmtpSnippet:</span> {entry.xmtpSnippet}
-                    </p>
-                  ) : null}
-                  {entry.receiptRef ? (
-                    <p>
-                      <span className="text-slate-400">receiptRef:</span> <span className="font-mono">{shortHash(entry.receiptRef)}</span>
-                    </p>
-                  ) : null}
-                  {entry.messageServiceTxHash ? (
-                    <p>
-                      <span className="text-slate-400">newsAgentTxHash:</span>{" "}
-                      <a
-                        href={txExplorerUrl(entry.messageServiceTxHash)}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="font-mono text-cyan-300 underline decoration-cyan-400/40 underline-offset-2"
-                      >
-                        {shortHash(entry.messageServiceTxHash)}
-                      </a>{" "}
-                      <span className="text-slate-400">
-                        ({formatTxTime(entry.messageServicePaidAt)} {formatTxAge(entry.messageServicePaidAt)})
-                      </span>
-                    </p>
-                  ) : null}
-                  {entry.technicalServiceTxHash ? (
-                    <p>
-                      <span className="text-slate-400">technicalAgentTxHash:</span>{" "}
-                      <a
-                        href={txExplorerUrl(entry.technicalServiceTxHash)}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="font-mono text-cyan-300 underline decoration-cyan-400/40 underline-offset-2"
-                      >
-                        {shortHash(entry.technicalServiceTxHash)}
-                      </a>{" "}
-                      <span className="text-slate-400">
-                        ({formatTxTime(entry.technicalServicePaidAt)} {formatTxAge(entry.technicalServicePaidAt)})
-                      </span>
-                    </p>
-                  ) : null}
-                  {entry.apiGateTxHash ? (
-                    <p>
-                      <span className="text-slate-400">apiGateTxHash:</span>{" "}
-                      <a
-                        href={txExplorerUrl(entry.apiGateTxHash)}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="font-mono text-orange-300 underline decoration-orange-400/40 underline-offset-2"
-                      >
-                        {shortHash(entry.apiGateTxHash)}
-                      </a>{" "}
-                      <span className="text-slate-400">
-                        ({formatTxTime(entry.apiGatePaidAt)} {formatTxAge(entry.apiGatePaidAt)})
-                      </span>
-                    </p>
-                  ) : null}
-                  {entry.decisionBasis ? (
-                    <p>
-                      <span className="text-slate-400">decisionBasis:</span> {entry.decisionBasis}
-                    </p>
-                  ) : null}
-                </div>
-                <Button variant="outline" size="sm" className="h-8 border-white/20 bg-black/35 text-xs text-white" onClick={() => void copyAudit(entry)}>
-                  {copiedId === entry.id ? (
-                    <>
-                      <Check className="size-3.5" />
-                      Copied
-                    </>
-                  ) : (
-                    <>
-                      <ClipboardCopy className="size-3.5" />
-                      Copy
-                    </>
-                  )}
-                </Button>
-              </motion.div>
-            ))}
+                  <Separator className="bg-white/10" />
+                  <div className="space-y-1 text-xs text-slate-200">
+                    {entry.verificationHash ? (
+                      <p>
+                        <span className="text-slate-400">verificationHash:</span> <span className="font-mono">{shortHash(entry.verificationHash)}</span>
+                      </p>
+                    ) : null}
+                    {entry.xmtpSnippet ? (
+                      <p>
+                        <span className="text-slate-400">xmtpSnippet:</span> {entry.xmtpSnippet}
+                      </p>
+                    ) : null}
+                    {entry.receiptRef ? (
+                      <p>
+                        <span className="text-slate-400">receiptRef:</span> <span className="font-mono">{shortHash(entry.receiptRef)}</span>
+                      </p>
+                    ) : null}
+                    {entry.messageServiceTxHash ? (
+                      <p>
+                        <span className="text-slate-400">newsAgentTxHash:</span>{" "}
+                        <a
+                          href={txExplorerUrl(entry.messageServiceTxHash)}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="font-mono text-cyan-300 underline decoration-cyan-400/40 underline-offset-2"
+                        >
+                          {shortHash(entry.messageServiceTxHash)}
+                        </a>{" "}
+                        <span className="text-slate-400">
+                          ({formatTxTime(entry.messageServicePaidAt)} {formatTxAge(entry.messageServicePaidAt)})
+                        </span>
+                      </p>
+                    ) : null}
+                    {entry.technicalServiceTxHash ? (
+                      <p>
+                        <span className="text-slate-400">technicalAgentTxHash:</span>{" "}
+                        <a
+                          href={txExplorerUrl(entry.technicalServiceTxHash)}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="font-mono text-cyan-300 underline decoration-cyan-400/40 underline-offset-2"
+                        >
+                          {shortHash(entry.technicalServiceTxHash)}
+                        </a>{" "}
+                        <span className="text-slate-400">
+                          ({formatTxTime(entry.technicalServicePaidAt)} {formatTxAge(entry.technicalServicePaidAt)})
+                        </span>
+                      </p>
+                    ) : null}
+                    {entry.apiGateTxHash ? (
+                      <p>
+                        <span className="text-slate-400">apiGateTxHash:</span>{" "}
+                        <a
+                          href={txExplorerUrl(entry.apiGateTxHash)}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="font-mono text-orange-300 underline decoration-orange-400/40 underline-offset-2"
+                        >
+                          {shortHash(entry.apiGateTxHash)}
+                        </a>{" "}
+                        <span className="text-slate-400">
+                          ({formatTxTime(entry.apiGatePaidAt)} {formatTxAge(entry.apiGatePaidAt)})
+                        </span>
+                      </p>
+                    ) : null}
+                    {entry.decisionBasis ? (
+                      <p>
+                        <span className="text-slate-400">decisionBasis:</span> {entry.decisionBasis}
+                      </p>
+                    ) : null}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button variant="outline" size="sm" className="h-8 border-white/20 bg-black/35 text-xs text-white" onClick={() => void copyAudit(entry)}>
+                      {copiedId === entry.id ? (
+                        <>
+                          <Check className="size-3.5" />
+                          Copied
+                        </>
+                      ) : (
+                        <>
+                          <ClipboardCopy className="size-3.5" />
+                          Copy
+                        </>
+                      )}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 border-cyan-400/35 bg-cyan-500/10 text-xs text-cyan-100 hover:bg-cyan-500/20"
+                      onClick={() => void downloadEntryEvidence(entry)}
+                      disabled={!canDownloadEntryEvidence || downloadingEvidence}
+                    >
+                      <Download className="size-3.5" />
+                      Evidence
+                    </Button>
+                  </div>
+                </motion.div>
+              );
+            })}
           </CardContent>
         </Card>
       </div>
