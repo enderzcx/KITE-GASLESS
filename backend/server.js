@@ -101,16 +101,17 @@ const SETTLEMENT_TOKEN =
   process.env.KITE_SETTLEMENT_TOKEN || '0x0fF5393387ad2f9f691FD6Fd28e07E3969e27e63';
 const MERCHANT_ADDRESS =
   process.env.KITE_MERCHANT_ADDRESS || '0x6D705b93F0Da7DC26e46cB39Decc3baA4fb4dd29';
-const X402_PRICE = process.env.X402_PRICE || '0.05';
+const X402_UNIFIED_SERVICE_PRICE = String(process.env.X402_UNIFIED_SERVICE_PRICE || '0.00015').trim() || '0.00015';
+const X402_PRICE = process.env.X402_PRICE || X402_UNIFIED_SERVICE_PRICE;
 const KITE_AGENT2_AA_ADDRESS =
   process.env.KITE_AGENT2_AA_ADDRESS || '0xEd335560178B85f0524FfFf3372e9Bf45aB42aC8';
-const X402_REACTIVE_PRICE = process.env.X402_REACTIVE_PRICE || '0.03';
-const X402_BTC_PRICE = process.env.X402_BTC_PRICE || '0.00001';
-const X402_RISK_SCORE_PRICE = process.env.X402_RISK_SCORE_PRICE || '0.00002';
-const X402_X_READER_PRICE = process.env.X402_X_READER_PRICE || '0.00001';
+const X402_REACTIVE_PRICE = process.env.X402_REACTIVE_PRICE || X402_UNIFIED_SERVICE_PRICE;
+const X402_BTC_PRICE = process.env.X402_BTC_PRICE || X402_UNIFIED_SERVICE_PRICE;
+const X402_RISK_SCORE_PRICE = process.env.X402_RISK_SCORE_PRICE || X402_UNIFIED_SERVICE_PRICE;
+const X402_X_READER_PRICE = process.env.X402_X_READER_PRICE || X402_UNIFIED_SERVICE_PRICE;
 const X402_TECHNICAL_PRICE = process.env.X402_TECHNICAL_PRICE || X402_RISK_SCORE_PRICE;
 const X402_INFO_PRICE = process.env.X402_INFO_PRICE || X402_X_READER_PRICE;
-const X402_HYPERLIQUID_ORDER_PRICE = process.env.X402_HYPERLIQUID_ORDER_PRICE || '0.00002';
+const X402_HYPERLIQUID_ORDER_PRICE = process.env.X402_HYPERLIQUID_ORDER_PRICE || X402_UNIFIED_SERVICE_PRICE;
 const HYPERLIQUID_ORDER_RECIPIENT = normalizeAddress(
   String(process.env.X402_HYPERLIQUID_ORDER_RECIPIENT || process.env.HYPERLIQUID_ORDER_RECIPIENT || MERCHANT_ADDRESS).trim()
 );
@@ -3797,9 +3798,16 @@ function createDefaultServiceCatalog() {
   ];
 }
 
+function normalizedUnifiedServicePrice() {
+  const parsed = Number(X402_UNIFIED_SERVICE_PRICE);
+  if (!Number.isFinite(parsed) || parsed <= 0) return '0.00015';
+  return String(Number(parsed.toFixed(6)));
+}
+
 function mergeBuiltinServices(rows = []) {
   const rawList = Array.isArray(rows) ? [...rows] : [];
   let changed = false;
+  const unifiedPrice = normalizedUnifiedServicePrice();
   const list = rawList
     .filter((item) => {
       const id = String(item?.id || '').trim();
@@ -3811,22 +3819,46 @@ function mergeBuiltinServices(rows = []) {
     })
     .map((item) => {
       const action = String(item?.action || '').trim().toLowerCase();
-      if (action !== 'x-reader-feed') return item;
-      changed = true;
-      return {
-        ...item,
-        action: 'info-analysis-feed',
-        updatedAt: new Date().toISOString()
-      };
+      let next = item;
+      if (action === 'x-reader-feed') {
+        changed = true;
+        next = {
+          ...next,
+          action: 'info-analysis-feed',
+          updatedAt: new Date().toISOString()
+        };
+      }
+      if (String(next?.price || '').trim() !== unifiedPrice) {
+        changed = true;
+        next = {
+          ...next,
+          price: unifiedPrice,
+          updatedAt: new Date().toISOString()
+        };
+      }
+      return next;
     });
-  const defaults = createDefaultServiceCatalog();
+  const defaults = createDefaultServiceCatalog().map((service) => ({
+    ...service,
+    price: unifiedPrice
+  }));
   for (const service of defaults) {
     const id = String(service?.id || '').trim();
     if (!id) continue;
-    const exists = list.some((item) => String(item?.id || '').trim() === id);
-    if (!exists) {
+    const index = list.findIndex((item) => String(item?.id || '').trim() === id);
+    if (index < 0) {
       list.push(service);
       changed = true;
+      continue;
+    }
+    const current = list[index] || {};
+    if (String(current?.price || '').trim() !== unifiedPrice) {
+      changed = true;
+      list[index] = {
+        ...current,
+        price: unifiedPrice,
+        updatedAt: new Date().toISOString()
+      };
     }
   }
   return { rows: list, changed };
@@ -3841,7 +3873,10 @@ function ensureServiceCatalog() {
     }
     return merged.rows;
   }
-  const seed = createDefaultServiceCatalog();
+  const seed = createDefaultServiceCatalog().map((item) => ({
+    ...item,
+    price: normalizedUnifiedServicePrice()
+  }));
   writePublishedServices(seed);
   return seed;
 }

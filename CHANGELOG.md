@@ -143,6 +143,9 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 - AGENT001 now has a direct-order fast path for explicit order commands:
   - commands like `限价下单 BTCUSDT 卖出 price=98000 size=0.001 止盈 94000 止损 100500` skip info/technical analysis stages entirely,
   - output only includes order-stage and optional TP/SL-stage x402 evidence (no analysis quote/progress noise).
+- Unified all service prices to `0.00015`:
+  - `X402_UNIFIED_SERVICE_PRICE` introduced and all `X402_*_PRICE` defaults now align to `0.00015`,
+  - service catalog bootstrapping now normalizes persisted `data/services.json` prices to `0.00015` to avoid stale historical values.
 - AGENT001 analysis path is now quote-first (`service-quote`) before strict x402 prebind for both:
   - `technical-analysis-feed`
   - `info-analysis-feed`
