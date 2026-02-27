@@ -117,12 +117,21 @@ interface NetworkEdgeData {
   rightHintOffsetY?: number;
 }
 
-interface TxCandidate {
+interface RealServiceBranch {
   requestId: string;
-  action: string;
   txHash: string;
   paidAtIso: string;
-  paidAtMs: number;
+  amount: number;
+  summary: string;
+  confidence: number;
+}
+
+interface RealServiceRun {
+  traceId: string;
+  requestId: string;
+  info: RealServiceBranch;
+  technical: RealServiceBranch;
+  warnings: string[];
 }
 
 const COLORS: Record<EdgeChannel, string> = {
@@ -250,48 +259,6 @@ function parseTimestampMs(input: unknown): number {
 
 function toIsoFromMs(ms: number): string {
   return ms > 0 ? new Date(ms).toISOString() : "";
-}
-
-function buildTxCandidates(items: Array<Record<string, unknown>> = []): TxCandidate[] {
-  const byHash = new Map<string, TxCandidate>();
-  for (const item of items) {
-    const paymentProof = item?.paymentProof && typeof item.paymentProof === "object" ? (item.paymentProof as Record<string, unknown>) : null;
-    const txHash = String(item?.txHash || item?.paymentTxHash || paymentProof?.txHash || "").trim();
-    if (!/^0x[a-fA-F0-9]{64}$/.test(txHash)) continue;
-    const paidAtMs =
-      parseTimestampMs(item?.paidAt) ||
-      parseTimestampMs(item?.time) ||
-      parseTimestampMs(item?.updatedAt) ||
-      parseTimestampMs(item?.createdAt);
-    const normalized: TxCandidate = {
-      requestId: String(item?.requestId || "").trim(),
-      action: String(item?.action || "").trim().toLowerCase(),
-      txHash,
-      paidAtIso: toIsoFromMs(paidAtMs),
-      paidAtMs,
-    };
-    const key = txHash.toLowerCase();
-    const prev = byHash.get(key);
-    if (!prev || normalized.paidAtMs >= prev.paidAtMs) {
-      byHash.set(key, normalized);
-    }
-  }
-  return [...byHash.values()].sort((a, b) => b.paidAtMs - a.paidAtMs);
-}
-
-function pickNextTx(
-  items: TxCandidate[],
-  usedTxHashes: Set<string>,
-  matcher?: (candidate: TxCandidate) => boolean
-): TxCandidate | null {
-  for (const item of items) {
-    const key = item.txHash.toLowerCase();
-    if (usedTxHashes.has(key)) continue;
-    if (matcher && !matcher(item)) continue;
-    usedTxHashes.add(key);
-    return item;
-  }
-  return null;
 }
 
 function txExplorerUrl(txHash: string): string {
@@ -536,7 +503,8 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
   const playbackRef = useRef<PlaybackState>("idle");
   const quoteAcceptedRef = useRef<boolean | null>(null);
   const shouldOrderRef = useRef<boolean | null>(null);
-  const usedTxHashesRef = useRef<Set<string>>(new Set());
+  const liveServiceRunRef = useRef<RealServiceRun | null>(null);
+  const liveServiceRunPromiseRef = useRef<Promise<RealServiceRun> | null>(null);
   const baseUrl = backendBaseUrl || process.env.NEXT_PUBLIC_BACKEND_URL || "http://127.0.0.1:3001";
 
   useEffect(() => {
@@ -582,7 +550,8 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
     setMessageScore(0);
     setTechnicalScore(0);
     setReceiptRef("");
-    usedTxHashesRef.current = new Set();
+    liveServiceRunRef.current = null;
+    liveServiceRunPromiseRef.current = null;
   }, [demoView, setEdges, setNodes]);
 
   const appendAudit = useCallback(
@@ -606,6 +575,136 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
     },
     [auditMaxEntries]
   );
+
+  const fetchRequestTiming = useCallback(
+    async (requestId: string): Promise<{ amount: number; paidAtIso: string }> => {
+      const id = String(requestId || "").trim();
+      if (!id) return { amount: 0, paidAtIso: "" };
+      try {
+        const data = await fetchJSON<{ items?: Array<Record<string, unknown>> }>(
+          `${baseUrl}/api/x402/requests?requestId=${encodeURIComponent(id)}&limit=1`,
+          {},
+          20_000
+        );
+        const item = Array.isArray(data?.items) && data.items.length > 0 ? data.items[0] : null;
+        const amountRaw = Number(item?.amount ?? 0);
+        const amount = Number.isFinite(amountRaw) && amountRaw > 0 ? amountRaw : 0;
+        const paidAtMs = parseTimestampMs(item?.paidAt) || parseTimestampMs(item?.updatedAt) || parseTimestampMs(item?.createdAt);
+        return { amount, paidAtIso: toIsoFromMs(paidAtMs) };
+      } catch {
+        return { amount: 0, paidAtIso: "" };
+      }
+    },
+    [baseUrl]
+  );
+
+  const ensureLiveServiceRun = useCallback(async (): Promise<RealServiceRun> => {
+    if (liveServiceRunRef.current) return liveServiceRunRef.current;
+    if (liveServiceRunPromiseRef.current) return liveServiceRunPromiseRef.current;
+
+    const runner = (async () => {
+      const payload = {
+        autoStart: true,
+        bindRealX402: true,
+        strictBinding: true,
+        prebindOnly: false,
+        retryOnTimeout: true,
+        waitMs: 20_000,
+        symbol: "BTCUSDT",
+        source: "hyperliquid",
+        horizonMin: 60,
+        topic: "BTC market sentiment and catalysts",
+        maxChars: 900,
+      };
+      const result = await fetchJSON<Record<string, unknown>>(
+        `${baseUrl}/api/network/demo/router-info-technical/run`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        },
+        240_000
+      );
+      if (!result || result.ok !== true) {
+        throw new Error(`live_router_run_failed:${String(result?.["reason"] || result?.["error"] || "unknown")}`);
+      }
+
+      const paymentBinding =
+        result["paymentBinding"] && typeof result["paymentBinding"] === "object"
+          ? (result["paymentBinding"] as Record<string, unknown>)
+          : {};
+      const infoBind =
+        paymentBinding["info"] && typeof paymentBinding["info"] === "object"
+          ? (paymentBinding["info"] as Record<string, unknown>)
+          : {};
+      const technicalBind =
+        paymentBinding["technical"] && typeof paymentBinding["technical"] === "object"
+          ? (paymentBinding["technical"] as Record<string, unknown>)
+          : {};
+
+      const analysis = result["analysis"] && typeof result["analysis"] === "object" ? (result["analysis"] as Record<string, unknown>) : {};
+      const infoAnalysis = analysis["info"] && typeof analysis["info"] === "object" ? (analysis["info"] as Record<string, unknown>) : {};
+      const technicalAnalysis =
+        analysis["technical"] && typeof analysis["technical"] === "object" ? (analysis["technical"] as Record<string, unknown>) : {};
+
+      const summary = result["summary"] && typeof result["summary"] === "object" ? (result["summary"] as Record<string, unknown>) : {};
+      const warnings = Array.isArray(result["warnings"])
+        ? result["warnings"].map((item) => String(item || "").trim()).filter(Boolean)
+        : [];
+
+      const infoRequestId = String(infoBind["requestId"] || "").trim();
+      const technicalRequestId = String(technicalBind["requestId"] || "").trim();
+      const infoTxHash = String(infoBind["txHash"] || "").trim();
+      const technicalTxHash = String(technicalBind["txHash"] || "").trim();
+      if (!infoRequestId || !technicalRequestId || !/^0x[a-fA-F0-9]{64}$/.test(infoTxHash) || !/^0x[a-fA-F0-9]{64}$/.test(technicalTxHash)) {
+        throw new Error("live_router_run_missing_x402_evidence");
+      }
+
+      const [infoTiming, technicalTiming] = await Promise.all([
+        fetchRequestTiming(infoRequestId),
+        fetchRequestTiming(technicalRequestId),
+      ]);
+      const infoConfidenceRaw = Number(infoAnalysis["confidence"] ?? 0);
+      const technicalConfidenceRaw = Number(technicalAnalysis["confidence"] ?? 0);
+      const infoConfidence = Number.isFinite(infoConfidenceRaw) ? Number(infoConfidenceRaw.toFixed(3)) : 0;
+      const technicalConfidence = Number.isFinite(technicalConfidenceRaw) ? Number(technicalConfidenceRaw.toFixed(3)) : 0;
+      const infoSummary = String(summary["infoSummary"] || infoAnalysis["summary"] || "").trim() || "Info agent result delivered.";
+      const technicalSummary =
+        String(summary["technicalSummary"] || technicalAnalysis["summary"] || "").trim() || "Technical agent result delivered.";
+
+      const normalized: RealServiceRun = {
+        traceId: String(result["command"] && typeof result["command"] === "object" ? (result["command"] as Record<string, unknown>)["traceId"] || "" : "").trim(),
+        requestId: String(result["command"] && typeof result["command"] === "object" ? (result["command"] as Record<string, unknown>)["requestId"] || "" : "").trim(),
+        info: {
+          requestId: infoRequestId,
+          txHash: infoTxHash,
+          paidAtIso: infoTiming.paidAtIso || String(infoBind["verifiedAt"] || "").trim(),
+          amount: infoTiming.amount,
+          summary: infoSummary,
+          confidence: infoConfidence,
+        },
+        technical: {
+          requestId: technicalRequestId,
+          txHash: technicalTxHash,
+          paidAtIso: technicalTiming.paidAtIso || String(technicalBind["verifiedAt"] || "").trim(),
+          amount: technicalTiming.amount,
+          summary: technicalSummary,
+          confidence: technicalConfidence,
+        },
+        warnings,
+      };
+
+      liveServiceRunRef.current = normalized;
+      return normalized;
+    })();
+
+    liveServiceRunPromiseRef.current = runner;
+    try {
+      return await runner;
+    } finally {
+      liveServiceRunPromiseRef.current = null;
+    }
+  }, [baseUrl, fetchRequestTiming]);
 
   const executeStep = useCallback(
     async function run(idx: number) {
@@ -643,93 +742,106 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
 
         if (step.id === "xmtp_quote_request") {
           setDmOpen(true);
-          appendAudit({
-            mode,
-            stepId: step.id,
-            stepName: step.title,
-            blockchainVerifiable: true,
-            xmtpSnippet:
-              demoView === "general"
-                ? "Agent001 requested service quote from Other Agent via XMTP DM."
-                : "Agent001 requested service quote from Message Agent and Technical Agent via XMTP DM.",
-            payload: {
-              task: "BTCUSDT strategy",
-              requestedFrom: demoView === "general" ? ["other-agent"] : ["message-agent", "technical-agent"],
-            },
-          });
+          try {
+            const live = await ensureLiveServiceRun();
+            appendAudit({
+              mode,
+              stepId: step.id,
+              stepName: step.title,
+              blockchainVerifiable: true,
+              xmtpSnippet:
+                demoView === "general"
+                  ? `Live XMTP DM run executed. traceId=${live.traceId}, requestId=${live.requestId}.`
+                  : `Live XMTP DM run executed for Message/Technical agents. traceId=${live.traceId}, requestId=${live.requestId}.`,
+              payload: {
+                executionMode: "live",
+                traceId: live.traceId,
+                requestId: live.requestId,
+                requestedFrom: demoView === "general" ? ["other-agent"] : ["message-agent", "technical-agent"],
+                warnings: live.warnings,
+              },
+            });
+          } catch (error) {
+            const reason = String((error as Error)?.message || "live_dm_failed").trim();
+            setDecision(`Live XMTP run failed: ${reason}`);
+            setQuoteAccepted(false);
+            quoteAcceptedRef.current = false;
+            appendAudit({
+              mode,
+              stepId: step.id,
+              stepName: step.title,
+              blockchainVerifiable: true,
+              decisionBasis: `Live DM dispatch failed: ${reason}`,
+              xmtpSnippet: "Live XMTP request could not be completed.",
+              payload: {
+                executionMode: "live",
+                error: reason,
+              },
+            });
+          }
         }
 
         if (step.id === "xmtp_quote_return") {
-          let mQuote = 0.00011;
-          let tQuote = 0.0001;
-          let mSource = "fallback";
-          let tSource = "fallback";
-
-          if (demoView === "general") {
+          let live: RealServiceRun | null = liveServiceRunRef.current;
+          if (!live) {
             try {
-              const q = await fetchJSON<{ result?: { confidence?: number } }>(`${baseUrl}/api/analysis/info/run`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ topic: "other agent quote for BTCUSDT service", mode: "auto", maxChars: 120 }),
-              });
-              const conf = Number(q?.result?.confidence ?? 0.73);
-              mQuote = Number((0.00008 + (1 - conf) * 0.00012).toFixed(5));
-              tQuote = 0;
-              mSource = "backend";
-              tSource = "n/a";
+              live = await ensureLiveServiceRun();
             } catch {
-              tQuote = 0;
-              tSource = "n/a";
-            }
-          } else {
-            try {
-              const m = await fetchJSON<{ result?: { confidence?: number } }>(`${baseUrl}/api/analysis/info/run`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ topic: "message agent quote for BTCUSDT service", mode: "auto", maxChars: 120 }),
-              });
-              const conf = Number(m?.result?.confidence ?? 0.72);
-              mQuote = Number((0.00008 + (1 - conf) * 0.0001).toFixed(5));
-              mSource = "backend";
-            } catch {
-              // fallback
-            }
-            try {
-              const t = await fetchJSON<{ result?: { confidence?: number } }>(`${baseUrl}/api/analysis/info/run`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ topic: "technical agent quote for BTCUSDT service", mode: "auto", maxChars: 120 }),
-              });
-              const conf = Number(t?.result?.confidence ?? 0.75);
-              tQuote = Number((0.00008 + (1 - conf) * 0.0001).toFixed(5));
-              tSource = "backend";
-            } catch {
-              // fallback
+              live = null;
             }
           }
 
-          setMessageQuote(mQuote);
-          setTechnicalQuote(tQuote);
-          const total = Number((mQuote + tQuote).toFixed(5));
-          const accepted = total <= QUOTE_CAP;
-          setQuoteAccepted(accepted);
-          quoteAcceptedRef.current = accepted;
-          const basis = accepted
-            ? `Quote accepted. Total ${total.toFixed(5)} <= cap ${QUOTE_CAP.toFixed(5)}. Proceed to x402 payment.`
-            : `Quote rejected. Total ${total.toFixed(5)} > cap ${QUOTE_CAP.toFixed(5)}. Stop before payment.`;
-          setDecision(basis);
-          appendAudit({
-            mode,
-            stepId: step.id,
-            stepName: step.title,
-            blockchainVerifiable: true,
-            xmtpSnippet:
-              demoView === "general"
-                ? `Other Agent quote ${mQuote.toFixed(5)}, total ${total.toFixed(5)}.`
-                : `Message quote ${mQuote.toFixed(5)}, Technical quote ${tQuote.toFixed(5)}, total ${total.toFixed(5)}.`,
-            decisionBasis: basis,
-            payload: { messageQuote: mQuote, technicalQuote: tQuote, totalQuote: total, cap: QUOTE_CAP, accepted, source: { message: mSource, technical: tSource } },
-          });
+          if (!live) {
+            const basis = "Quote negotiation failed because live XMTP/x402 run did not return usable evidence.";
+            setMessageQuote(0);
+            setTechnicalQuote(0);
+            setQuoteAccepted(false);
+            quoteAcceptedRef.current = false;
+            setDecision(basis);
+            appendAudit({
+              mode,
+              stepId: step.id,
+              stepName: step.title,
+              blockchainVerifiable: true,
+              xmtpSnippet: "Live quote return unavailable.",
+              decisionBasis: basis,
+              payload: { accepted: false, reason: "live_run_missing" },
+            });
+          } else {
+            const mQuote = Number((live.info.amount || 0).toFixed(5));
+            const tQuote = demoView === "general" ? 0 : Number((live.technical.amount || 0).toFixed(5));
+            setMessageQuote(mQuote);
+            setTechnicalQuote(tQuote);
+            const total = Number((mQuote + tQuote).toFixed(5));
+            const accepted = total <= QUOTE_CAP && mQuote > 0;
+            setQuoteAccepted(accepted);
+            quoteAcceptedRef.current = accepted;
+            const basis = accepted
+              ? `Live quote accepted. Total ${total.toFixed(5)} <= cap ${QUOTE_CAP.toFixed(5)}.`
+              : `Live quote rejected. Total ${total.toFixed(5)} > cap ${QUOTE_CAP.toFixed(5)} or quote missing.`;
+            setDecision(basis);
+            appendAudit({
+              mode,
+              stepId: step.id,
+              stepName: step.title,
+              blockchainVerifiable: true,
+              xmtpSnippet:
+                demoView === "general"
+                  ? `Other Agent live quote ${mQuote.toFixed(5)} (requestId=${live.info.requestId}).`
+                  : `Message quote ${mQuote.toFixed(5)} (requestId=${live.info.requestId}), Technical quote ${tQuote.toFixed(5)} (requestId=${live.technical.requestId}).`,
+              decisionBasis: basis,
+              payload: {
+                executionMode: "live",
+                messageQuote: mQuote,
+                technicalQuote: tQuote,
+                totalQuote: total,
+                cap: QUOTE_CAP,
+                accepted,
+                infoRequestId: live.info.requestId,
+                technicalRequestId: live.technical.requestId,
+              },
+            });
+          }
         }
 
         if (step.id === "x402_settlement") {
@@ -756,77 +868,35 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
               setX402Phase(X402_PHASES[p]);
             }, 550);
 
+            const live = liveServiceRunRef.current;
             let receipt = `receipt_${randomHex(10).slice(2)}`;
-            let serviceTxHashA = "";
-            let serviceTxHashB = "";
-            let servicePaidAtA = "";
-            let servicePaidAtB = "";
-            const usedTx = usedTxHashesRef.current;
-            try {
-              const res = await fetchJSON<{ items?: Array<Record<string, unknown>> }>(`${baseUrl}/api/x402/mapping/latest?limit=40`);
-              const candidates = buildTxCandidates(Array.isArray(res?.items) ? res.items : []);
-
-              if (demoView === "general") {
-                const generalCandidate =
-                  pickNextTx(candidates, usedTx, (c) => /info|technical|reader|risk|analysis|feed|service/i.test(c.action)) ||
-                  pickNextTx(candidates, usedTx);
-                if (generalCandidate) {
-                  serviceTxHashA = generalCandidate.txHash;
-                  servicePaidAtA = generalCandidate.paidAtIso;
-                  receipt = `${generalCandidate.requestId || "req_unknown"}:${generalCandidate.txHash}`;
-                }
-              } else {
-                const messageCandidate =
-                  pickNextTx(candidates, usedTx, (c) => /info|reader|message/i.test(c.action)) || pickNextTx(candidates, usedTx);
-                const technicalCandidate =
-                  pickNextTx(candidates, usedTx, (c) => /technical|risk/i.test(c.action)) ||
-                  pickNextTx(candidates, usedTx, (c) => !messageCandidate || c.txHash.toLowerCase() !== messageCandidate.txHash.toLowerCase()) ||
-                  null;
-
-                if (messageCandidate) {
-                  serviceTxHashA = messageCandidate.txHash;
-                  servicePaidAtA = messageCandidate.paidAtIso;
-                  receipt = `${messageCandidate.requestId || "req_unknown"}:${messageCandidate.txHash}`;
-                }
-                if (technicalCandidate) {
-                  serviceTxHashB = technicalCandidate.txHash;
-                  servicePaidAtB = technicalCandidate.paidAtIso;
-                }
-              }
-            } catch {
-              // fallback
-            }
-            try {
-              const req = await fetchJSON<{ items?: Array<Record<string, unknown>> }>(`${baseUrl}/api/x402/requests?limit=30`);
-              const fallbackCandidates = buildTxCandidates(Array.isArray(req?.items) ? req.items : []);
-              if (!serviceTxHashA) {
-                const c = pickNextTx(fallbackCandidates, usedTx);
-                if (c) {
-                  serviceTxHashA = c.txHash;
-                  servicePaidAtA = c.paidAtIso;
-                  receipt = `${c.requestId || "req_unknown"}:${c.txHash}`;
-                }
-              }
-              if (demoView !== "general" && !serviceTxHashB) {
-                const c =
-                  pickNextTx(fallbackCandidates, usedTx, (candidate) => candidate.txHash.toLowerCase() !== serviceTxHashA.toLowerCase()) ||
-                  pickNextTx(fallbackCandidates, usedTx);
-                if (c) {
-                  serviceTxHashB = c.txHash;
-                  servicePaidAtB = c.paidAtIso;
-                }
-              }
-            } catch {
-              // fallback
-            }
-            if (!serviceTxHashA) serviceTxHashA = randomHex(64);
-            if (demoView !== "general" && !serviceTxHashB) serviceTxHashB = randomHex(64);
+            let serviceTxHashA = live?.info.txHash || "";
+            let serviceTxHashB = live?.technical.txHash || "";
+            let servicePaidAtA = live?.info.paidAtIso || "";
+            let servicePaidAtB = live?.technical.paidAtIso || "";
             if (demoView === "general") {
+              serviceTxHashA = live?.info.txHash || live?.technical.txHash || "";
+              servicePaidAtA = live?.info.paidAtIso || live?.technical.paidAtIso || "";
               serviceTxHashB = "";
               servicePaidAtB = "";
-            } else if (!serviceTxHashB) {
-              serviceTxHashB = serviceTxHashA;
-              servicePaidAtB = servicePaidAtA;
+            }
+            if (live?.info.requestId && serviceTxHashA) {
+              receipt = `${live.info.requestId}:${serviceTxHashA}`;
+            }
+            if (!serviceTxHashA) {
+              const reason = "Live x402 settlement evidence missing for this run.";
+              setDecision(reason);
+              setQuoteAccepted(false);
+              quoteAcceptedRef.current = false;
+              appendAudit({
+                mode,
+                stepId: step.id,
+                stepName: step.title,
+                blockchainVerifiable: true,
+                decisionBasis: reason,
+                payload: { executed: false, reason: "missing_live_settlement" },
+              });
+              return;
             }
             setReceiptRef(receipt);
             const staleA = servicePaidAtA ? Date.now() - Date.parse(servicePaidAtA) > TX_STALE_MS : false;
@@ -873,20 +943,24 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
             });
           } else {
             setDmOpen(true);
-            if (demoView === "general") {
-              let snippet = "Fallback: Other agent returns service result with moderate bullish setup.";
-              let score = 0.65;
-              try {
-                const r = await fetchJSON<{ result?: { summary?: string; confidence?: number } }>(`${baseUrl}/api/analysis/info/run`, {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ topic: "other agent service result BTCUSDT", mode: "auto", maxChars: 360 }),
-                });
-                snippet = r?.result?.summary || snippet;
-                score = Number((r?.result?.confidence ?? score).toFixed(3));
-              } catch {
-                // fallback
-              }
+            const live = liveServiceRunRef.current;
+            if (!live) {
+              const reason = "Live XMTP result is unavailable. Service stage did not return task-result payload.";
+              setDmOpen(false);
+              setMessageScore(0);
+              setTechnicalScore(0);
+              setDecision(reason);
+              appendAudit({
+                mode,
+                stepId: step.id,
+                stepName: step.title,
+                blockchainVerifiable: true,
+                decisionBasis: reason,
+                payload: { delivery: "xmtp_dm", returned: false },
+              });
+            } else if (demoView === "general") {
+              const snippet = live.info.summary || live.technical.summary;
+              const score = live.info.confidence || live.technical.confidence || 0;
               setMessageSnippet(snippet);
               setTechnicalSnippet("");
               setMessageScore(score);
@@ -896,42 +970,22 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
                 stepId: step.id,
                 stepName: step.title,
                 blockchainVerifiable: true,
-                xmtpSnippet: `Service payload delivered by XMTP DM: ${snippet.slice(0, 100)}...`,
-                decisionBasis: "Service result is returned via XMTP DM. x402 is only for settlement/challenge-proof.",
+                xmtpSnippet: `Live XMTP payload delivered: ${snippet.slice(0, 120)}...`,
+                decisionBasis: "Service result is returned by live XMTP DM, with strict x402 evidence bound to this run.",
                 payload: {
-                  delivery: "xmtp_dm",
+                  delivery: "xmtp_dm_live",
                   otherAgentResult: snippet,
                   serviceScore: score,
+                  infoRequestId: live.info.requestId,
+                  technicalRequestId: live.technical.requestId,
                   receiptRef,
                 },
               });
             } else {
-              let mSnippet = "Fallback: Message agent reports risk-on momentum from macro and sentiment channels.";
-              let tSnippet = "Fallback: Technical agent reports trend confirmation with acceptable volatility.";
-              let mScore = 0.64;
-              let tScore = 0.66;
-              try {
-                const m = await fetchJSON<{ result?: { summary?: string; confidence?: number } }>(`${baseUrl}/api/analysis/info/run`, {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ topic: "message agent service result BTCUSDT", mode: "auto", maxChars: 360 }),
-                });
-                mSnippet = m?.result?.summary || mSnippet;
-                mScore = Number((m?.result?.confidence ?? mScore).toFixed(3));
-              } catch {
-                // fallback
-              }
-              try {
-                const t = await fetchJSON<{ result?: { summary?: string; confidence?: number } }>(`${baseUrl}/api/analysis/info/run`, {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ topic: "technical agent service result BTCUSDT", mode: "auto", maxChars: 360 }),
-                });
-                tSnippet = t?.result?.summary || tSnippet;
-                tScore = Number((t?.result?.confidence ?? tScore).toFixed(3));
-              } catch {
-                // fallback
-              }
+              const mSnippet = live.info.summary;
+              const tSnippet = live.technical.summary;
+              const mScore = live.info.confidence;
+              const tScore = live.technical.confidence;
               setMessageSnippet(mSnippet);
               setTechnicalSnippet(tSnippet);
               setMessageScore(mScore);
@@ -941,14 +995,16 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
                 stepId: step.id,
                 stepName: step.title,
                 blockchainVerifiable: true,
-                xmtpSnippet: `Service payload delivered by XMTP DM. Message: ${mSnippet.slice(0, 90)}...`,
-                decisionBasis: "Service result is returned via XMTP DM. x402 is only for settlement/challenge-proof.",
+                xmtpSnippet: `Live XMTP payload delivered. Message: ${mSnippet.slice(0, 100)}...`,
+                decisionBasis: "Service results are real XMTP task-results, each with strict x402 payment evidence.",
                 payload: {
-                  delivery: "xmtp_dm",
+                  delivery: "xmtp_dm_live",
                   messageResult: mSnippet,
                   technicalResult: tSnippet,
                   messageScore: mScore,
                   technicalScore: tScore,
+                  infoRequestId: live.info.requestId,
+                  technicalRequestId: live.technical.requestId,
                   receiptRef,
                 },
               });
@@ -1002,54 +1058,44 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
               }, 480);
 
               apiGateReceipt = `api_receipt_${randomHex(8).slice(2)}`;
-
-              orderRef = `order_${randomHex(8).slice(2)}`;
+              orderRef = "";
               try {
-                const res = await fetchJSON<{ result?: Record<string, unknown> }>(`${baseUrl}/api/workflow/btc-price/run`, {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ pair: "BTCUSDT", source: "hyperliquid" }),
-                });
-                const maybeRef = String(res?.result?.requestId || res?.result?.receiptRef || "");
-                if (maybeRef) orderRef = maybeRef;
-              } catch {
-                // fallback
-              }
-
-              const usedTx = usedTxHashesRef.current;
-              if (orderRef) {
-                try {
-                  const exact = await fetchJSON<{ items?: Array<Record<string, unknown>> }>(
-                    `${baseUrl}/api/x402/requests?requestId=${encodeURIComponent(orderRef)}&limit=1`
-                  );
-                  const exactCandidates = buildTxCandidates(Array.isArray(exact?.items) ? exact.items : []);
-                  const exactMatch = exactCandidates[0] || null;
-                  if (exactMatch) {
-                    usedTx.add(exactMatch.txHash.toLowerCase());
-                    apiGateTxHash = exactMatch.txHash;
-                    apiGatePaidAt = exactMatch.paidAtIso;
-                    apiGateReceipt = `${exactMatch.requestId || orderRef}:${exactMatch.txHash}`;
-                  }
-                } catch {
-                  // fallback
+                const apiRun = await fetchJSON<Record<string, unknown>>(
+                  `${baseUrl}/api/workflow/btc-price/run`,
+                  {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ pair: "BTCUSDT", source: "hyperliquid" }),
+                  },
+                  180_000
+                );
+                orderRef = String(apiRun["requestId"] || "").trim();
+                apiGateTxHash = String(apiRun["txHash"] || "").trim();
+                const receipt =
+                  apiRun["receipt"] && typeof apiRun["receipt"] === "object" ? (apiRun["receipt"] as Record<string, unknown>) : {};
+                const timing =
+                  receipt["timing"] && typeof receipt["timing"] === "object"
+                    ? (receipt["timing"] as Record<string, unknown>)
+                    : {};
+                const payment =
+                  receipt["payment"] && typeof receipt["payment"] === "object"
+                    ? (receipt["payment"] as Record<string, unknown>)
+                    : {};
+                if (!apiGateTxHash) {
+                  apiGateTxHash = String(payment["txHash"] || "").trim();
                 }
-              }
-
-              if (!apiGateTxHash) {
-                try {
-                  const gate = await fetchJSON<{ items?: Array<Record<string, unknown>> }>(`${baseUrl}/api/x402/mapping/latest?limit=40`);
-                  const gateCandidates = buildTxCandidates(Array.isArray(gate?.items) ? gate.items : []);
-                  const gateMatch =
-                    pickNextTx(gateCandidates, usedTx, (c) => /btc-price|order|api|workflow|price-feed/i.test(c.action)) ||
-                    pickNextTx(gateCandidates, usedTx);
-                  if (gateMatch) {
-                    apiGateTxHash = gateMatch.txHash;
-                    apiGatePaidAt = gateMatch.paidAtIso;
-                    apiGateReceipt = `${gateMatch.requestId || "req_unknown"}:${gateMatch.txHash}`;
-                  }
-                } catch {
-                  // fallback
+                apiGatePaidAt = String(timing["paidAt"] || "").trim();
+                if (!apiGatePaidAt) {
+                  const reqTime = await fetchRequestTiming(orderRef);
+                  apiGatePaidAt = reqTime.paidAtIso;
                 }
+                if (orderRef && apiGateTxHash) {
+                  apiGateReceipt = `${orderRef}:${apiGateTxHash}`;
+                }
+              } catch (error) {
+                const reason = String((error as Error)?.message || "api_gate_run_failed").trim();
+                apiGateReceipt = apiGateReceipt || `api_gate_failed_${Date.now()}`;
+                setDecision(`API gate run failed: ${reason}`);
               }
               if (apiGateReceipt) setReceiptRef(apiGateReceipt);
             }
@@ -1092,7 +1138,7 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
         runningRef.current = false;
       }
     },
-    [appendAudit, baseUrl, demoView, messageScore, mode, receiptRef, technicalScore]
+    [appendAudit, baseUrl, demoView, ensureLiveServiceRun, fetchRequestTiming, messageScore, mode, receiptRef, technicalScore]
   );
 
   const start = useCallback(() => {
@@ -1137,7 +1183,8 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
     setMessageScore(0);
     setTechnicalScore(0);
     setReceiptRef("");
-    usedTxHashesRef.current = new Set();
+    liveServiceRunRef.current = null;
+    liveServiceRunPromiseRef.current = null;
     setTimeout(() => {
       setPlayback("playing");
       void executeStep(0);
@@ -1207,6 +1254,9 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
                 <RotateCcw className="size-4" />
                 Replay
               </Button>
+              <Badge className="border border-emerald-400/40 bg-emerald-500/10 text-emerald-200">
+                Real Execution ON (live XMTP + x402)
+              </Badge>
             </div>
           </div>
 
