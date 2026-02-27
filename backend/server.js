@@ -1878,7 +1878,6 @@ function normalizeXReaderParams(input = {}) {
     news: 'auto',
     xreader: 'auto',
     jina: 'auto',
-    openalice: 'auto',
     opennewsmcp: 'opennews',
     opennews: 'opennews',
     twitter: 'opentwitter',
@@ -12874,16 +12873,6 @@ app.get('/api/market/btc/price', requireRole('viewer'), async (req, res) => {
       reason: error?.message || 'price_source_unavailable'
     });
   }
-});
-
-app.get('/api/openalice/health', requireRole('viewer'), async (req, res) => {
-  const reason = 'openalice_removed_from_runtime';
-  return res.status(410).json({
-    ok: false,
-    traceId: req.traceId || '',
-    provider: ANALYSIS_PROVIDER,
-    reason
-  });
 });
 
 app.get('/api/message-providers/status', requireRole('viewer'), (req, res) => {

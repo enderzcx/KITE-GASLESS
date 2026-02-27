@@ -100,20 +100,12 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
   - `GET /api/network/commands`
   - `GET /api/network/commands/:commandId`
   - command status flow: `queued -> running -> done|failed`, with `attempts/events` and task refs (`traceId/requestId/taskId`).
-- Added OpenAlice sidecar analysis integration (info + technical):
-  - `GET /api/openalice/health`
   - `POST /api/analysis/info/run`
   - `POST /api/analysis/technical/run`
-  - new env flags: `ANALYSIS_PROVIDER`, `OPENALICE_*`.
 - Added XMTP info+technical orchestration demo endpoint:
   - `POST /api/network/demo/router-info-technical/run`
   - supports dual task dispatch (`info-analysis-feed` + `technical-analysis-feed`) and aggregated summary output.
 - Added isolated XMTP quickstart sandbox (`experiments/xmtp-agent-quickstart`) to run the official Build-an-Agent flow independently from project backend.
-- Added local OpenBB Docker ops scripts:
-  - `backend/scripts/start-openbb-local.ps1`
-  - `backend/scripts/stop-openbb-local.ps1`
-  - `backend/scripts/verify-openbb-local.ps1`
-  - `backend/docker/openbb/Dockerfile`
 
 ### Changed
 - Further slimmed backend server composition:
@@ -182,7 +174,7 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 - AGENT001 bind timeout default aligned with session-pay path:
   - `AGENT001_BIND_TIMEOUT_MS` default raised from `45s` to `210s` to avoid premature prebind timeout under queued session userOps.
 - Planning baseline updated for technical analysis reliability:
-  - target stack is now `pandas-ta-classic + Hyperliquid/CCXT` (OpenAlice removed from primary path).
+  - target stack is now `pandas-ta-classic + Hyperliquid/CCXT`.
 - Planning baseline updated for message-side reliability:
   - provider route prefers `opennews-mcp`, falls back to `opentwitter-mcp`, and uses `clawfeed` for async snapshot/backfill.
 - Info-analysis runtime now supports dual-provider route for message side:
@@ -204,10 +196,8 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 - Reader/Risk XMTP runtimes now support `service-quote` task capability.
 - Demo and Ops UI now provide `Download Receipt` action from API result panels.
 - Market form now supports x-reader fields (`url/mode/maxChars`) and service details render x-reader metadata.
-- Info-analysis runtime path is now OpenAlice-first only:
-  - `ANALYSIS_PROVIDER` is fixed to `openalice` in backend runtime.
+- Info-analysis runtime path no longer depends on legacy sidecar:
   - legacy Jina x-reader fetch path is removed from active execution.
-  - old `x-reader` mode values are treated as compatibility aliases to OpenAlice mode.
 - Frontend removed SSE connection indicator and live event panel; polling-only UX for stable demos.
 - `POST /api/network/demo/router-risk/run` now waits for `task-result` and returns:
   - `resultReceived/resultEvent/taskResult/payment/receiptRef`
@@ -220,23 +210,13 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 - Network agents bootstrap now includes `technical-agent` facade (capability-level compatibility over risk/price internals).
 - `router-info-technical` now uses longer wait window (`30s` default, up to `60s`) and waits info/technical task results in parallel.
 - XMTP worker runtimes now support rule-based plain-text DM replies (greeting/help/status/pricing hints) while keeping `task-envelope -> task-result` behavior unchanged.
-- OpenAlice adapter now supports dual endpoints (`message/info` + `technical`) and can fallback to `/api/chat` with strict JSON contracts when dedicated analysis endpoints are unavailable.
-- Added local ops scripts for dual OpenAlice runtime management:
-  - `backend/scripts/start-openalice-dual.ps1`
-  - `backend/scripts/stop-openalice-dual.ps1`
-  - `backend/scripts/verify-openalice-dual.ps1`
-- `start-openalice-dual.ps1` now supports outbound proxy (`OPENALICE_PROXY_URL` / `OPENALICE_NO_PROXY`) for model API access behind restricted networks.
-- OpenAlice technical prompt now explicitly requires tool usage (`calculateIndicator`) before returning JSON, reducing placeholder-only technical replies.
-- Risk-score pipeline now classifies low-signal OpenAlice technical outputs as weak and automatically falls back to local deterministic analysis.
-- OpenAlice timeout handling is now safer for tool-calling workloads:
-  - backend enforces `OPENALICE_TIMEOUT_MS >= 30000` to avoid premature aborts on `/api/chat`.
 - Low-signal detection for technical analysis now treats stale `asOf/quote.fetchedAt` timestamps (>7 days old) and `TOOL_ERROR` summaries as fallback triggers.
-- Low-signal detection for info analysis now falls back when OpenAlice returns stale timestamps or "cannot retrieve information" placeholder summaries.
-- Technical analysis normalization now rewrites stale/future OpenAlice timestamps to a fresh ISO time window, preventing false `low-signal` fallback when indicators are otherwise valid.
+- Low-signal detection for info analysis now falls back when provider output is stale or placeholder-like.
+- Technical analysis normalization now rewrites stale/future provider timestamps to a fresh ISO time window, preventing false `low-signal` fallback when indicators are otherwise valid.
 - Info-analysis input normalization now accepts either `http/https` URL or topic/query text (e.g. `btc market sentiment today`), enabling DM keyword tests without hard URL validation failures.
-- OpenAlice info chat prompt now includes explicit `inputType/topic` semantics so topic-mode requests are handled without webpage fetch dependency.
-- Info-analysis timestamp normalization now rewrites stale/future OpenAlice `asOf` to a fresh ISO time window, preventing false fallback on otherwise usable topic analysis.
-- Info-analysis now performs one delayed retry before fallback when first OpenAlice result is low-signal, improving DM stability during warm-up/transient model responses.
+- Info-analysis prompt now includes explicit `inputType/topic` semantics so topic-mode requests are handled without webpage fetch dependency.
+- Info-analysis timestamp normalization now rewrites stale/future `asOf` to a fresh ISO time window, preventing false fallback on otherwise usable topic analysis.
+- Info-analysis now performs one delayed retry before fallback when first provider result is low-signal, improving DM stability during warm-up/transient model responses.
 - Router runtime (`AGENT001`) now supports LLM-assisted direct DM orchestration:
   - plain-text DM to `router-agent` is classified into `technical/info/both/chat/help`,
   - router dispatches XMTP `task-envelope` to `technical-agent`/`message-agent`,
@@ -246,7 +226,7 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
   - added `message-agent` alias (mapped to reader runtime facade).
 - Added debug endpoint for AGENT001 behavior without xmtp.chat:
   - `POST /api/agent001/chat/run`
-- OpenAlice adapter now exposes generic message chat bridge:
+- Analysis adapter now exposes generic message chat bridge:
   - `chatMessage({ role, message })`
 - XMTP runtime now supports explicit network endpoint overrides:
   - `XMTP_API_URL`

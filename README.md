@@ -166,7 +166,6 @@ Operational implications:
 - `GET /api/network/commands/:commandId`
 - `POST /api/network/commands`
 - `POST /api/network/commands/:commandId/run`
-- `GET /api/openalice/health`
 - `GET /api/message-providers/status`
 - `POST /api/analysis/info/run`
 - `POST /api/analysis/technical/run`
@@ -469,7 +468,6 @@ OPENCLAW_MODEL=<your_model_id>
 Analysis provider:
 - Technical analysis uses built-in `market-data` (Binance/CoinGecko/Fear&Greed + local indicators).
 - Message analysis uses provider-router: `opennews` (primary) + `opentwitter` (secondary), with optional market-data fallback.
-- OpenAlice/OpenBB sidecar is removed from runtime.
 
 Message provider env (recommended):
 
@@ -505,7 +503,6 @@ Notes:
 - `OPENCLAW_CHAT_PROTOCOL` and `OPENCLAW_CHAT_PATH` must match your runtime API shape.
 - `OPENCLAW_MODEL` should be your local/remote model id (do not hardcode one contributor's model in shared deployments).
 - If `OPENCLAW_HEALTH_PATH=/v1/models` returns HTML instead of JSON, you likely hit a control UI route instead of an OpenAI-compatible API route.
-- Info/technical analysis no longer depends on OpenAlice/OpenBB.
 - For XMTP local backend, you can additionally set `XMTP_API_URL/XMTP_HISTORY_SYNC_URL/XMTP_GATEWAY_HOST`.
 
 ## Tencent Lighthouse Web Deployment (Low Cost)

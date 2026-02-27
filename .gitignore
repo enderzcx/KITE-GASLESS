@@ -18,8 +18,6 @@ backend/data/**/*.pid
 backend/data/**/*.db3
 backend/data/**/*.db3-*
 backend/data/**/*.sqlcipher_salt
-backend/data/openalice-runtime/
-backend/data/openbb-platform/
 backend/data/xmtp-db/
 backend/data/xmtp-db-p2p-new/
 backend/data/*.ps1
