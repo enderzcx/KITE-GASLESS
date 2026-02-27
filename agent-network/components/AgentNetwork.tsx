@@ -22,7 +22,6 @@ import {
 } from "reactflow";
 import { motion } from "framer-motion";
 import {
-  Activity,
   Bot,
   Check,
   CirclePause,
@@ -146,7 +145,6 @@ const X402_PHASES: PaymentPhase[] = ["challenge", "pay+proof", "verify", "unlock
 const QUOTE_CAP = 0.0003;
 const EXECUTION_THRESHOLD = 0.62;
 const TX_STALE_MS = 60 * 60 * 1000;
-const FORCE_ORDER_DEMO = true;
 
 export const FLOW_STEPS: FlowStep[] = [
   { id: "erc8004_verify", index: 1, title: "Step 1 · ERC8004 Verification", description: "Agent001 verifies collaborator agents on-chain.", durationMs: 1300 },
@@ -483,8 +481,8 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
   const [activeEdgeIds, setActiveEdgeIds] = useState<string[]>([]);
   const [audit, setAudit] = useState<AuditLogEntry[]>([]);
   const [dmOpen, setDmOpen] = useState(false);
-  const [x402Open, setX402Open] = useState(false);
   const [x402Phase, setX402Phase] = useState<PaymentPhase>("challenge");
+  const [forceOrderDemo, setForceOrderDemo] = useState(true);
   const [quoteAccepted, setQuoteAccepted] = useState<boolean | null>(null);
   const [shouldOrder, setShouldOrder] = useState<boolean | null>(null);
   const [decision, setDecision] = useState("Pending quote negotiation.");
@@ -545,7 +543,6 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
     setActiveEdgeIds([]);
     setAudit([]);
     setDmOpen(false);
-    setX402Open(false);
     setQuoteAccepted(null);
     quoteAcceptedRef.current = null;
     setShouldOrder(null);
@@ -873,7 +870,6 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
               payload: { executed: false },
             });
           } else {
-            setX402Open(true);
             let p = 0;
             setX402Phase(X402_PHASES[p]);
             if (x402TimerRef.current) window.clearInterval(x402TimerRef.current);
@@ -1054,11 +1050,11 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
               demoView === "general"
                 ? combined >= EXECUTION_THRESHOLD && messageScore >= 0.45
                 : combined >= EXECUTION_THRESHOLD && messageScore >= 0.45 && technicalScore >= 0.45;
-            const approved = FORCE_ORDER_DEMO ? true : ruleApproved;
+            const approved = forceOrderDemo ? true : ruleApproved;
             setShouldOrder(approved);
             shouldOrderRef.current = approved;
             const basis = approved
-              ? FORCE_ORDER_DEMO
+              ? forceOrderDemo
                 ? `Order approved by demo override. ruleApproved=${ruleApproved}. Trigger x402(API) gate, then call Hyperliquid order API.`
                 : `Order approved. Combined service score ${combined} >= ${EXECUTION_THRESHOLD}. Trigger x402(API) gate, then call Hyperliquid order API.`
               : `Order rejected. Combined service score ${combined} < ${EXECUTION_THRESHOLD}.`;
@@ -1075,7 +1071,6 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
             let orderError = "";
             let apiExecutionFailed = false;
             if (approved) {
-              setX402Open(true);
               let p = 0;
               setX402Phase(X402_PHASES[p]);
               if (x402TimerRef.current) window.clearInterval(x402TimerRef.current);
@@ -1163,7 +1158,7 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
                 technicalScore,
                 combined,
                 apiCalled: approved,
-                forceOrderDemo: FORCE_ORDER_DEMO,
+                forceOrderDemo,
                 ruleApproved,
                 orderEndpoint: "/api/agent001/hyperliquid/order",
                 orderType,
@@ -1201,7 +1196,7 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
         runningRef.current = false;
       }
     },
-    [abortFlow, appendAudit, baseUrl, demoView, ensureLiveServiceRun, fetchRequestTiming, messageScore, mode, receiptRef, technicalScore]
+    [abortFlow, appendAudit, baseUrl, demoView, ensureLiveServiceRun, fetchRequestTiming, forceOrderDemo, messageScore, mode, receiptRef, technicalScore]
   );
 
   const start = useCallback(() => {
@@ -1231,7 +1226,6 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
     setActiveEdgeIds([]);
     setAudit([]);
     setDmOpen(false);
-    setX402Open(false);
     setX402Phase("challenge");
     setQuoteAccepted(null);
     quoteAcceptedRef.current = null;
@@ -1317,8 +1311,21 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
                 <RotateCcw className="size-4" />
                 Replay
               </Button>
+              <Button
+                variant="outline"
+                className={cn(
+                  "border-white/30 bg-black/35 text-white",
+                  forceOrderDemo ? "border-emerald-400/40 text-emerald-200" : "border-amber-400/40 text-amber-200"
+                )}
+                onClick={() => setForceOrderDemo((prev) => !prev)}
+              >
+                {forceOrderDemo ? "Force Order Demo: ON" : "Force Order Demo: OFF"}
+              </Button>
               <Badge className="border border-emerald-400/40 bg-emerald-500/10 text-emerald-200">
-                Real Execution ON (live XMTP + x402)
+                Live XMTP + x402
+              </Badge>
+              <Badge className="border border-white/25 bg-white/5 text-slate-200">
+                x402 phase: {x402Phase}
               </Badge>
             </div>
           </div>
@@ -1352,6 +1359,7 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
             <motion.div animate={{ width: `${progress}%` }} className="h-full bg-gradient-to-r from-cyan-400 via-emerald-400 to-orange-400" />
           </div>
           <p className="text-sm text-slate-300">{current ? `${current.title}: ${current.description}` : "Ready to run complete auditable agent workflow."}</p>
+          <p className="text-xs text-amber-200/90">Decision: {decision}</p>
         </CardContent>
       </Card>
 
@@ -1369,9 +1377,6 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
               edges={drawEdges}
               onNodesChange={onNodesChange}
               onEdgesChange={onEdgesChange}
-              onNodeClick={(_, node) => {
-                if (node.id.startsWith("x402")) setX402Open(true);
-              }}
               nodeTypes={nodeTypes}
               edgeTypes={edgeTypes}
               fitView
@@ -1565,38 +1570,6 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
               </div>
             </div>
           )}
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={x402Open} onOpenChange={setX402Open}>
-        <DialogContent className="max-w-xl border-emerald-400/35 bg-slate-950/92 text-white backdrop-blur-md">
-          <DialogHeader>
-            <DialogTitle className="text-emerald-300">x402 Settlement Lifecycle</DialogTitle>
-            <DialogDescription className="text-slate-300">{"challenge -> pay+proof -> verify -> unlock"}</DialogDescription>
-          </DialogHeader>
-          <div className="space-y-3">
-            {X402_PHASES.map((phase, i) => {
-              const active = phase === x402Phase;
-              const done = X402_PHASES.indexOf(x402Phase) > i;
-              return (
-                <motion.div
-                  key={phase}
-                  animate={{ opacity: active || done ? 1 : 0.45, scale: active ? 1.02 : 1 }}
-                  className={cn(
-                    "flex items-center justify-between rounded-lg border px-3 py-2 text-sm",
-                    active ? "border-emerald-400/70 bg-emerald-500/15" : done ? "border-emerald-400/35 bg-emerald-500/8" : "border-white/15 bg-white/5"
-                  )}
-                >
-                  <span>{phase}</span>
-                  {active || done ? <Activity className="size-4 text-emerald-300" /> : null}
-                </motion.div>
-              );
-            })}
-          </div>
-          <div className="rounded-lg border border-white/15 bg-white/5 p-3 text-xs">
-            <div>decision: {decision}</div>
-            <div className="font-mono">receiptRef: {receiptRef || "pending..."}</div>
-          </div>
         </DialogContent>
       </Dialog>
 
