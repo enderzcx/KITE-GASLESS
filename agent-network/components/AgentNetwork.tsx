@@ -250,7 +250,16 @@ function GlowEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targ
         }}
       />
       <EdgeLabelRenderer>
-        <div className="nodrag nopan rounded-full border border-white/20 bg-black/70 px-2 py-1 text-[11px] text-white" style={{ transform: `translate(-50%, -50%) translate(${x}px, ${y}px)` }}>
+        <div
+          className="nodrag nopan rounded-full border border-white/20 bg-black/70 px-2 py-1 text-[11px] text-white"
+          style={{
+            position: "absolute",
+            left: 0,
+            top: 0,
+            whiteSpace: "nowrap",
+            transform: `translate(-50%, -50%) translate(${x}px, ${y - 8}px)`,
+          }}
+        >
           {data?.label}
         </div>
       </EdgeLabelRenderer>
