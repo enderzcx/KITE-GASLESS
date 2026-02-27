@@ -6244,6 +6244,119 @@ async function maybeSendAgent001TradePlanDm({
   return result?.ok ? { ok: true } : { ok: false, skipped: false, reason: result?.reason || result?.error || 'xmtp_send_failed' };
 }
 
+async function appendAgent001OrderExecutionLines({
+  lines = [],
+  plan = null,
+  payer = '',
+  orderDirectives = null,
+  orderTraceId = 'agent001_trade_order',
+  stopTraceId = 'agent001_trade_stop',
+  failureStage = 'trade_order',
+  resultSource = 'agent001_trade'
+} = {}) {
+  const targetLines = Array.isArray(lines) ? lines : [];
+  try {
+    const orderResult = await runAgent001HyperliquidOrderWorkflow({
+      plan,
+      payer,
+      sourceAgentId: 'router-agent',
+      targetAgentId: 'executor-agent',
+      traceId: createTraceId(orderTraceId)
+    });
+    const payment = orderResult?.payment || null;
+    const receiptRef = orderResult?.receiptRef || null;
+    if (!hasStrictX402Evidence(payment)) {
+      return {
+        ok: false,
+        hardFailureReply: buildAgent001FailureReply({
+          stage: failureStage,
+          capability: 'hyperliquid-order-testnet',
+          reason: 'order stage missing strict x402 evidence',
+          requestId: String(payment?.requestId || orderResult?.requestId || '').trim(),
+          txHash: String(payment?.txHash || orderResult?.txHash || '').trim()
+        })
+      };
+    }
+
+    targetLines.push('');
+    targetLines.push('下单执行: 已触发 Hyperliquid 测试网下单。');
+    targetLines.push(`order state: ${String(orderResult?.state || orderResult?.workflow?.state || '').trim() || '-'}`);
+    targetLines.push(`x402 requestId: ${String(payment?.requestId || orderResult?.requestId || '').trim() || '-'}`);
+    targetLines.push(`x402 txHash: ${String(payment?.txHash || orderResult?.txHash || '').trim() || '-'}`);
+    targetLines.push(`receipt: ${String(receiptRef?.endpoint || '').trim() || '-'}`);
+
+    const takePrice = Number(plan?.takePrice ?? NaN);
+    const stopPrice = Number(plan?.stopPrice ?? NaN);
+    const stopOrderEnabled =
+      Number.isFinite(takePrice) &&
+      takePrice > 0 &&
+      Number.isFinite(stopPrice) &&
+      stopPrice > 0 &&
+      (plan?.stopOrderEnabled === true || orderDirectives?.wantsStopOrder === true);
+    if (stopOrderEnabled) {
+      try {
+        const stopOrder = await runAgent001StopOrderWorkflow({
+          symbol: plan?.symbol || 'BTCUSDT',
+          takeProfit: takePrice,
+          stopLoss: stopPrice,
+          quantity: Number(plan?.size ?? NaN),
+          payer,
+          sourceAgentId: 'router-agent',
+          targetAgentId: 'risk-agent',
+          traceId: createTraceId(stopTraceId)
+        });
+        const stopRequestId = String(stopOrder?.requestId || '').trim();
+        const stopTxHash = String(stopOrder?.txHash || '').trim();
+        if (stopRequestId && stopTxHash) {
+          upsertAgent001ResultRecord({
+            requestId: stopRequestId,
+            capability: 'reactive-stop-orders',
+            stage: 'dispatch',
+            status: 'done',
+            toAgentId: 'risk-agent',
+            payer,
+            input: {
+              symbol: plan?.symbol || 'BTCUSDT',
+              takeProfit: takePrice,
+              stopLoss: stopPrice,
+              quantity: Number(plan?.size ?? NaN)
+            },
+            payment: {
+              requestId: stopRequestId,
+              txHash: stopTxHash
+            },
+            receiptRef: {
+              requestId: stopRequestId,
+              txHash: stopTxHash,
+              endpoint: `/api/receipt/${stopRequestId}`
+            },
+            result: {
+              summary: `Reactive TP/SL configured: ${plan?.symbol || 'BTCUSDT'} TP ${takePrice} SL ${stopPrice}`,
+              workflowTraceId: String(stopOrder?.traceId || '').trim(),
+              workflowState: String(stopOrder?.state || stopOrder?.workflow?.state || '').trim()
+            },
+            source: resultSource
+          });
+        }
+        targetLines.push('');
+        targetLines.push('止盈止损: 已触发 TP/SL 工作流。');
+        targetLines.push(`tp/sl x402: requestId=${stopRequestId || '-'} txHash=${stopTxHash || '-'}`);
+        if (stopRequestId) {
+          targetLines.push(`tp/sl pull: /api/agent001/results/${stopRequestId}`);
+        }
+      } catch (stopError) {
+        targetLines.push('');
+        targetLines.push(`止盈止损设置失败: ${String(stopError?.message || 'unknown').trim()}`);
+      }
+    }
+    return { ok: true };
+  } catch (error) {
+    targetLines.push('');
+    targetLines.push(`下单执行失败: ${String(error?.message || 'unknown').trim()}`);
+    return { ok: false };
+  }
+}
+
 async function handleRouterRuntimeTextMessage({ text = '', context = null } = {}) {
   const rawText = String(text || '').trim();
   if (!rawText) return buildAgent001HelpText();
@@ -6336,116 +6449,27 @@ async function handleRouterRuntimeTextMessage({ text = '', context = null } = {}
         return reply;
       }
 
-      try {
-        const orderResult = await runAgent001HyperliquidOrderWorkflow({
-          plan: directPlan,
-          payer,
-          sourceAgentId: 'router-agent',
-          targetAgentId: 'executor-agent',
-          traceId: createTraceId('agent001_trade_order_direct')
-        });
-        const payment = orderResult?.payment || null;
-        const receiptRef = orderResult?.receiptRef || null;
-        if (!hasStrictX402Evidence(payment)) {
-          return buildAgent001FailureReply({
-            stage: 'trade_order_direct',
-            capability: 'hyperliquid-order-testnet',
-            reason: 'order stage missing strict x402 evidence',
-            requestId: String(payment?.requestId || orderResult?.requestId || '').trim(),
-            txHash: String(payment?.txHash || orderResult?.txHash || '').trim()
-          });
-        }
-        lines.push('');
-        lines.push('下单执行: 已触发 Hyperliquid 测试网下单。');
-        lines.push(`order state: ${String(orderResult?.state || orderResult?.workflow?.state || '').trim() || '-'}`);
-        lines.push(`x402 requestId: ${String(payment?.requestId || orderResult?.requestId || '').trim() || '-'}`);
-        lines.push(`x402 txHash: ${String(payment?.txHash || orderResult?.txHash || '').trim() || '-'}`);
-        lines.push(`receipt: ${String(receiptRef?.endpoint || '').trim() || '-'}`);
-
-        const takePrice = Number(directPlan?.takePrice ?? NaN);
-        const stopPrice = Number(directPlan?.stopPrice ?? NaN);
-        const stopOrderEnabled =
-          Number.isFinite(takePrice) &&
-          takePrice > 0 &&
-          Number.isFinite(stopPrice) &&
-          stopPrice > 0 &&
-          (directPlan?.stopOrderEnabled === true || orderDirectives.wantsStopOrder === true);
-        if (stopOrderEnabled) {
-          try {
-            const stopOrder = await runAgent001StopOrderWorkflow({
-              symbol: directPlan.symbol || 'BTCUSDT',
-              takeProfit: takePrice,
-              stopLoss: stopPrice,
-              quantity: Number(directPlan?.size ?? NaN),
-              payer,
-              sourceAgentId: 'router-agent',
-              targetAgentId: 'risk-agent',
-              traceId: createTraceId('agent001_trade_stop_direct')
-            });
-            const stopRequestId = String(stopOrder?.requestId || '').trim();
-            const stopTxHash = String(stopOrder?.txHash || '').trim();
-            if (stopRequestId && stopTxHash) {
-              upsertAgent001ResultRecord({
-                requestId: stopRequestId,
-                capability: 'reactive-stop-orders',
-                stage: 'dispatch',
-                status: 'done',
-                toAgentId: 'risk-agent',
-                payer,
-                input: {
-                  symbol: directPlan.symbol || 'BTCUSDT',
-                  takeProfit: takePrice,
-                  stopLoss: stopPrice,
-                  quantity: Number(directPlan?.size ?? NaN)
-                },
-                payment: {
-                  requestId: stopRequestId,
-                  txHash: stopTxHash
-                },
-                receiptRef: {
-                  requestId: stopRequestId,
-                  txHash: stopTxHash,
-                  endpoint: `/api/receipt/${stopRequestId}`
-                },
-                result: {
-                  summary: `Reactive TP/SL configured: ${directPlan.symbol || 'BTCUSDT'} TP ${takePrice} SL ${stopPrice}`,
-                  workflowTraceId: String(stopOrder?.traceId || '').trim(),
-                  workflowState: String(stopOrder?.state || stopOrder?.workflow?.state || '').trim()
-                },
-                source: 'agent001_trade_direct'
-              });
-            }
-            lines.push('');
-            lines.push('止盈止损: 已触发 TP/SL 工作流。');
-            lines.push(`tp/sl x402: requestId=${stopRequestId || '-'} txHash=${stopTxHash || '-'}`);
-            if (stopRequestId) {
-              lines.push(`tp/sl pull: /api/agent001/results/${stopRequestId}`);
-            }
-          } catch (stopError) {
-            lines.push('');
-            lines.push(`止盈止损设置失败: ${String(stopError?.message || 'unknown').trim()}`);
-          }
-        }
-        const reply = lines.join('\n');
-        await maybeSendAgent001TradePlanDm({
-          context,
-          tradePlanText: reply,
-          infoPayment: null,
-          technicalPayment: null
-        });
-        return reply;
-      } catch (error) {
-        lines.push('');
-        lines.push(`下单执行失败: ${String(error?.message || 'unknown').trim()}`);
-        const reply = lines.join('\n');
-        await maybeSendAgent001TradePlanDm({
-          context,
-          tradePlanText: reply,
-          infoPayment: null,
-          technicalPayment: null
-        });
-        return reply;
+      const directExecution = await appendAgent001OrderExecutionLines({
+        lines,
+        plan: directPlan,
+        payer,
+        orderDirectives,
+        orderTraceId: 'agent001_trade_order_direct',
+        stopTraceId: 'agent001_trade_stop_direct',
+        failureStage: 'trade_order_direct',
+        resultSource: 'agent001_trade_direct'
+      });
+      if (directExecution.hardFailureReply) {
+        return directExecution.hardFailureReply;
       }
+      const reply = lines.join('\n');
+      await maybeSendAgent001TradePlanDm({
+        context,
+        tradePlanText: reply,
+        infoPayment: null,
+        technicalPayment: null
+      });
+      return reply;
     }
 
     const [technicalProvider, infoProvider] = await Promise.all([
@@ -6811,115 +6835,27 @@ async function handleRouterRuntimeTextMessage({ text = '', context = null } = {}
       return tradeReply;
     }
 
-    try {
-      const orderResult = await runAgent001HyperliquidOrderWorkflow({
-        plan: effectiveTradePlan,
-        payer,
-        sourceAgentId: 'router-agent',
-        targetAgentId: 'executor-agent',
-        traceId: createTraceId('agent001_trade_order')
-      });
-      const payment = orderResult?.payment || null;
-      const receiptRef = orderResult?.receiptRef || null;
-      if (!hasStrictX402Evidence(payment)) {
-        return buildAgent001FailureReply({
-          stage: 'trade_order',
-          capability: 'hyperliquid-order-testnet',
-          reason: 'order stage missing strict x402 evidence',
-          requestId: String(payment?.requestId || orderResult?.requestId || '').trim(),
-          txHash: String(payment?.txHash || orderResult?.txHash || '').trim()
-        });
-      }
-      lines.push('');
-      lines.push('下单执行: 已触发 Hyperliquid 测试网下单。');
-      lines.push(`order state: ${String(orderResult?.state || orderResult?.workflow?.state || '').trim() || '-'}`);
-      lines.push(`x402 requestId: ${String(payment?.requestId || orderResult?.requestId || '').trim() || '-'}`);
-      lines.push(`x402 txHash: ${String(payment?.txHash || orderResult?.txHash || '').trim() || '-'}`);
-      lines.push(`receipt: ${String(receiptRef?.endpoint || '').trim() || '-'}`);
-      const takePrice = Number(effectiveTradePlan?.takePrice ?? NaN);
-      const stopPrice = Number(effectiveTradePlan?.stopPrice ?? NaN);
-      const stopOrderEnabled =
-        Number.isFinite(takePrice) &&
-        takePrice > 0 &&
-        Number.isFinite(stopPrice) &&
-        stopPrice > 0 &&
-        (effectiveTradePlan?.stopOrderEnabled === true || orderDirectives.wantsStopOrder === true);
-      if (stopOrderEnabled) {
-        try {
-          const stopOrder = await runAgent001StopOrderWorkflow({
-            symbol: effectiveTradePlan.symbol || 'BTCUSDT',
-            takeProfit: takePrice,
-            stopLoss: stopPrice,
-            quantity: Number(effectiveTradePlan?.size ?? NaN),
-            payer,
-            sourceAgentId: 'router-agent',
-            targetAgentId: 'risk-agent',
-            traceId: createTraceId('agent001_trade_stop')
-          });
-          const stopRequestId = String(stopOrder?.requestId || '').trim();
-          const stopTxHash = String(stopOrder?.txHash || '').trim();
-          if (stopRequestId && stopTxHash) {
-            upsertAgent001ResultRecord({
-              requestId: stopRequestId,
-              capability: 'reactive-stop-orders',
-              stage: 'dispatch',
-              status: 'done',
-              toAgentId: 'risk-agent',
-              payer,
-              input: {
-                symbol: effectiveTradePlan.symbol || 'BTCUSDT',
-                takeProfit: takePrice,
-                stopLoss: stopPrice,
-                quantity: Number(effectiveTradePlan?.size ?? NaN)
-              },
-              payment: {
-                requestId: stopRequestId,
-                txHash: stopTxHash
-              },
-              receiptRef: {
-                requestId: stopRequestId,
-                txHash: stopTxHash,
-                endpoint: `/api/receipt/${stopRequestId}`
-              },
-              result: {
-                summary: `Reactive TP/SL configured: ${effectiveTradePlan.symbol || 'BTCUSDT'} TP ${takePrice} SL ${stopPrice}`,
-                workflowTraceId: String(stopOrder?.traceId || '').trim(),
-                workflowState: String(stopOrder?.state || stopOrder?.workflow?.state || '').trim()
-              },
-              source: 'agent001_trade'
-            });
-          }
-          lines.push('');
-          lines.push('止盈止损: 已触发 TP/SL 工作流。');
-          lines.push(`tp/sl x402: requestId=${stopRequestId || '-'} txHash=${stopTxHash || '-'}`);
-          if (stopRequestId) {
-            lines.push(`tp/sl pull: /api/agent001/results/${stopRequestId}`);
-          }
-        } catch (stopError) {
-          lines.push('');
-          lines.push(`止盈止损设置失败: ${String(stopError?.message || 'unknown').trim()}`);
-        }
-      }
-      const tradeReply = lines.join('\n');
-      await maybeSendAgent001TradePlanDm({
-        context,
-        tradePlanText: tradeReply,
-        infoPayment,
-        technicalPayment
-      });
-      return tradeReply;
-    } catch (error) {
-      lines.push('');
-      lines.push(`下单执行失败: ${String(error?.message || 'unknown').trim()}`);
-      const tradeReply = lines.join('\n');
-      await maybeSendAgent001TradePlanDm({
-        context,
-        tradePlanText: tradeReply,
-        infoPayment,
-        technicalPayment
-      });
-      return tradeReply;
+    const execution = await appendAgent001OrderExecutionLines({
+      lines,
+      plan: effectiveTradePlan,
+      payer,
+      orderDirectives,
+      orderTraceId: 'agent001_trade_order',
+      stopTraceId: 'agent001_trade_stop',
+      failureStage: 'trade_order',
+      resultSource: 'agent001_trade'
+    });
+    if (execution.hardFailureReply) {
+      return execution.hardFailureReply;
     }
+    const tradeReply = lines.join('\n');
+    await maybeSendAgent001TradePlanDm({
+      context,
+      tradePlanText: tradeReply,
+      infoPayment,
+      technicalPayment
+    });
+    return tradeReply;
   }
 
   const runTechnical = runTrade || intent.intent === 'technical' || intent.intent === 'both';
