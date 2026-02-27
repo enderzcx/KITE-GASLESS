@@ -5604,6 +5604,118 @@ function pickTradeDecisionSide({
   };
 }
 
+function isAgent001ForceOrderRequested(rawText = '') {
+  const text = String(rawText || '').trim();
+  if (!text) return false;
+  const compactCn = text.replace(/\s+/g, '');
+  const lowered = text.toLowerCase();
+  if (/(不要下单|不下单|no\s+order|don'?t\s+order|do\s+not\s+order)/i.test(text)) return false;
+  return (
+    compactCn.includes('强制下单') ||
+    compactCn.includes('立刻下单') ||
+    compactCn.includes('立即下单') ||
+    compactCn.includes('马上下单') ||
+    compactCn.includes('直接下单') ||
+    compactCn.includes('必须下单') ||
+    compactCn.includes('立即执行下单') ||
+    /\b(force\s+order|force\s+place\s+order|place\s+order\s+now|execute\s+order\s+now|order\s+now)\b/i.test(lowered)
+  );
+}
+
+function detectAgent001ForcedOrderSide(rawText = '') {
+  const text = String(rawText || '').trim();
+  if (!text) return '';
+  const compactCn = text.replace(/\s+/g, '');
+  if (/(做空|卖出|卖空|看空|空单)/.test(compactCn) || /\b(sell|short)\b/i.test(text)) return 'sell';
+  if (/(做多|买入|买多|看多|多单)/.test(compactCn) || /\b(buy|long)\b/i.test(text)) return 'buy';
+  return '';
+}
+
+function coerceAgent001ForcedTradePlan({
+  rawText = '',
+  tradePlan = null,
+  technical = null,
+  info = null
+} = {}) {
+  const plan = tradePlan && typeof tradePlan === 'object' ? { ...tradePlan } : {};
+  const technicalResult =
+    technical?.taskResult?.result && typeof technical.taskResult.result === 'object' && !Array.isArray(technical.taskResult.result)
+      ? technical.taskResult.result
+      : {};
+  const technicalAnalysis =
+    technicalResult?.analysis && typeof technicalResult.analysis === 'object' && !Array.isArray(technicalResult.analysis)
+      ? technicalResult.analysis
+      : technicalResult?.technical && typeof technicalResult.technical === 'object' && !Array.isArray(technicalResult.technical)
+        ? technicalResult.technical
+        : {};
+  const technicalQuote =
+    technicalResult?.quote && typeof technicalResult.quote === 'object' && !Array.isArray(technicalResult.quote)
+      ? technicalResult.quote
+      : technicalAnalysis?.quote && typeof technicalAnalysis.quote === 'object' && !Array.isArray(technicalAnalysis.quote)
+        ? technicalAnalysis.quote
+        : {};
+  const infoResult =
+    info?.taskResult?.result && typeof info.taskResult.result === 'object' && !Array.isArray(info.taskResult.result)
+      ? info.taskResult.result
+      : {};
+  const infoPayload =
+    infoResult?.info && typeof infoResult.info === 'object' && !Array.isArray(infoResult.info) ? infoResult.info : {};
+
+  const symbol =
+    String(plan.symbol || technicalAnalysis?.symbol || extractTradingSymbolFromText(rawText) || 'BTCUSDT')
+      .trim()
+      .toUpperCase() || 'BTCUSDT';
+  const sideByText = detectAgent001ForcedOrderSide(rawText);
+  const sentimentScore = Number(plan.sentimentScore ?? infoPayload?.sentimentScore ?? NaN);
+  const side =
+    sideByText ||
+    (['buy', 'sell'].includes(String(plan.side || '').trim().toLowerCase()) ? String(plan.side || '').trim().toLowerCase() : '') ||
+    (Number.isFinite(sentimentScore) && sentimentScore < 0 ? 'sell' : 'buy');
+
+  const preferLimit = /(限价|挂单|limit)/i.test(rawText);
+  const preferMarket = /(市价|market|立即成交|马上成交|ioc)/i.test(rawText);
+  const orderType = preferLimit ? 'limit' : preferMarket ? 'market' : 'market';
+  const tif = orderType === 'market' ? 'Ioc' : String(plan.tif || 'Gtc').trim() || 'Gtc';
+
+  const quotePrice = Number(technicalQuote?.priceUsd ?? NaN);
+  const currentEntry = Number(plan.entryPrice ?? NaN);
+  let entryPrice = Number.isFinite(currentEntry) && currentEntry > 0 ? currentEntry : NaN;
+  if ((!Number.isFinite(entryPrice) || entryPrice <= 0) && Number.isFinite(quotePrice) && quotePrice > 0) {
+    entryPrice = side === 'sell' ? quotePrice * 0.9992 : quotePrice * 1.0008;
+  }
+
+  const currentSize = Number(plan.size ?? NaN);
+  const size = Number.isFinite(currentSize) && currentSize > 0 ? Number(currentSize.toFixed(6)) : 0.001;
+  const canPlaceOrder =
+    ['buy', 'sell'].includes(side) &&
+    Number.isFinite(size) &&
+    size > 0 &&
+    (orderType === 'market' || (Number.isFinite(entryPrice) && entryPrice > 0));
+
+  const forceReason = '用户明确要求强制下单，已绕过策略阈值并按当前可用参数执行。';
+  const forceParamLine =
+    orderType === 'limit' && Number.isFinite(entryPrice) && entryPrice > 0
+      ? `强制单参数: ${symbol} ${side} ${orderType} size=${size} price=${roundPriceByMagnitude(entryPrice)}`
+      : `强制单参数: ${symbol} ${side} ${orderType} size=${size}`;
+  const suffixLines = ['', '强制下单覆盖: 已收到强制执行指令，跳过策略阈值检查。', forceParamLine];
+
+  return {
+    ...plan,
+    text: `${String(plan.text || '交易计划（规则版）').trim()}${suffixLines.join('\n')}`,
+    symbol,
+    decision: `force-${orderType}-${side}`,
+    decisionReason: forceReason,
+    side,
+    orderType,
+    tif,
+    entryPrice: orderType === 'limit' && Number.isFinite(entryPrice) && entryPrice > 0 ? Number(entryPrice.toFixed(8)) : null,
+    size,
+    canPlaceOrder,
+    forceOrder: true,
+    forceOrderReason: forceReason
+  };
+}
+
 function buildAgent001TradePlan({
   rawText = '',
   intent = {},
@@ -6297,8 +6409,13 @@ async function handleRouterRuntimeTextMessage({ text = '', context = null } = {}
       info,
       returnObject: true
     });
+    const forceOrderRequested = isAgent001ForceOrderRequested(rawText);
+    const effectiveTradePlan =
+      forceOrderRequested && !tradePlan?.canPlaceOrder
+        ? coerceAgent001ForcedTradePlan({ rawText, tradePlan, technical, info })
+        : tradePlan;
     const lines = [
-      String(tradePlan?.text || '').trim() || '交易计划生成失败。',
+      String(effectiveTradePlan?.text || '').trim() || '交易计划生成失败。',
       '',
       '报价协商:',
       `technical: ${technicalQuote?.serviceId || '-'} @ ${technicalQuote?.price || '-'} | SLA ${technicalQuote?.slaMs || '-'}ms`,
@@ -6311,7 +6428,7 @@ async function handleRouterRuntimeTextMessage({ text = '', context = null } = {}
       `message txHash: ${String(infoPayment?.txHash || '').trim() || '-'}`
     ];
 
-    if (!tradePlan?.canPlaceOrder) {
+    if (!effectiveTradePlan?.canPlaceOrder) {
       lines.push('执行结果: 不满足自动下单条件，本轮不下单。');
       const tradeReply = lines.join('\n');
       await maybeSendAgent001TradePlanDm({
@@ -6325,7 +6442,7 @@ async function handleRouterRuntimeTextMessage({ text = '', context = null } = {}
 
     try {
       const orderResult = await runAgent001HyperliquidOrderWorkflow({
-        plan: tradePlan,
+        plan: effectiveTradePlan,
         payer,
         sourceAgentId: 'router-agent',
         targetAgentId: 'executor-agent',

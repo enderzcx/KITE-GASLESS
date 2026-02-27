@@ -132,6 +132,9 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
   - keeps strict x402 evidence in final reply output.
 - AGENT001 x402 mode now adds an explicit intent fallback promotion:
   - when LLM classifies as `chat` but rule-based parser identifies `info/technical/both/trade`, it promotes to paid analysis flow.
+- AGENT001 trade flow now supports explicit force-order override:
+  - when user message contains force-order phrases (e.g. `强制下单`, `立刻下单`, `force order now`), strategy threshold gate can be bypassed,
+  - router builds executable fallback order params (`side/orderType/size`) and continues strict x402-bound Hyperliquid testnet execution.
 - AGENT001 analysis path is now quote-first (`service-quote`) before strict x402 prebind for both:
   - `technical-analysis-feed`
   - `info-analysis-feed`
