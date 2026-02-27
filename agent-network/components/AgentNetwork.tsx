@@ -148,7 +148,7 @@ const TX_STALE_MS = 60 * 60 * 1000;
 
 export const FLOW_STEPS: FlowStep[] = [
   { id: "erc8004_verify", index: 1, title: "Step 1 · ERC8004 Verification", description: "Agent001 verifies collaborator agents on-chain.", durationMs: 1300 },
-  { id: "xmtp_quote_request", index: 2, title: "Step 2 · XMTP DM Quote Request", description: "Agent001 asks message/technical agents for service quotes.", durationMs: 1500 },
+  { id: "xmtp_quote_request", index: 2, title: "Step 2 · XMTP DM Quote Request", description: "Agent001 asks news/fundamental and technical analysis agents for service quotes.", durationMs: 1500 },
   { id: "xmtp_quote_return", index: 3, title: "Step 3 · XMTP DM Quote Return", description: "Agents return quotes and Agent001 decides whether to pay.", durationMs: 1600 },
   { id: "x402_settlement", index: 4, title: "Step 4 · x402 Payment", description: "challenge -> pay+proof -> unlock for paid service access.", durationMs: 2500 },
   { id: "xmtp_service_result", index: 5, title: "Step 5 · XMTP DM Service Result", description: "Paid service results are returned to Agent001 over DM.", durationMs: 1700 },
@@ -157,8 +157,8 @@ export const FLOW_STEPS: FlowStep[] = [
 
 export const NETWORK_NODES: Node<NetworkNodeData>[] = [
   { id: "erc8004", type: "network", position: { x: 610, y: 56 }, data: { title: "ERC8004", subtitle: "Registration · Authentication · Reputation · Agent Discovery", kind: "protocol" } },
-  { id: "message-agent", type: "network", position: { x: 92, y: 224 }, data: { title: "Message Agent", subtitle: "News & Sentiment Signal", kind: "agent" } },
-  { id: "technical-agent", type: "network", position: { x: 92, y: 452 }, data: { title: "Technical Agent", subtitle: "Indicator & Risk Signal", kind: "agent" } },
+  { id: "message-agent", type: "network", position: { x: 92, y: 224 }, data: { title: "News/Fundamental Analysis Agent", subtitle: "News side · market news signal", kind: "agent" } },
+  { id: "technical-agent", type: "network", position: { x: 92, y: 452 }, data: { title: "Technical Analysis Agent", subtitle: "Technical side · chart signal", kind: "agent" } },
   { id: "agent001", type: "network", position: { x: 574, y: 334 }, data: { title: "Agent001", subtitle: "Signal Aggregator & Executor", kind: "agent" } },
   { id: "x402-service", type: "network", position: { x: 860, y: 550 }, data: { title: "x402 Service Settlement", subtitle: "Pay service quote and unlock agent result", kind: "settlement" } },
   { id: "x402-api", type: "network", position: { x: 960, y: 232 }, data: { title: "x402 API Settlement", subtitle: "Pay API gate and unlock order request", kind: "settlement" } },
@@ -169,12 +169,12 @@ export const NETWORK_EDGES: Edge<NetworkEdgeData>[] = [
   { id: "erc-msg", type: "glow", source: "erc8004", target: "message-agent", sourceHandle: "s-left", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.erc8004 }, data: { label: "", channel: "erc8004", curvature: 0.28 } },
   { id: "erc-tech", type: "glow", source: "erc8004", target: "technical-agent", sourceHandle: "s-left", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.erc8004 }, data: { label: "", channel: "erc8004", curvature: 0.35 } },
   { id: "erc-agent001", type: "glow", source: "erc8004", target: "agent001", sourceHandle: "s-bottom", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.erc8004 }, data: { label: "", channel: "erc8004", curvature: 0.24 } },
-  { id: "quote-req-msg", type: "glow", source: "agent001", target: "message-agent", sourceHandle: "s-left", targetHandle: "t-right", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.xmtp }, data: { label: "① DM quote request (Message Agent)", channel: "xmtp", labelOffsetY: -30, curvature: 0.28 } },
+  { id: "quote-req-msg", type: "glow", source: "agent001", target: "message-agent", sourceHandle: "s-left", targetHandle: "t-right", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.xmtp }, data: { label: "① DM quote request (News Agent)", channel: "xmtp", labelOffsetY: -30, curvature: 0.28 } },
   { id: "quote-req-tech", type: "glow", source: "agent001", target: "technical-agent", sourceHandle: "s-left", targetHandle: "t-right", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.xmtp }, data: { label: "① DM quote request (Technical Agent)", channel: "xmtp", labelOffsetY: 28, curvature: 0.16 } },
   { id: "quote-res-msg", type: "glow", source: "message-agent", target: "agent001", sourceHandle: "s-top", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.xmtp }, data: { label: "② DM quote return", channel: "xmtp", labelOffsetY: -54, curvature: 0.4 } },
   { id: "quote-res-tech", type: "glow", source: "technical-agent", target: "agent001", sourceHandle: "s-bottom", targetHandle: "t-bottom", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.xmtp }, data: { label: "② DM quote return", channel: "xmtp", labelOffsetY: 54, curvature: 0.4 } },
   { id: "pay-to-x402-service", type: "glow", source: "agent001", target: "x402-service", sourceHandle: "s-bottom", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "③ x402 pay + proof (service)", channel: "x402", labelOffsetY: -6, curvature: 0.24 } },
-  { id: "unlock-msg", type: "glow", source: "x402-service", target: "message-agent", sourceHandle: "s-left", targetHandle: "t-bottom", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "④ unlock message service", channel: "x402", labelOffsetX: -28, labelOffsetY: -22, curvature: 0.34 } },
+  { id: "unlock-msg", type: "glow", source: "x402-service", target: "message-agent", sourceHandle: "s-left", targetHandle: "t-bottom", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "④ unlock news service", channel: "x402", labelOffsetX: -28, labelOffsetY: -22, curvature: 0.34 } },
   { id: "unlock-tech", type: "glow", source: "x402-service", target: "technical-agent", sourceHandle: "s-left", targetHandle: "t-bottom", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "④ unlock technical service", channel: "x402", labelOffsetX: -12, labelOffsetY: 20, curvature: 0.24 } },
   { id: "result-msg", type: "glow", source: "message-agent", target: "agent001", sourceHandle: "s-right", targetHandle: "t-left", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.xmtp }, data: { label: "⑤ DM service result", channel: "xmtp", labelOffsetY: -10, curvature: 0.22 } },
   { id: "result-tech", type: "glow", source: "technical-agent", target: "agent001", sourceHandle: "s-right", targetHandle: "t-left", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.xmtp }, data: { label: "⑤ DM service result", channel: "xmtp", labelOffsetY: 18, curvature: 0.15 } },
@@ -758,7 +758,7 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
               xmtpSnippet:
                 demoView === "general"
                   ? `Live XMTP DM run executed. traceId=${live.traceId}, requestId=${live.requestId}.`
-                  : `Live XMTP DM run executed for Message/Technical agents. traceId=${live.traceId}, requestId=${live.requestId}.`,
+                  : `Live XMTP DM run executed for News/Technical analysis agents. traceId=${live.traceId}, requestId=${live.requestId}.`,
               payload: {
                 executionMode: "live",
                 traceId: live.traceId,
@@ -839,7 +839,7 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
               xmtpSnippet:
                 demoView === "general"
                   ? `Other Agent live quote ${mQuote.toFixed(5)} (requestId=${live.info.requestId}).`
-                  : `Message quote ${mQuote.toFixed(5)} (requestId=${live.info.requestId}), Technical quote ${tQuote.toFixed(5)} (requestId=${live.technical.requestId}).`,
+                  : `News quote ${mQuote.toFixed(5)} (requestId=${live.info.requestId}), Technical quote ${tQuote.toFixed(5)} (requestId=${live.technical.requestId}).`,
               decisionBasis: basis,
               payload: {
                 executionMode: "live",
@@ -916,7 +916,7 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
             setReceiptRef(receipt);
             const staleA = servicePaidAtA ? Date.now() - Date.parse(servicePaidAtA) > TX_STALE_MS : false;
             const staleB = servicePaidAtB ? Date.now() - Date.parse(servicePaidAtB) > TX_STALE_MS : false;
-            const staleNotes = [staleA ? "message tx is historical" : "", staleB ? "technical tx is historical" : ""].filter(Boolean);
+            const staleNotes = [staleA ? "news tx is historical" : "", staleB ? "technical tx is historical" : ""].filter(Boolean);
             appendAudit({
               mode,
               stepId: step.id,
@@ -1012,7 +1012,7 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
                 stepId: step.id,
                 stepName: step.title,
                 blockchainVerifiable: true,
-                xmtpSnippet: `Live XMTP payload delivered. Message: ${mSnippet.slice(0, 100)}...`,
+                xmtpSnippet: `Live XMTP payload delivered. News: ${mSnippet.slice(0, 100)}...`,
                 decisionBasis: "Service results are real XMTP task-results, each with strict x402 payment evidence.",
                 payload: {
                   delivery: "xmtp_dm_live",
@@ -1291,7 +1291,7 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
               <div className="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-3 py-2 text-xs text-cyan-200">
                 {demoView === "general"
                   ? "General Demo: Other Agent <-> Agent001 (DM) -> x402(Service) -> x402(API) -> API"
-                  : "Detailed Demo: Message + Technical agents collaborate with Agent001 through quote/pay/result + dual x402 flow"}
+                  : "Detailed Demo: News/Fundamental + Technical analysis agents collaborate with Agent001 through quote/pay/result + dual x402 flow"}
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -1340,7 +1340,7 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
               <div className="font-mono text-sm">{shortHash(verificationHash)}</div>
             </div>
             <div className="rounded-lg border border-cyan-400/25 bg-cyan-400/8 px-3 py-2">
-              <div className="text-xs text-cyan-200">{demoView === "general" ? "otherAgentQuote" : "messageQuote"}</div>
+              <div className="text-xs text-cyan-200">{demoView === "general" ? "otherAgentQuote" : "newsQuote"}</div>
               <div className="font-mono text-sm">{messageQuote > 0 ? messageQuote.toFixed(5) : "-"}</div>
             </div>
             <div className="rounded-lg border border-cyan-400/25 bg-cyan-400/8 px-3 py-2">
@@ -1463,7 +1463,7 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
                   ) : null}
                   {entry.messageServiceTxHash ? (
                     <p>
-                      <span className="text-slate-400">messageAgentTxHash:</span>{" "}
+                      <span className="text-slate-400">newsAgentTxHash:</span>{" "}
                       <a
                         href={txExplorerUrl(entry.messageServiceTxHash)}
                         target="_blank"
@@ -1556,14 +1556,14 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
           ) : (
             <div className="space-y-3 rounded-xl border border-cyan-400/25 bg-slate-900/70 p-4 text-sm">
               <div>
-                <div className="text-xs text-cyan-200">Message Agent</div>
+                <div className="text-xs text-cyan-200">News/Fundamental Analysis Agent</div>
                 <p>quote: {messageQuote > 0 ? messageQuote.toFixed(5) : "pending..."}</p>
                 <p className="mt-1">{messageSnippet || "service result pending..."}</p>
                 <div className="mt-1 text-xs text-slate-400">result score: {messageScore > 0 ? messageScore.toFixed(3) : "-"}</div>
               </div>
               <Separator className="bg-white/10" />
               <div>
-                <div className="text-xs text-cyan-200">Technical Agent</div>
+                <div className="text-xs text-cyan-200">Technical Analysis Agent</div>
                 <p>quote: {technicalQuote > 0 ? technicalQuote.toFixed(5) : "pending..."}</p>
                 <p className="mt-1">{technicalSnippet || "service result pending..."}</p>
                 <div className="mt-1 text-xs text-slate-400">result score: {technicalScore > 0 ? technicalScore.toFixed(3) : "-"}</div>
