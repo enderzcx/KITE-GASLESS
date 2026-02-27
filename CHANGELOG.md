@@ -114,6 +114,8 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
   - risk/x-reader workflow prebind supports `prebindOnly=true` to settle x402 evidence first, skipping slow analysis in bind stage.
 - AGENT001 bind timeout default aligned with session-pay path:
   - `AGENT001_BIND_TIMEOUT_MS` default raised from `45s` to `210s` to avoid premature prebind timeout under queued session userOps.
+- Planning baseline updated for technical analysis reliability:
+  - target stack is now `pandas-ta-classic + Hyperliquid/CCXT` (OpenAlice removed from primary path).
 
 ### Fixed
 - AGENT001 paid-but-no-DM gap:
