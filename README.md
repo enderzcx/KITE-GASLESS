@@ -1,534 +1,146 @@
-﻿# KiteClaw Agent Network (Prototype)
+# KiteClaw Agent Network (Prototype)
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-v1.8.0-blue)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-v1.9.0-blue)](#release)
 
 KiteClaw is an auditable Agent Network prototype on Kite Testnet.
-It focuses on one verifiable execution loop: identity -> XMTP coordination -> x402 settlement -> result -> decision, with exportable evidence.
+It focuses on one verifiable loop:
 
-**About**:
-- Current stage: prototype (not a final generalized production platform).
-- Core value: auditable multi-agent collaboration, not chat-only agent demos.
-- Uses ERC8004 identity and x402 on-chain confirmation (`requestId`, `txHash`, `block`, `status`, explorer link).
-- Frontend focus: Agent Network flow visualization + audit export.
+`identity -> XMTP coordination -> x402 settlement -> result -> decision`
 
-Current Version: `v1.8.0`
+with downloadable evidence for third-party replay.
 
-## Upcoming Change (vNext)
+## Release
 
-- The BTC price demo page (`/`, Network Overview with paid BTC chart) is planned to be removed in the next version.
-- The core product flow remains on `/market`, `/trace/:requestId`, and `/ops`.
+Current version: `v1.9.0`
 
-## Availability
+Latest release tag:
+- `v1.9.0` -> `f81a698271853b1cef55589fe2a4ad1bcf320876`
 
-### Public Web Demo
+## Scope
 
-- Live URL: `https://kiteclaw.duckdns.org`
-- Status: publicly available deployment on Kite Testnet.
-- Purpose: judge-facing online demo for end-to-end flow validation.
-- Expected pages:
-  - Network Overview (`/`) - paid BTC line chart + ERC8004/x402 flow card (Phase 1 anchor scene, planned removal in vNext)
-  - Service Market (`/market`) - publish/discover/invoke agent services (MVP)
-  - Trace Evidence (`/trace/:requestId`) - request-level proof chain + downloadable receipt
-  - Ops Console (`/ops`) - KPI/traces/events/evidence/session setup
+- Stage: prototype (not a generalized production platform yet).
+- Core value: auditable multi-agent execution, not chat-only demos.
+- Stack anchors:
+  - `ERC8004`: identity and agent trust metadata
+  - `XMTP`: task transport and runtime event timeline
+  - `x402`: payment challenge/proof and on-chain settlement evidence
+- Web demo focus:
+  - execution visualization
+  - evidence download
+  - audit history
 
-### Local Reproducible Version
+## Public Demo
 
-- This repository can be run fully on local machine for reproducible review.
-- Status: local end-to-end flow is validated and runnable.
-- Use `frontend/.env.example` + `backend/.env.example` for local startup.
-- Core local entrypoints:
-  - frontend: `npm run dev` (Vite)
-  - backend: `npm start` (Express)
+- URL: `https://kiteclaw.duckdns.org`
+- Current web routes:
+  - `/` Agent Network demo and run flow
+  - `/history` audit history with evidence/receipt download
 
-## Product Direction
+Note:
+- Historical docs or screenshots may mention `/market`, `/trace/:requestId`, `/ops`.
+- The current tracked web app uses `/` and `/history`.
 
-- Positioning: agent-first network, not a retail wallet tutorial product.
-- Core closed loop: discover service -> invoke -> pay (x402) -> unlock result -> verify evidence.
-- P0 priorities:
-  - ERC8004-style identity verification on task flow
-  - x402 settlement with request/tx/block/explorer evidence
-  - A2API + A2A task execution (sync + scheduled trigger)
-  - downloadable receipt JSON for review/audit
-  - homepage centered on network + market view with minimal actions
-- Non-goals in Phase 1:
-  - complex social product features
-  - cross-chain bridge and fund aggregation
-  - broad protocol compatibility at the cost of end-to-end stability
+## XMTP Audit Model
 
-## What This Project Demonstrates
+XMTP payload is off-chain, so auditability is done by binding transport evidence to x402 settlement evidence under the same `traceId/requestId`.
 
-- ERC-4337 AA account flow on Kite testnet
-- Session-scoped delegated execution (one-time setup, repeated payments)
-- x402 lifecycle: `402 -> pay -> submit proof -> 200 unlock`
-- Paid BTC quote workflow (`btc-price-feed`) with quote provider attribution
-- Agent-to-agent and agent-to-api flow evidence in one console
-- Service directory MVP: publish service, discover service, invoke with per-call x402 settlement
-- Real A2A service in market: `risk-score-feed` (agent invokes agent capability with x402 settlement)
-- Real ATAPI service in market: `info-analysis-feed` (legacy `x-reader-feed` is deprecated)
-- BTC quote loop is a sample scenario; platform model supports publishing and consuming arbitrary agent services
-- BTC demo summary wording uses `ATAPI` for the paid quote path to avoid A2A naming confusion.
-- Verifiable agent identity (registry-backed)
-- Auditable settlement mapping (`requestId <-> txHash`)
-- Downloadable receipt JSON (`amount/token/payer/payee` + `responseHash` + `responseSignature`)
-- Service status + reputation:
-  - status metrics (`successRate`, `avgConfirmSec`, `lastError`)
-  - reputation score/grade from paid receipts and on-chain confirmations
-- Service-level safety controls:
-  - revoke/unrevoke
-  - per-minute invoke cap
-  - per-day service budget cap
-  - optional payer allowlist
-- Direct on-chain confirmation without indexer dependency:
-  - `txHash`
-  - `block`
-  - `status`
-  - `explorer link`
-- Graceful failures (insufficient funds, scope violation, expired/fake proof)
+What is recorded:
+- task-level ids: `traceId`, `requestId`, `taskId`
+- routing: `fromAgentId`, `toAgentId`, `channel`, `hopIndex`
+- transport refs: `conversationId`, `messageId`, timestamps
+- settlement refs: `payment.requestId`, `txHash`, `block`, `status`, `explorer`, `verifiedAt`
 
-## How XMTP Communication Is Audited
+Where to inspect:
+- `GET /api/xmtp/events`
+- `GET /api/demo/trace/:traceId`
+- `GET /api/evidence/export?traceId=...`
 
-XMTP payload is off-chain, so auditability is achieved by cross-linking transport evidence with on-chain settlement evidence.
+Since `v1.9.0`, exported evidence now includes XMTP hop timeline:
+- `evidence.xmtp.total`
+- `evidence.xmtp.hops[]` (contains `conversationId/messageId/hopIndex/...`)
 
-- Every task message and task-result keeps `traceId`, `requestId`, `taskId`, `fromAgentId`, `toAgentId`, `conversationId`, `messageId`, sender address, and timestamp.
-- Runtime events are queryable from `GET /api/xmtp/events` and stitched into request-level views (`/api/demo/trace/:traceId`, `/api/evidence/export`).
-- x402 payment proof (`requestId`, `txHash`, `block`, explorer, `verifiedAt`) is bound to the same request and returned in `payment` / `receiptRef` fields.
-- Receipt/Evidence export allows third parties to replay one execution path and verify that: DM coordination happened, payment was confirmed, and result unlock matched that payment proof.
+Quick verify:
 
-In short: XMTP provides collaborative context, x402 provides settlement truth, and `traceId/requestId` binds both into one auditable chain.
+```bash
+curl -sS "https://kiteclaw.duckdns.org/api/evidence/export?traceId=<TRACE_ID>" \
+| jq '.evidence.xmtp | {total, firstHop: (.hops[0] | {traceId,requestId,conversationId,messageId,hopIndex,kind})}'
+```
 
-## Kite Testnet Contribution (ERC-8004 Registries)
+## Core API Surface
 
-KITECLAW deployed and integrated 3 ERC-8004 registry contracts on Kite Testnet through a proxy-upgrade deployment flow:
-
-- IdentityRegistry: `0x196cD2F30dF3dFA3ecD7D536db43e98Fd97fcC5f`
-- ReputationRegistry: `0xD288Ce02a27f77Dc61Ce40FDa81F3dD6D51FF353`
-- ValidationRegistry: `0xFEfcE81bCFA79130a60CD60D69336dadF3bb1569`
-
-These contracts are part of our open implementation contribution for verifiable agent identity and registry-based agent trust signals on Kite Testnet.
-
-## AA-v2 Security Note
-
-`aa-v2` is not only a development process artifact; it is the implementation path that produces the final result:
-
-- One-time owner authorization to create a scoped session key
-- Repeated transfers/payments without repeated wallet confirmation
-- Enforced boundaries: recipient scope, per-tx limit, daily limit, session window
-
-So for this project, `aa-v2` represents both the secure implementation mechanism and the achieved UX outcome (single authorization, then autonomous constrained execution).
-
-Others can reuse our `GokiteAccountV2` implementation address to upgrade their own owner-controlled proxies.
-Upgrade authority remains with each proxy owner; this project does not grant permission to upgrade third-party proxies.
-
-### AA Version Baseline (Mandatory)
-
-Starting from **2026-02-26**, this repository treats **AA V2 as mandatory baseline** for all active/new AA proxies.
-
-- Required runtime version string: `GokiteAccountV2-session-userop`
-- Canonical V2 implementation currently used in this project:
-  - `0xD0dA36a3B402160901dC03a0B9B9f88D6cffA7b6`
-- Legacy implementations are not accepted for session-userop payment path in `POST /api/session/pay` (unless explicitly disabling `KITE_REQUIRE_AA_V2` for temporary diagnostics).
-
-Operational implications:
-- New AA provisioning/verification must pass V2 check (`npm run aa:ensure`).
-- Session creation must run on V2 AA only (`npm run aa:session:router` now blocks legacy AA).
-- If an existing AA is still legacy, upgrade proxy implementation before production use.
-
-## Real Demo Flow (Current Implementation)
-
-> Note: this section describes the current `v1.8.x` demo flow. The `/` BTC chart page is planned to be removed in the next version.
-
-1. Open `/` and click `Run Demo` (success path) or `Fail Demo` (graceful failure path).
-2. Backend runs BTC paid workflow:
-   - ERC8004 identity
-   - x402 challenge
-   - session payment
-   - proof verification
-   - API result unlock (quote)
-   - on-chain confirmation presentation (`txHash / block / status / explorer link`)
-3. Homepage chart appends only paid/unlocked BTC points.
-4. Open `/trace/:requestId` to inspect request-level proof chain and download standard receipt JSON.
-5. Open `/ops` for operational evidence:
-   - recent traces
-   - evidence drawer
-   - session setup panel
-   - guardrail-driven failure replay (`Fail Demo`)
-6. Optional continuous demo:
-   - start automation to run BTC request every minute.
-
-## Core API Endpoints (Current)
-
+Workflow and evidence:
 - `POST /api/workflow/btc-price/run`
 - `POST /api/workflow/risk-score/run`
 - `POST /api/workflow/info/run`
 - `POST /api/workflow/hyperliquid-order/run`
-- `POST /api/a2a/tasks/info`
-- `GET /api/demo/price-series?limit=60`
 - `GET /api/demo/trace/:traceId`
 - `GET /api/demo/trace-by-request/:requestId`
-- `GET /api/x402/mapping/latest`
+- `GET /api/evidence/export?traceId=...`
 - `GET /api/receipt/:requestId`
-- `GET /api/market/btc/price`
-- `GET /api/services`
-- `GET /api/services/:serviceId`
-- `POST /api/services/publish`
-- `POST /api/services/:serviceId/invoke`
-- `GET /api/services/:serviceId/receipts`
-- `GET /api/services/:serviceId/status`
-- `POST /api/services/:serviceId/revoke`
-- `POST /api/services/:serviceId/unrevoke`
-- `GET /api/reputation/agents`
-- `GET /api/network/agents`
-- `POST /api/network/tasks/run`
-- `POST /api/network/demo/router-info-technical/run`
-- `GET /api/network/commands`
-- `GET /api/network/commands/:commandId`
-- `POST /api/network/commands`
-- `POST /api/network/commands/:commandId/run`
-- `GET /api/message-providers/status`
-- `POST /api/analysis/info/run`
-- `POST /api/analysis/technical/run`
-- `GET /api/hyperliquid/testnet/health`
-- `GET /api/hyperliquid/testnet/mids`
-- `GET /api/hyperliquid/testnet/open-orders`
-- `GET /api/hyperliquid/testnet/order-status`
-- `POST /api/hyperliquid/testnet/order`
-- `POST /api/hyperliquid/testnet/cancel`
-- `GET /api/agent001/hyperliquid/status`
-- `POST /api/agent001/hyperliquid/order`
+- `GET /api/x402/mapping/latest`
+- `GET /api/x402/requests`
+
+XMTP and network orchestration:
 - `GET /api/xmtp/status`
 - `POST /api/xmtp/start`
 - `POST /api/xmtp/stop`
-- `GET /api/xmtp/groups`
 - `POST /api/xmtp/groups/ensure`
 - `POST /api/xmtp/groups/send`
 - `GET /api/xmtp/events`
-- `GET /api/xmtp/can-message`
 - `POST /api/xmtp/dm/send`
-- `GET /api/automation/btc-price/status`
-- `POST /api/automation/btc-price/start`
-- `POST /api/automation/btc-price/stop`
-- `POST /api/policy/revoke`
-- `POST /api/policy/unrevoke`
+- `POST /api/network/tasks/run`
+- `POST /api/network/demo/router-info-technical/run`
+- `GET /api/network/commands`
+- `POST /api/network/commands`
 
-### XMTP Local Backend (xmtpd) Setup
+Analysis and execution:
+- `POST /api/analysis/info/run`
+- `POST /api/analysis/technical/run`
+- `GET /api/message-providers/status`
+- `GET /api/agent001/hyperliquid/status`
+- `POST /api/agent001/hyperliquid/order`
+- `GET /api/hyperliquid/testnet/health`
+- `POST /api/hyperliquid/testnet/order`
 
-Reference source (local copy):
-- `xmtpd-1.1.1/doc/deploy.md`
+## Local Quick Start
 
 Prerequisites:
-- Docker (for chain/db/redis/validation)
-- Go (for running xmtpd node process)
-- Bash runtime on Windows (Git Bash or WSL)
+- Node.js 20+
+- npm
 
-Start local dependencies and register a node:
+### 1) Backend
 
-```powershell
-cd "G:\KKK\KITE GASLESS\xmtpd-1.1.1"
-bash ./dev/up single
-```
-
-Start the local xmtpd replication API node (`http://127.0.0.1:5050`):
-
-```powershell
-cd "G:\KKK\KITE GASLESS\xmtpd-1.1.1"
-bash ./dev/run
-```
-
-PowerShell wrapper (from repo root):
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\backend\scripts\start-xmtp-local-env.ps1 -Profile single -StartNode
-```
-
-Then configure `backend/.env`:
-
-```env
-XMTP_ENV=local
-XMTP_API_URL=http://127.0.0.1:5050
-XMTP_HISTORY_SYNC_URL=null
-XMTP_GATEWAY_HOST=
-```
-
-`XMTP_HISTORY_SYNC_URL=null` is recommended for this minimal local stack, because `xmtpd` local setup does not expose the default SDK history sync port (`5558`).
-
-Stop local stack:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\backend\scripts\stop-xmtp-local-env.ps1
-```
-
-`GET /api/xmtp/status` now returns runtime states for:
-`router`, `risk`, `reader`, `price`, `executor`.
-
-### XMTP Workers Capability Verify (Local)
-
-```powershell
-cd backend
-powershell -ExecutionPolicy Bypass -File .\scripts\run-xmtp-workers-capability-demo.ps1 `
-  -BaseUrl "http://127.0.0.1:3001" `
-  -AdminApiKey "<admin_key>" `
-  -AgentApiKey "<agent_key>" `
-  -ViewerApiKey "<viewer_key>"
-```
-
-### Market-Data Info/Technical Verify (Local)
-
-```powershell
-curl.exe -sS -X POST "http://127.0.0.1:3001/api/analysis/info/run" `
-  -H "x-api-key: <agent_key>" `
-  -H "Content-Type: application/json" `
-  --data-binary "{\"url\":\"https://x.com/Kite_AI\",\"mode\":\"auto\",\"maxChars\":1200}"
-
-curl.exe -sS -X POST "http://127.0.0.1:3001/api/analysis/technical/run" `
-  -H "x-api-key: <agent_key>" `
-  -H "Content-Type: application/json" `
-  --data-binary "{\"symbol\":\"BTCUSDT\",\"source\":\"hyperliquid\",\"horizonMin\":60}"
-```
-
-### Hyperliquid Testnet Trading Verify (Local)
-
-```powershell
-curl.exe -sS "http://127.0.0.1:3001/api/hyperliquid/testnet/health" `
-  -H "x-api-key: <viewer_key>"
-
-curl.exe -sS -X POST "http://127.0.0.1:3001/api/hyperliquid/testnet/order" `
-  -H "x-api-key: <agent_key>" `
-  -H "Content-Type: application/json" `
-  --data-binary "{\"symbol\":\"BTCUSDT\",\"side\":\"buy\",\"orderType\":\"market\",\"size\":0.0002,\"simulate\":true}"
-
-curl.exe -sS "http://127.0.0.1:3001/api/hyperliquid/testnet/open-orders" `
-  -H "x-api-key: <viewer_key>"
-```
-
-### XMTP Router->Info+Technical Verify (Local)
-
-```powershell
-curl.exe -sS -X POST "http://127.0.0.1:3001/api/network/demo/router-info-technical/run" `
-  -H "x-api-key: <agent_key>" `
-  -H "Content-Type: application/json" `
-  --data-binary "{\"autoStart\":true,\"bindRealX402\":false,\"infoInput\":{\"url\":\"https://x.com/Kite_AI\"},\"technicalInput\":{\"symbol\":\"BTCUSDT\",\"horizonMin\":60}}"
-```
-
-### AGENT001 Direct Chat Verify (Local)
-
-Use one message to let `router-agent` orchestrate `technical-agent` + `message-agent` automatically:
-
-```powershell
-curl.exe -sS -X POST "http://127.0.0.1:3001/api/agent001/chat/run" `
-  -H "x-api-key: <agent_key>" `
-  -H "Content-Type: application/json" `
-  --data-binary "{\"autoStart\":true,\"text\":\"给我 BTC 的消息+技术联合结论，60m\"}"
-```
-
-For xmtp.chat DM, send plain text directly to `router-agent` XMTP address.
-
-### AGENT001 Closed Loop (Quote + x402 + Hyperliquid) Verify
-
-`AGENT001` now supports trade-intent closed loop:
-`discover -> XMTP service-quote -> strict x402 for info/technical -> plan -> strict x402 -> Hyperliquid order`.
-
-```powershell
-cd backend
-powershell -ExecutionPolicy Bypass -File .\scripts\run-agent001-closed-loop-demo.ps1 `
-  -BaseUrl "http://127.0.0.1:3001" `
-  -AdminApiKey "<admin_key>" `
-  -AgentApiKey "<agent_key>" `
-  -ViewerApiKey "<viewer_key>" `
-  -Message "基于消息面和技术面给我 BTCUSDT 60m 挂单计划并自动执行"
-```
-
-### AGENT001 -> API Hyperliquid Verify
-
-Use API mode directly (without DM), still keeping strict x402 before order execution:
-
-```powershell
-curl.exe -sS "http://127.0.0.1:3001/api/agent001/hyperliquid/status" `
-  -H "x-api-key: <viewer_key>"
-
-curl.exe -sS -X POST "http://127.0.0.1:3001/api/agent001/hyperliquid/order" `
-  -H "x-api-key: <agent_key>" `
-  -H "Content-Type: application/json" `
-  --data-binary "{\"symbol\":\"BTCUSDT\",\"side\":\"buy\",\"orderType\":\"limit\",\"price\":65000,\"size\":0.001,\"tif\":\"Gtc\",\"simulate\":true}"
-```
-
-### Message Providers Verify (OpenNews + OpenTwitter)
-
-```powershell
-curl.exe -sS "http://127.0.0.1:3001/api/message-providers/status" `
-  -H "x-api-key: <viewer_key>"
-
-curl.exe -sS -X POST "http://127.0.0.1:3001/api/analysis/info/run" `
-  -H "x-api-key: <agent_key>" `
-  -H "Content-Type: application/json" `
-  --data-binary "{\"topic\":\"BTC AI 美股 ETH\",\"mode\":\"auto\",\"maxChars\":1200}"
-```
-
-### Network Commands Quick Verify (Local)
-
-Create a queued command:
-
-```powershell
-curl.exe -sS -X POST "http://127.0.0.1:3001/api/network/commands" `
-  -H "Content-Type: application/json" `
-  --data-binary "{\"type\":\"router-info-technical\",\"label\":\"demo-router-info-technical\",\"payload\":{\"autoStart\":false,\"waitMs\":1200}}"
-```
-
-Use `type="router-info-technical"` to orchestrate info + technical analysis in one command.
-
-Run an existing command:
-
-```powershell
-curl.exe -sS -X POST "http://127.0.0.1:3001/api/network/commands/<commandId>/run" `
-  -H "Content-Type: application/json" `
-  --data-binary "{}"
-```
-
-Query command timeline:
-
-```powershell
-curl.exe -sS "http://127.0.0.1:3001/api/network/commands?limit=20"
-curl.exe -sS "http://127.0.0.1:3001/api/network/commands/<commandId>"
-```
-
-Status model: `queued -> running -> done|failed`, each command keeps `attempts` and `events`.
-
-## Runtime Notes (Testnet)
-
-- Kite testnet RPC/bundler may occasionally return transient errors such as:
-  - `request timeout (code=TIMEOUT, version=6.16.0)`
-  - `read ECONNRESET`
-  - `fetch failed`
-- Workflow now includes retry logic for session-pay transient failures, but occasional failed traces are still possible on unstable network windows.
-- For judge demos, pre-run a few traces so the chart already has successful paid points.
-
-## Judge Quick Verify
-
-> For current `v1.8.x` only: step 1-2 uses the `/` BTC chart page, which is planned to be removed in vNext.
-
-1. Open `/` and click `Run Demo`.
-2. Confirm the flow reaches on-chain confirmation and chart point updates only after paid unlock.
-3. Capture `requestId` from UI and open `/trace/:requestId`.
-4. Confirm Trace page shows timeline + `txHash/block/status/explorer`, then click `Download Receipt`.
-5. Open `/market` and invoke `BTC Risk Score (A2A)`.
-6. Invoke `X Reader Digest (ATAPI)` with a target URL.
-7. Open `/ops` to inspect recent traces and evidence drawer.
-
-Reference docs:
-- `docs/JUDGE_WALKTHROUGH.md`
-- `docs/ARCHITECTURE.md`
-
-## Architecture
-
-`Frontend (React) -> Backend (Express) -> OpenClaw Adapter -> OpenClaw`
-
-`Backend also provides x402 gateway + policy engine + workflow orchestration`
-
-`Information architecture: / (Network Overview) + /market + /trace/:requestId + /ops`
-
-### Layered Agent Stack
-
-![Layered Agent Stack](docs/assets/layered-architecture.png)
-
-- `ERC8004` = identity + reputation + discovery (trust layer)
-- `XMTP` = communication + negotiation + coordination (messaging layer)
-- `x402` = pay-per-call settlement + proof (payment layer)
-
-### Agent Collaboration and Payment Flow (English)
-
-![Agent Collaboration and Payment Flow (English)](docs/assets/agent-collaboration-payment-flow-en.png)
-
-## Repository Structure (Minimal Kept Set)
-
-```text
-KITE GASLESS/
-|- frontend/     # React + Vite UI
-|- backend/      # Express API + x402 + workflow + identity
-|- aa-v2/        # AA security implementation for one-time auth + constrained no-popup execution
-|- skills/       # OpenClaw skill source + packaged skill
-|- deploy/       # Nginx + PM2 + deploy/backup scripts for cloud rollout
-|- README.md
-|- CHANGELOG.md
-|- LICENSE
-```
-
-## Quick Start
-
-### Frontend
-```bash
-cd frontend
-npm install
-cp .env.example .env
-npm run dev
-```
-Frontend URL: `http://localhost:5173`
-
-### Backend
 ```bash
 cd backend
 npm install
 cp .env.example .env
 npm start
 ```
-Backend URL: `http://localhost:3001`
 
-## OpenClaw Runtime Configuration (Recommended)
+Backend default URL: `http://localhost:3001`
 
-Set in `backend/.env`:
+### 2) Web App (Next.js)
 
-```env
-OPENCLAW_BASE_URL=http://127.0.0.1:18789
-OPENCLAW_CHAT_PROTOCOL=openai
-OPENCLAW_CHAT_PATH=/v1/chat/completions
-OPENCLAW_HEALTH_PATH=/v1/models
-OPENCLAW_TIMEOUT_MS=12000
-OPENCLAW_MODEL=<your_model_id>
-# e.g. kimi-coding/k2p5 | qwen2.5-coder | deepseek-chat
+```bash
+cd agent-network
+npm install
+npm run dev
 ```
 
-Analysis provider:
-- Technical analysis uses built-in `market-data` (Binance/CoinGecko/Fear&Greed + local indicators).
-- Message analysis uses provider-router: `opennews` (primary) + `opentwitter` (secondary), with optional market-data fallback.
+Web default URL: `http://localhost:3000`
 
-Message provider env (recommended):
+Optional web env (`agent-network/.env.local`):
 
 ```env
-OPENNEWS_API_BASE=https://ai.6551.io
-OPENNEWS_TOKEN=<your_6551_token>
-OPENNEWS_TIMEOUT_MS=8000
-OPENNEWS_RETRY=1
-TWITTER_API_BASE=https://ai.6551.io
-TWITTER_TOKEN=<your_6551_token>
-TWITTER_TIMEOUT_MS=8000
-TWITTER_RETRY=1
-MESSAGE_PROVIDER_DEFAULT_KEYWORDS=BTC,AI,美股,ETH
-MESSAGE_PROVIDER_DISABLE_CLAWFEED=1
-MESSAGE_PROVIDER_MARKET_DATA_FALLBACK=1
+NEXT_PUBLIC_BACKEND_URL=http://127.0.0.1:3001
 ```
 
-Hyperliquid testnet trading (optional, for live order/cancel API):
+## Production Deployment (Nginx + PM2)
 
-```env
-HYPERLIQUID_TESTNET_ENABLED=1
-HYPERLIQUID_TESTNET_PRIVATE_KEY=0x<api_wallet_private_key>
-# master account address (recommended when using approved API wallet)
-HYPERLIQUID_TESTNET_ACCOUNT_ADDRESS=0x<master_wallet_address>
-# optional override, default: https://api.hyperliquid-testnet.xyz
-HYPERLIQUID_TESTNET_API_URL=
-HYPERLIQUID_TESTNET_TIMEOUT_MS=12000
-# used for synthetic market order limit price guard
-HYPERLIQUID_TESTNET_MARKET_SLIPPAGE_BPS=30
-```
-
-Notes:
-- `OPENCLAW_CHAT_PROTOCOL` and `OPENCLAW_CHAT_PATH` must match your runtime API shape.
-- `OPENCLAW_MODEL` should be your local/remote model id (do not hardcode one contributor's model in shared deployments).
-- If `OPENCLAW_HEALTH_PATH=/v1/models` returns HTML instead of JSON, you likely hit a control UI route instead of an OpenAI-compatible API route.
-- For XMTP local backend, you can additionally set `XMTP_API_URL/XMTP_HISTORY_SYNC_URL/XMTP_GATEWAY_HOST`.
-
-## Tencent Lighthouse Web Deployment (Low Cost)
-
-Target stack: `Nginx + Node backend + React dist` on one host, same domain for `/` and `/api`.
+This repo ships deployment scripts for:
+- backend (`kiteclaw-backend`)
+- web app (`kiteclaw-agent-network`)
 
 ### 1) Prepare server
 
@@ -545,44 +157,7 @@ curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt install -y nodejs
 ```
 
-Create runtime folders:
-
-```bash
-sudo mkdir -p /srv/kiteclaw/{app,data,logs,www,backups}
-sudo chown -R $USER:$USER /srv/kiteclaw
-```
-
-### 2) Configure env files
-
-```bash
-cp backend/.env.production.example backend/.env
-cp frontend/.env.production.example frontend/.env.production
-```
-
-Fill `backend/.env` with real values:
-- `KITECLAW_BACKEND_SIGNER_PRIVATE_KEY`
-- `ERC8004_IDENTITY_REGISTRY`
-- `ERC8004_AGENT_ID`
-- `AUTO_BTC_PRICE_ENABLED=1`
-- `AUTO_BTC_PRICE_INTERVAL_MS=60000`
-- `AUTO_BTC_PRICE_PAYER=<your AA wallet>`
-- `IDENTITY_VERIFY_MODE=registry_only` (recommended for public demo websites)
-- OpenClaw remote API settings (`OPENCLAW_BASE_URL`, `OPENCLAW_MODEL`, etc.)
-
-Validate production env before deploy:
-
-```bash
-bash deploy/scripts/validate-prod-env.sh backend/.env
-```
-
-If session payment fails with `sessionExists BAD_DATA`, ensure AA account is deployed first:
-
-```bash
-cd backend
-npm run aa:ensure -- --owner 0xYourOwnerEOA
-```
-
-### 3) Deploy app
+### 2) Deploy
 
 ```bash
 export REPO_URL=https://github.com/enderzcx/KITE-GASLESS.git
@@ -590,90 +165,68 @@ export BRANCH=main
 bash deploy/scripts/deploy.sh
 ```
 
-`deploy.sh` now validates backend production env before build/restart. It will fail fast if key fields are missing or invalid.
-
-Apply nginx site:
+Before first deploy, create backend env:
 
 ```bash
-sudo cp deploy/nginx/kiteclaw.conf /etc/nginx/sites-available/kiteclaw.conf
-sudo sed -i 's/__SERVER_NAME__/your-subdomain.duckdns.org/g' /etc/nginx/sites-available/kiteclaw.conf
-sudo ln -sf /etc/nginx/sites-available/kiteclaw.conf /etc/nginx/sites-enabled/kiteclaw.conf
+cp backend/.env.production.example backend/.env
+bash deploy/scripts/validate-prod-env.sh backend/.env
+```
+
+### 3) Nginx config
+
+Render template:
+
+```bash
+sed 's/__SERVER_NAME__/your-subdomain.duckdns.org/g' deploy/nginx/kiteclaw.conf | sudo tee /etc/nginx/conf.d/kiteclaw.conf >/dev/null
 sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-### 4) Enable HTTPS (DuckDNS + Let's Encrypt)
+If your distro uses `sites-available/sites-enabled`, adapt the target paths accordingly.
+
+### 4) HTTPS
 
 ```bash
 sudo certbot --nginx -d your-subdomain.duckdns.org
 ```
 
-### 4.1) Freeze PM2 startup on reboot
-
-```bash
-pm2 save
-pm2 startup systemd -u root --hp /root
-```
-
-After running `pm2 startup`, copy and execute the generated command once.
-
 ### 5) Smoke checks
 
 ```bash
 curl -sS https://your-subdomain.duckdns.org/api/chat/agent/health
+curl -sS https://your-subdomain.duckdns.org/api/xmtp/status
 ```
 
-Expected:
-- health endpoint returns `{"ok":true,...}`
-
-Check minute loop status (server-side ATAPI polling):
-
-```bash
-curl -sS https://your-subdomain.duckdns.org/api/automation/btc-price/status
-```
-
-### 6) Data backup
+### 6) Backup
 
 ```bash
 bash deploy/scripts/backup-data.sh
 ```
 
-## OpenClaw Skill Package
+## AA-v2 Notes
 
-### Source Skill
-- Folder: `skills/kiteclaw-stop-orders/`
+`aa-v2` contains the account abstraction implementation used by this project for:
+- one-time authorization
+- constrained session execution
+- repeated payments without repeated wallet popups
 
-### Packaged Skill
-- Zip: `skills/releases/kiteclaw-stop-orders-v1.6.1.zip`
+Useful scripts:
+- `npm --prefix backend run aa:ensure`
+- `npm --prefix backend run aa:session:router`
+- `npm --prefix backend run aa:upgrade`
 
-### Install Packaged Skill
-1. Unzip `skills/releases/kiteclaw-stop-orders-v1.6.1.zip`.
-2. Place the extracted `kiteclaw-stop-orders` folder into your OpenClaw/Codex skills directory.
-3. Restart the runtime so the skill is indexed.
+## Repository Layout
 
-### Rebuild Skill Package
-From repo root (PowerShell):
-
-```powershell
-New-Item -ItemType Directory -Force -Path skills/releases | Out-Null
-Compress-Archive -Path "skills/kiteclaw-stop-orders/*" -DestinationPath "skills/releases/kiteclaw-stop-orders-v1.6.1.zip" -Force
+```text
+KITE GASLESS/
+|- aa-v2/         # AA contracts and scripts
+|- agent-network/ # Next.js web app
+|- backend/       # Express API, XMTP runtimes, x402, evidence
+|- deploy/        # Nginx/PM2/deploy/backup scripts
+|- README.md
+|- LICENSE
 ```
-
-### Skill Usage (Scripted Flow)
-
-Inside the skill package/scripts, run:
-
-1. `request-challenge.ps1` (expect x402 challenge)
-2. `run-stop-order-flow.ps1` (or pay + submit proof manually)
-3. `get-status.ps1` (workflow/status)
-4. `get-evidence.ps1` (payment evidence)
-
-All scripts target backend endpoints documented in `skills/kiteclaw-stop-orders/references/api.md`.
 
 ## License
 
 MIT License. See `LICENSE`.
-
-
-
-
