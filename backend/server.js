@@ -9719,6 +9719,10 @@ app.get('/api/evidence/export', requireRole('viewer'), (req, res) => {
   const records = readRecords();
   const paymentRecord = records.find((r) => String(r.txHash || '').toLowerCase() === String(workflow.txHash || '').toLowerCase());
   const runtime = readSessionRuntime();
+  const xmtp = buildTraceXmtpEvidence({
+    traceId,
+    requestId: String(workflow?.requestId || reqItem?.requestId || '').trim()
+  });
 
   const exportPayload = {
     traceId,
@@ -9742,6 +9746,7 @@ app.get('/api/evidence/export', requireRole('viewer'), (req, res) => {
           a2a: reqItem.a2a || null
         }
       : null,
+    xmtp,
     paymentRecord: paymentRecord || null,
     runtimeSnapshot: {
       aaWallet: runtime.aaWallet || '',
