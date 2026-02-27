@@ -167,6 +167,7 @@ Operational implications:
 - `POST /api/network/commands`
 - `POST /api/network/commands/:commandId/run`
 - `GET /api/openalice/health`
+- `GET /api/message-providers/status`
 - `POST /api/analysis/info/run`
 - `POST /api/analysis/technical/run`
 - `GET /api/hyperliquid/testnet/health`
@@ -333,6 +334,18 @@ curl.exe -sS -X POST "http://127.0.0.1:3001/api/agent001/hyperliquid/order" `
   --data-binary "{\"symbol\":\"BTCUSDT\",\"side\":\"buy\",\"orderType\":\"limit\",\"price\":65000,\"size\":0.001,\"tif\":\"Gtc\",\"simulate\":true}"
 ```
 
+### Message Providers Verify (OpenNews + OpenTwitter)
+
+```powershell
+curl.exe -sS "http://127.0.0.1:3001/api/message-providers/status" `
+  -H "x-api-key: <viewer_key>"
+
+curl.exe -sS -X POST "http://127.0.0.1:3001/api/analysis/info/run" `
+  -H "x-api-key: <agent_key>" `
+  -H "Content-Type: application/json" `
+  --data-binary "{\"topic\":\"BTC AI 美股 ETH\",\"mode\":\"auto\",\"maxChars\":1200}"
+```
+
 ### Network Commands Quick Verify (Local)
 
 Create a queued command:
@@ -454,8 +467,25 @@ OPENCLAW_MODEL=<your_model_id>
 ```
 
 Analysis provider:
-- The backend now uses built-in `market-data` analysis (Binance/CoinGecko/Fear&Greed + local indicators).
+- Technical analysis uses built-in `market-data` (Binance/CoinGecko/Fear&Greed + local indicators).
+- Message analysis uses provider-router: `opennews` (primary) + `opentwitter` (secondary), with optional market-data fallback.
 - OpenAlice/OpenBB sidecar is removed from runtime.
+
+Message provider env (recommended):
+
+```env
+OPENNEWS_API_BASE=https://ai.6551.io
+OPENNEWS_TOKEN=<your_6551_token>
+OPENNEWS_TIMEOUT_MS=8000
+OPENNEWS_RETRY=1
+TWITTER_API_BASE=https://ai.6551.io
+TWITTER_TOKEN=<your_6551_token>
+TWITTER_TIMEOUT_MS=8000
+TWITTER_RETRY=1
+MESSAGE_PROVIDER_DEFAULT_KEYWORDS=BTC,AI,美股,ETH
+MESSAGE_PROVIDER_DISABLE_CLAWFEED=1
+MESSAGE_PROVIDER_MARKET_DATA_FALLBACK=1
+```
 
 Hyperliquid testnet trading (optional, for live order/cancel API):
 

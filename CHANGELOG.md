@@ -118,6 +118,11 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
   - target stack is now `pandas-ta-classic + Hyperliquid/CCXT` (OpenAlice removed from primary path).
 - Planning baseline updated for message-side reliability:
   - provider route prefers `opennews-mcp`, falls back to `opentwitter-mcp`, and uses `clawfeed` for async snapshot/backfill.
+- Info-analysis runtime now supports dual-provider route for message side:
+  - mode `auto` / `multi-provider`: `opennews + opentwitter` parallel merge
+  - mode `opennews` / `opentwitter`: single-provider forced
+  - mode `market-data`: local fallback only
+  - new status endpoint: `GET /api/message-providers/status`.
 
 ### Fixed
 - AGENT001 paid-but-no-DM gap:
