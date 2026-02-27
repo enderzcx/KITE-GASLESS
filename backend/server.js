@@ -10,6 +10,7 @@ import { createOpenClawAdapter } from './services/openclawAdapter.js';
 import { createHyperliquidAdapter } from './services/hyperliquidAdapter.js';
 import { createPersistenceStore } from './services/persistenceStore.js';
 import { createXmtpAgentRuntime } from './services/xmtpAgentRuntime.js';
+import { createAgent001Orchestrator } from './services/agent001Orchestrator.js';
 import {
   classifyAgent001IntentFallback,
   detectAgent001IntentOverrides,
@@ -221,13 +222,6 @@ const RATE_LIMIT_MAX = Number(process.env.KITECLAW_RATE_LIMIT_MAX || 240);
 const IDENTITY_CHALLENGE_TTL_MS = Number(process.env.IDENTITY_CHALLENGE_TTL_MS || 120_000);
 const IDENTITY_CHALLENGE_MAX_ROWS = Number(process.env.IDENTITY_CHALLENGE_MAX_ROWS || 500);
 const IDENTITY_VERIFY_MODE = String(process.env.IDENTITY_VERIFY_MODE || 'signature').trim().toLowerCase();
-const AUTO_BTC_PRICE_ENABLED = /^(1|true|yes|on)$/i.test(String(process.env.AUTO_BTC_PRICE_ENABLED || '').trim());
-const AUTO_BTC_PRICE_INTERVAL_MS = Math.max(15_000, Number(process.env.AUTO_BTC_PRICE_INTERVAL_MS || 60_000));
-const AUTO_BTC_PRICE_SOURCE_AGENT_ID = String(process.env.AUTO_BTC_PRICE_SOURCE_AGENT_ID || KITE_AGENT1_ID).trim();
-const AUTO_BTC_PRICE_TARGET_AGENT_ID = String(process.env.AUTO_BTC_PRICE_TARGET_AGENT_ID || KITE_AGENT2_ID).trim();
-const AUTO_BTC_PRICE_PAIR = String(process.env.AUTO_BTC_PRICE_PAIR || 'BTCUSDT').trim().toUpperCase();
-const AUTO_BTC_PRICE_SOURCE = String(process.env.AUTO_BTC_PRICE_SOURCE || 'hyperliquid').trim().toLowerCase();
-const AUTO_BTC_PRICE_PAYER = String(process.env.AUTO_BTC_PRICE_PAYER || '').trim();
 const AUTO_TRADE_PLAN_ENABLED = /^(1|true|yes|on)$/i.test(String(process.env.AUTO_TRADE_PLAN_ENABLED || '').trim());
 const AUTO_TRADE_PLAN_INTERVAL_MS = Math.max(60_000, Number(process.env.AUTO_TRADE_PLAN_INTERVAL_MS || 600_000));
 const AUTO_TRADE_PLAN_SYMBOL = String(process.env.AUTO_TRADE_PLAN_SYMBOL || 'BTCUSDT').trim().toUpperCase() || 'BTCUSDT';
@@ -365,26 +359,10 @@ const PERSIST_OBJECT_PATHS = [policyConfigPath, sessionRuntimePath];
 const persistArrayCache = new Map();
 const persistObjectCache = new Map();
 let persistenceInitDone = false;
-let autoBtcPriceTimer = null;
-let autoBtcPriceBusy = false;
 let autoXmtpNetworkTimer = null;
 let autoXmtpNetworkBusy = false;
 let autoTradePlanTimer = null;
 let autoTradePlanBusy = false;
-const autoBtcPriceState = {
-  enabled: false,
-  intervalMs: AUTO_BTC_PRICE_INTERVAL_MS,
-  sourceAgentId: AUTO_BTC_PRICE_SOURCE_AGENT_ID,
-  targetAgentId: AUTO_BTC_PRICE_TARGET_AGENT_ID,
-  pair: AUTO_BTC_PRICE_PAIR,
-  source: AUTO_BTC_PRICE_SOURCE,
-  payer: AUTO_BTC_PRICE_PAYER,
-  startedAt: '',
-  lastTickAt: '',
-  lastTraceId: '',
-  lastStatus: '',
-  lastError: ''
-};
 
 function parseAgentIdList(input = '') {
   if (Array.isArray(input)) {
@@ -582,92 +560,6 @@ async function postSessionPayWithRetry(payload = {}, options = {}) {
     }
   }
   throw lastError || new Error('session pay failed');
-}
-
-function getAutoBtcPriceStatus() {
-  return {
-    ...autoBtcPriceState,
-    running: Boolean(autoBtcPriceTimer),
-    busy: autoBtcPriceBusy
-  };
-}
-
-async function runAutoBtcPriceTick(reason = 'timer') {
-  if (autoBtcPriceBusy) return;
-  autoBtcPriceBusy = true;
-  autoBtcPriceState.lastTickAt = new Date().toISOString();
-  autoBtcPriceState.lastError = '';
-  autoBtcPriceState.lastStatus = 'running';
-
-  try {
-    const runtime = readSessionRuntime();
-    const payer = normalizeAddress(autoBtcPriceState.payer || runtime.aaWallet || '');
-    const traceId = createTraceId('auto_btc');
-    const internalApiKey = getInternalAgentApiKey();
-    const headers = { 'Content-Type': 'application/json' };
-    if (internalApiKey) headers['x-api-key'] = internalApiKey;
-
-    const resp = await fetch(`http://127.0.0.1:${PORT}/api/workflow/btc-price/run`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        traceId,
-        sourceAgentId: autoBtcPriceState.sourceAgentId || KITE_AGENT1_ID,
-        targetAgentId: autoBtcPriceState.targetAgentId || KITE_AGENT2_ID,
-        pair: autoBtcPriceState.pair || 'BTCUSDT',
-        source: autoBtcPriceState.source || 'auto',
-        payer
-      })
-    });
-    const body = await resp.json().catch(() => ({}));
-    autoBtcPriceState.lastTraceId = String(body?.traceId || traceId).trim();
-    if (!resp.ok || !body?.ok) {
-      autoBtcPriceState.lastStatus = 'failed';
-      autoBtcPriceState.lastError = String(body?.reason || body?.error || `HTTP ${resp.status}`).trim();
-      return;
-    }
-
-    autoBtcPriceState.lastStatus = String(body?.state || 'success').trim().toLowerCase();
-    autoBtcPriceState.lastError = '';
-  } catch (error) {
-    autoBtcPriceState.lastStatus = 'failed';
-    autoBtcPriceState.lastError = String(error?.message || 'auto tick failed').trim();
-  } finally {
-    autoBtcPriceBusy = false;
-    if (reason === 'startup' || reason === 'manual') {
-      console.log(`[auto-btc] tick ${autoBtcPriceState.lastStatus} trace=${autoBtcPriceState.lastTraceId || '-'}`);
-    }
-  }
-}
-
-function stopAutoBtcPriceLoop() {
-  if (autoBtcPriceTimer) {
-    clearInterval(autoBtcPriceTimer);
-    autoBtcPriceTimer = null;
-  }
-  autoBtcPriceState.enabled = false;
-}
-
-function startAutoBtcPriceLoop(options = {}) {
-  const intervalMs = Math.max(15_000, Number(options.intervalMs || autoBtcPriceState.intervalMs || 60_000));
-  autoBtcPriceState.intervalMs = intervalMs;
-  autoBtcPriceState.sourceAgentId = String(options.sourceAgentId || autoBtcPriceState.sourceAgentId || KITE_AGENT1_ID).trim();
-  autoBtcPriceState.targetAgentId = String(options.targetAgentId || autoBtcPriceState.targetAgentId || KITE_AGENT2_ID).trim();
-  autoBtcPriceState.pair = String(options.pair || autoBtcPriceState.pair || 'BTCUSDT').trim().toUpperCase();
-  autoBtcPriceState.source = String(options.source || autoBtcPriceState.source || 'auto').trim().toLowerCase();
-  autoBtcPriceState.payer = String(options.payer || autoBtcPriceState.payer || '').trim();
-  autoBtcPriceState.enabled = true;
-  autoBtcPriceState.startedAt = new Date().toISOString();
-  autoBtcPriceState.lastError = '';
-
-  if (autoBtcPriceTimer) clearInterval(autoBtcPriceTimer);
-  autoBtcPriceTimer = setInterval(() => {
-    runAutoBtcPriceTick('timer').catch(() => {});
-  }, intervalMs);
-
-  if (options.immediate !== false) {
-    runAutoBtcPriceTick(options.reason || 'manual').catch(() => {});
-  }
 }
 
 function getAutoXmtpNetworkStatus() {
@@ -5442,206 +5334,32 @@ function isAgent001TaskSuccessful(dispatchResult = null) {
   return !['failed', 'error', 'rejected'].includes(status);
 }
 
-async function readNetworkAgentIdentityStatus(agent = {}) {
-  const registry = normalizeAddress(agent?.identityRegistry || '');
-  const agentId = String(agent?.identityAgentId || '').trim();
-  if (!registry || !agentId) {
-    return { configured: false, verified: false, reason: 'identity_not_configured' };
-  }
-  try {
-    const profile = await readIdentityProfile({ registry, agentId });
-    return {
-      configured: true,
-      verified: true,
-      registry,
-      agentId,
-      wallet: String(profile?.agentWallet || '').trim()
-    };
-  } catch (error) {
-    return {
-      configured: true,
-      verified: false,
-      registry,
-      agentId,
-      reason: String(error?.message || 'identity_verify_failed').trim()
-    };
-  }
-}
-
-async function selectAgent001ProviderPlan({ capability = '' } = {}) {
-  const normalizedCapability = String(capability || '').trim().toLowerCase();
-  const fallbackAgentId = defaultAgentIdByCapability(normalizedCapability);
-  const networkRows = ensureNetworkAgents().filter((item) => item?.active !== false);
-  const candidateAgents = networkRows.filter((item) =>
-    Array.isArray(item?.capabilities)
-      ? item.capabilities.map((c) => String(c || '').trim().toLowerCase()).includes(normalizedCapability)
-      : false
-  );
-  const fallbackAgent = findNetworkAgentById(fallbackAgentId);
-  const candidateMap = new Map();
-  for (const row of candidateAgents) {
-    const key = String(row?.id || '').trim().toLowerCase();
-    if (key) candidateMap.set(key, row);
-  }
-  if (fallbackAgent?.active !== false) {
-    const fallbackKey = String(fallbackAgent?.id || '').trim().toLowerCase();
-    if (fallbackKey) candidateMap.set(fallbackKey, fallbackAgent);
-  }
-  const finalCandidates = Array.from(candidateMap.values());
-  const identityRows = [];
-  for (const agent of finalCandidates) {
-    const identity = await readNetworkAgentIdentityStatus(agent);
-    identityRows.push({ agent, identity });
-  }
-  const verifiedFirst = identityRows.filter((item) => item.identity?.verified);
-  if (verifiedFirst.length === 0) {
-    const reasonParts = identityRows.map((item) => {
-      const id = String(item?.agent?.id || '').trim().toLowerCase() || 'unknown-agent';
-      const status = item?.identity?.configured ? 'configured' : 'not-configured';
-      const detail = String(item?.identity?.reason || '').trim();
-      return `${id}:${status}${detail ? `(${detail})` : ''}`;
-    });
-    return {
-      ok: false,
-      error: 'identity_verification_required',
-      reason: `Identity must be verified before quote negotiation for capability ${normalizedCapability}.`,
-      details: reasonParts
-    };
-  }
-  const pickedIdentityRow = verifiedFirst[0];
-  const pickedAgent = pickedIdentityRow?.agent || null;
-  const identity = pickedIdentityRow?.identity || { configured: false, verified: false };
-
-  const services = selectServiceCandidatesByCapability(normalizedCapability);
-  if (services.length === 0) {
-    return {
-      ok: false,
-      error: 'service_unavailable',
-      reason: `No active service found for capability ${normalizedCapability}.`
-    };
-  }
-  const invocations = readServiceInvocations();
-  const workflows = readWorkflows();
-  const workflowByTraceId = new Map(workflows.map((item) => [String(item?.traceId || '').trim(), item]));
-  const requests = readX402Requests();
-  const requestById = new Map(requests.map((item) => [String(item?.requestId || '').trim(), item]));
-  const verifiedAgentId = String(pickedAgent?.id || fallbackAgentId).trim().toLowerCase();
-  const servicesByVerifiedProvider = services.filter(
-    (service) => String(service?.providerAgentId || '').trim().toLowerCase() === verifiedAgentId
-  );
-  const candidateServices = servicesByVerifiedProvider.length > 0 ? servicesByVerifiedProvider : services;
-  const rows = candidateServices.map((service) => {
-    const perServiceInv = invocations.filter(
-      (item) => String(item?.serviceId || '').trim() === String(service?.id || '').trim()
-    );
-    const receipts = perServiceInv.map((item) => mapServiceReceipt(item, workflowByTraceId, requestById));
-    const reputation = computeServiceReputation(service, receipts);
-    return { service, reputation };
-  });
-  const pickedService = pickBestServiceByReputationAndPrice(rows);
-  if (!pickedService?.service) {
-    return {
-      ok: false,
-      error: 'service_unavailable',
-      reason: `No selectable service found for capability ${normalizedCapability}.`
-    };
-  }
-
-  return {
-    ok: true,
-    capability: normalizedCapability,
-    toAgentId: verifiedAgentId,
-    agent: pickedAgent,
-    identity,
-    service: pickedService.service,
-    reputation: pickedService.reputation,
-    metrics: pickedService.metrics
-  };
-}
-
-async function runAgent001QuoteNegotiation({
-  toAgentId = '',
-  wantedCapability = '',
-  rawText = '',
-  intent = {},
-  waitMsLimit = 12_000
-} = {}) {
-  const input = {
-    wantedCapability: String(wantedCapability || '').trim().toLowerCase(),
-    symbol: String(intent?.symbol || extractTradingSymbolFromText(rawText) || 'BTCUSDT').trim().toUpperCase(),
-    horizonMin: Number.isFinite(Number(intent?.horizonMin))
-      ? Math.max(5, Math.min(Math.round(Number(intent.horizonMin)), 240))
-      : extractHorizonFromText(rawText),
-    topic: String(intent?.topic || rawText || '').trim(),
-    source: String(intent?.source || 'hyperliquid').trim().toLowerCase(),
-    maxChars: 900
-  };
-  return runAgent001DispatchTask({
-    toAgentId,
-    capability: 'service-quote',
-    input,
-    waitMsLimit
-  });
-}
-
-async function buildAgent001StrictPaymentPlan({
-  capability = '',
-  rawText = '',
-  intent = {},
-  payer = '',
-  targetAgentId = ''
-} = {}) {
-  const normalizedCapability = String(capability || '').trim().toLowerCase();
-  if (normalizedCapability === 'technical-analysis-feed') {
-    return buildRiskScorePaymentIntentForTask({
-      body: {
-        input: {
-          symbol: intent?.symbol || extractTradingSymbolFromText(rawText) || 'BTCUSDT',
-          source: intent?.source || 'hyperliquid',
-          horizonMin: intent?.horizonMin || extractHorizonFromText(rawText)
-        },
-        bindRealX402: true,
-        strictBinding: true,
-        prebindOnly: true,
-        action: 'technical-analysis-feed',
-        payer,
-        sourceAgentId: 'router-agent',
-        targetAgentId: targetAgentId || 'technical-agent'
-      },
-      traceId: createTraceId('agent001_pay_tech'),
-      fallbackRequestId: createTraceId('agent001_req_tech'),
-      defaultTask: { symbol: 'BTCUSDT', source: 'hyperliquid', horizonMin: 60 }
-    });
-  }
-  if (normalizedCapability === 'info-analysis-feed') {
-    const rawTopic = String(intent?.topic || '').trim();
-    const rawUrl = String(extractFirstUrlFromText(rawText) || '').trim();
-    const fallbackTopic = String(rawText || '').trim();
-    const defaultTopic = `${String(intent?.symbol || 'BTCUSDT').trim().toUpperCase()} market sentiment`;
-    const resolvedTopic = rawTopic || rawUrl || fallbackTopic || defaultTopic;
-    return buildInfoPaymentIntentForTask({
-      body: {
-        input: {
-          url: /^https?:\/\//i.test(resolvedTopic) ? resolvedTopic : '',
-          topic: resolvedTopic,
-          mode: 'auto',
-          maxChars: 900
-        },
-        bindRealX402: true,
-        strictBinding: true,
-        prebindOnly: true,
-        action: 'info-analysis-feed',
-        payer,
-        sourceAgentId: 'router-agent',
-        targetAgentId: targetAgentId || 'message-agent'
-      },
-      traceId: createTraceId('agent001_pay_info'),
-      fallbackRequestId: createTraceId('agent001_req_info'),
-      defaultTask: { url: 'https://www.coindesk.com/', mode: 'news', maxChars: 900 }
-    });
-  }
-  throw new Error(`unsupported_payment_capability:${normalizedCapability}`);
-}
+const agent001Orchestrator = createAgent001Orchestrator({
+  normalizeAddress,
+  readIdentityProfile,
+  defaultAgentIdByCapability,
+  ensureNetworkAgents,
+  findNetworkAgentById,
+  selectServiceCandidatesByCapability,
+  readServiceInvocations,
+  readWorkflows,
+  readX402Requests,
+  mapServiceReceipt,
+  computeServiceReputation,
+  pickBestServiceByReputationAndPrice,
+  runAgent001DispatchTask,
+  extractTradingSymbolFromText,
+  extractHorizonFromText,
+  extractFirstUrlFromText,
+  buildRiskScorePaymentIntentForTask,
+  buildInfoPaymentIntentForTask,
+  createTraceId
+});
+const {
+  selectAgent001ProviderPlan,
+  runAgent001QuoteNegotiation,
+  buildAgent001StrictPaymentPlan
+} = agent001Orchestrator;
 
 async function runAgent001HyperliquidOrderWorkflow({
   plan = null,
@@ -15535,51 +15253,6 @@ app.get('/api/services/:serviceId/receipts', requireRole('viewer'), (req, res) =
   });
 });
 
-app.get('/api/automation/btc-price/status', requireRole('viewer'), (req, res) => {
-  return res.json({
-    ok: true,
-    traceId: req.traceId || '',
-    automation: {
-      type: 'a2a-btc-price',
-      ...getAutoBtcPriceStatus()
-    }
-  });
-});
-
-app.post('/api/automation/btc-price/start', requireRole('admin'), (req, res) => {
-  const body = req.body || {};
-  startAutoBtcPriceLoop({
-    intervalMs: body.intervalMs,
-    sourceAgentId: body.sourceAgentId,
-    targetAgentId: body.targetAgentId,
-    pair: body.pair,
-    source: body.source,
-    payer: body.payer,
-    immediate: body.immediate !== false,
-    reason: 'manual'
-  });
-  return res.json({
-    ok: true,
-    traceId: req.traceId || '',
-    automation: {
-      type: 'a2a-btc-price',
-      ...getAutoBtcPriceStatus()
-    }
-  });
-});
-
-app.post('/api/automation/btc-price/stop', requireRole('admin'), (req, res) => {
-  stopAutoBtcPriceLoop();
-  return res.json({
-    ok: true,
-    traceId: req.traceId || '',
-    automation: {
-      type: 'a2a-btc-price',
-      ...getAutoBtcPriceStatus()
-    }
-  });
-});
-
 app.get('/api/automation/trade-plan/status', requireRole('viewer'), (req, res) => {
   return res.json({
     ok: true,
@@ -16148,21 +15821,6 @@ async function startServer() {
   ensureNetworkAgents();
   httpServer = app.listen(PORT, () => {
     console.log(`Backend listening on http://localhost:${PORT}`);
-    if (AUTO_BTC_PRICE_ENABLED) {
-      startAutoBtcPriceLoop({
-        intervalMs: AUTO_BTC_PRICE_INTERVAL_MS,
-        sourceAgentId: AUTO_BTC_PRICE_SOURCE_AGENT_ID,
-        targetAgentId: AUTO_BTC_PRICE_TARGET_AGENT_ID,
-        pair: AUTO_BTC_PRICE_PAIR,
-        source: AUTO_BTC_PRICE_SOURCE,
-        payer: AUTO_BTC_PRICE_PAYER,
-        immediate: true,
-        reason: 'startup'
-      });
-      console.log(
-        `[auto-btc] enabled intervalMs=${AUTO_BTC_PRICE_INTERVAL_MS} pair=${AUTO_BTC_PRICE_PAIR} source=${AUTO_BTC_PRICE_SOURCE}`
-      );
-    }
     if (AUTO_TRADE_PLAN_ENABLED) {
       startAutoTradePlanLoop({
         intervalMs: AUTO_TRADE_PLAN_INTERVAL_MS,
@@ -16201,7 +15859,6 @@ async function startServer() {
 }
 
 async function shutdownServer() {
-  stopAutoBtcPriceLoop();
   stopAutoTradePlanLoop();
   stopAutoXmtpNetworkLoop();
   await stopXmtpRuntimes();

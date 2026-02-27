@@ -116,6 +116,9 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
   - `backend/docker/openbb/Dockerfile`
 
 ### Changed
+- Further slimmed backend server composition:
+  - extracted AGENT001 provider/quote/payment orchestration into `backend/services/agent001Orchestrator.js`
+  - removed legacy auto BTC per-minute polling module from backend startup and APIs (`/api/automation/btc-price/*`).
 - Refactored AGENT001 intent/order directive parsers into a dedicated module:
   - `backend/services/agent001Intent.js`
   - `backend/server.js` now imports parser utilities to reduce file size and keep logic isolated.
