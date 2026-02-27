@@ -3,7 +3,7 @@ import { ethers } from 'ethers';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { GokiteAASDK } from '../../frontend/src/gokite-aa-sdk.js';
+import { GokiteAASDK } from '../lib/gokite-aa-sdk.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

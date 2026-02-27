@@ -5,7 +5,7 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { ethers } from 'ethers';
-import { GokiteAASDK } from '../frontend/src/gokite-aa-sdk.js';
+import { GokiteAASDK } from './lib/gokite-aa-sdk.js';
 import { createOpenClawAdapter } from './services/openclawAdapter.js';
 import { createHyperliquidAdapter } from './services/hyperliquidAdapter.js';
 import { createPersistenceStore } from './services/persistenceStore.js';
