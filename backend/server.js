@@ -2894,7 +2894,7 @@ function sanitizeServiceRecord(input = {}, existing = null) {
           : isInfo
             ? action === 'info-analysis-feed'
               ? { topic: 'BTC market sentiment today', mode: 'auto', maxChars: X_READER_MAX_CHARS_DEFAULT }
-              : { url: 'https://x.com/Kite_AI', mode: 'auto', maxChars: X_READER_MAX_CHARS_DEFAULT }
+              : { url: 'https://newshacker.me/', mode: 'auto', maxChars: X_READER_MAX_CHARS_DEFAULT }
             : isHyperliquidOrder
               ? { symbol: 'BTCUSDT', side: 'buy', orderType: 'limit', tif: 'Gtc', size: 0.001 }
               : { pair: 'BTCUSDT', source: 'hyperliquid' };
@@ -9333,7 +9333,7 @@ async function buildXReaderPaymentIntentForTask({
   traceId = '',
   fallbackRequestId = '',
   defaultTask = {
-    url: 'https://x.com/Kite_AI',
+    url: 'https://newshacker.me/',
     topic: 'btc market sentiment today',
     mode: 'auto',
     maxChars: X_READER_MAX_CHARS_DEFAULT
@@ -12291,7 +12291,7 @@ app.post('/api/network/demo/router-info-technical/run', requireRole('agent'), as
       body?.infoInput && typeof body.infoInput === 'object' && !Array.isArray(body.infoInput)
         ? body.infoInput
         : {
-            url: body?.url || body?.resourceUrl || 'https://x.com/Kite_AI',
+            url: body?.url || body?.resourceUrl || 'https://newshacker.me/',
             mode: body?.mode || 'auto',
             maxChars: body?.maxChars ?? X_READER_MAX_CHARS_DEFAULT
           }
@@ -12317,7 +12317,7 @@ app.post('/api/network/demo/router-info-technical/run', requireRole('agent'), as
       traceId,
       fallbackRequestId: `${requestId}_info`,
       defaultTask: {
-        url: 'https://x.com/Kite_AI',
+        url: 'https://newshacker.me/',
         mode: 'auto',
         maxChars: X_READER_MAX_CHARS_DEFAULT
       }

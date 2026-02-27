@@ -715,6 +715,11 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
         horizonMin: 60,
         topic: "BTC market sentiment and catalysts",
         maxChars: 900,
+        infoInput: {
+          url: "https://newshacker.me/",
+          mode: "auto",
+          maxChars: 900,
+        },
       };
       const result = await fetchJSON<Record<string, unknown>>(
         `${baseUrl}/api/network/demo/router-info-technical/run`,
