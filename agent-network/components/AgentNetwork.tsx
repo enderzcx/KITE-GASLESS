@@ -315,7 +315,25 @@ async function fetchJSON<T>(url: string, init: RequestInit = {}, timeout = 7000)
   const timer = window.setTimeout(() => ctrl.abort(), timeout);
   try {
     const res = await fetch(url, { ...init, signal: ctrl.signal });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) {
+      let details = "";
+      const contentType = String(res.headers.get("content-type") || "").toLowerCase();
+      if (contentType.includes("application/json")) {
+        const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+        const reason = String(body["reason"] || body["error"] || body["message"] || "").trim();
+        const requestId = String(body["requestId"] || "").trim();
+        const workflowTraceId = String(body["workflowTraceId"] || body["traceId"] || "").trim();
+        const failedStep = String(body["failedStep"] || "").trim();
+        const extras = [reason];
+        if (requestId) extras.push(`requestId=${requestId}`);
+        if (workflowTraceId) extras.push(`workflowTraceId=${workflowTraceId}`);
+        if (failedStep) extras.push(`failedStep=${failedStep}`);
+        details = extras.filter(Boolean).join(" | ");
+      } else {
+        details = String(await res.text().catch(() => "")).trim();
+      }
+      throw new Error(details ? `HTTP ${res.status}: ${details}` : `HTTP ${res.status}`);
+    }
     return (await res.json()) as T;
   } finally {
     window.clearTimeout(timer);

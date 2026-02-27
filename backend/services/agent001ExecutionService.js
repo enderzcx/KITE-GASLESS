@@ -69,9 +69,24 @@ function createAgent001ExecutionService(deps = {}) {
       }
     );
     if (!response.ok || payload?.ok === false) {
-      throw new Error(
-        String(payload?.reason || payload?.error || `workflow/hyperliquid-order/run failed: HTTP ${response.status}`).trim()
-      );
+      const workflow = payload?.workflow && typeof payload.workflow === 'object' ? payload.workflow : null;
+      const steps = Array.isArray(workflow?.steps) ? workflow.steps : [];
+      const lastNonFailedStep =
+        [...steps]
+          .reverse()
+          .find((step) => String(step?.step || '').trim() && String(step?.step || '').trim() !== 'failed') || null;
+      const failedStep = String(lastNonFailedStep?.step || '').trim();
+      const requestId = String(payload?.requestId || payload?.payment?.requestId || workflow?.requestId || '').trim();
+      const workflowTraceId = String(payload?.traceId || workflow?.traceId || '').trim();
+      const reasonBase = String(payload?.reason || payload?.error || '').trim();
+      const reason = reasonBase || `workflow/hyperliquid-order/run failed: HTTP ${response.status}`;
+      const error = new Error(reason);
+      error.httpStatus = Number(response.status || 0);
+      error.requestId = requestId;
+      error.workflowTraceId = workflowTraceId;
+      error.failedStep = failedStep;
+      error.workflow = workflow;
+      throw error;
     }
     return payload;
   }

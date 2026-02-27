@@ -13229,11 +13229,22 @@ app.post('/api/agent001/hyperliquid/order', requireRole('agent'), async (req, re
       agent001Result: saved
     });
   } catch (error) {
+    const workflow = error?.workflow && typeof error.workflow === 'object' ? error.workflow : null;
+    const requestId = String(error?.requestId || workflow?.requestId || '').trim();
+    const workflowTraceId = String(error?.workflowTraceId || workflow?.traceId || '').trim();
+    const failedStep = String(error?.failedStep || '').trim();
+    const httpStatus = Number(error?.httpStatus || 0);
+    const reason = String(error?.message || 'agent001 hyperliquid order failed').trim();
     return res.status(500).json({
       ok: false,
       traceId: req.traceId || '',
       error: 'agent001_hyperliquid_order_failed',
-      reason: String(error?.message || 'agent001 hyperliquid order failed').trim()
+      reason,
+      statusCode: Number.isFinite(httpStatus) && httpStatus > 0 ? httpStatus : undefined,
+      requestId: requestId || undefined,
+      workflowTraceId: workflowTraceId || undefined,
+      failedStep: failedStep || undefined,
+      workflow
     });
   }
 });
