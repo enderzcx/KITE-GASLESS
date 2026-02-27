@@ -5,7 +5,7 @@
 
 ## 1) 新对话启动规则（必须先做）
 1. 先读 `HANDOFF.md`。
-2. 再读 `README.md`、`CHANGELOG.md`、`backend/server.js`、`重要信息.md`。
+2. 再读 `README.md`、`CHANGELOG.md`、`AGENT_NETWORK_PLAN.md`、`backend/server.js`、`重要信息.md`。
 3. 用 8 行内复述：当前状态、今天目标、进行中任务、风险。
 4. 明确说明：准备修改哪些文件。
 5. 直接开始实现，不停留在方案讨论。
@@ -89,7 +89,7 @@ pm2 status
 
 ## 11) 新对话可直接复制的指令
 ```text
-先读 HANDOFF.md，再读 README.md、CHANGELOG.md、backend/server.js、重要信息.md。
+先读 HANDOFF.md，再读 README.md、CHANGELOG.md、AGENT_NETWORK_PLAN.md、backend/server.js、重要信息.md。
 8 行内复述现状/目标/风险，然后直接改代码并本地验证。
 每次改动后 commit，不要 push；交付时必须带服务器更新命令和验证命令。
 ```
