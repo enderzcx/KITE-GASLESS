@@ -156,7 +156,6 @@ export const NETWORK_EDGES: Edge<NetworkEdgeData>[] = [
   { id: "erc-a2a-agent", type: "glow", source: "erc8004", target: "a2a-agent001", sourceHandle: "s-left", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.erc8004 }, data: { label: "ERC8004 proof", channel: "erc8004", lane: "both", labelOffsetX: -16, labelOffsetY: -10, curvature: 0.26 } },
   { id: "erc-a2a-msg", type: "glow", source: "erc8004", target: "a2a-msgtech", sourceHandle: "s-bottom", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.erc8004 }, data: { label: "ERC8004 proof", channel: "erc8004", lane: "both", labelOffsetX: 14, labelOffsetY: -2, curvature: 0.2 } },
   { id: "erc-atapi-agent", type: "glow", source: "erc8004", target: "atapi-agent001", sourceHandle: "s-right", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.erc8004 }, data: { label: "ERC8004 proof", channel: "erc8004", lane: "both", labelOffsetX: -10, labelOffsetY: 10, curvature: 0.3 } },
-  { id: "erc-atapi-api", type: "glow", source: "erc8004", target: "atapi-api", sourceHandle: "s-right", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.erc8004 }, data: { label: "ERC8004 proof", channel: "erc8004", lane: "both", labelOffsetX: 26, labelOffsetY: -8, curvature: 0.22 } },
 ];
 
 const ICONS: Record<NodeKind, typeof Bot> = { agent: Bot, protocol: ShieldCheck, settlement: Wallet, api: Server, decision: Cpu };
@@ -193,7 +192,7 @@ async function fetchJSON<T>(url: string, init: RequestInit = {}, timeout = 7000)
 }
 
 function highlights(step: FlowStepId, mode: FlowMode, shouldExecute: boolean | null) {
-  if (step === "erc8004_verify") return { nodes: ["erc8004", "a2a-agent001", "a2a-msgtech", "atapi-agent001", "atapi-api"], edges: ["erc-a2a-agent", "erc-a2a-msg", "erc-atapi-agent", "erc-atapi-api"] };
+  if (step === "erc8004_verify") return { nodes: ["erc8004", "a2a-agent001", "a2a-msgtech", "atapi-agent001"], edges: ["erc-a2a-agent", "erc-a2a-msg", "erc-atapi-agent"] };
   if (step === "xmtp_dm_negotiate") return { nodes: ["a2a-agent001", "a2a-msgtech"], edges: ["a2a-1"] };
   if (step === "xmtp_result_return") return { nodes: ["a2a-agent001", "a2a-msgtech"], edges: ["a2a-5"] };
   if (step === "trade_plan_decision") return { nodes: ["decision-hub", mode === "atapi" ? "atapi-agent001" : "a2a-agent001"], edges: [] };
