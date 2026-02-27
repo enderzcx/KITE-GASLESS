@@ -51,11 +51,11 @@ type PaymentPhase = "challenge" | "pay+proof" | "verify" | "unlock";
 
 export type FlowStepId =
   | "erc8004_verify"
-  | "xmtp_message_signal"
-  | "xmtp_technical_signal"
-  | "trade_plan_decision"
+  | "xmtp_quote_request"
+  | "xmtp_quote_return"
   | "x402_settlement"
-  | "api_order_execution";
+  | "xmtp_service_result"
+  | "api_order_decision";
 
 export interface FlowStep {
   id: FlowStepId;
@@ -114,35 +114,43 @@ const COLORS: Record<EdgeChannel, string> = {
 };
 
 const X402_PHASES: PaymentPhase[] = ["challenge", "pay+proof", "verify", "unlock"];
+const QUOTE_CAP = 0.00024;
+const EXECUTION_THRESHOLD = 0.62;
 
 export const FLOW_STEPS: FlowStep[] = [
-  { id: "erc8004_verify", index: 1, title: "Step 1 · ERC8004 Identity Verification", description: "Agent001 verifies message and technical agents.", durationMs: 1300 },
-  { id: "xmtp_message_signal", index: 2, title: "Step 2 · XMTP Message Signal", description: "Receive market narrative and event signal.", durationMs: 1600 },
-  { id: "xmtp_technical_signal", index: 3, title: "Step 3 · XMTP Technical Signal", description: "Receive technical/risk analysis signal.", durationMs: 1600 },
-  { id: "trade_plan_decision", index: 4, title: "Step 4 · Agent001 Decision", description: "Aggregate both signals and decide whether to place order.", durationMs: 1400 },
-  { id: "x402_settlement", index: 5, title: "Step 5 · x402 Settlement", description: "challenge -> pay+proof -> unlock, only if execution is approved.", durationMs: 2500 },
-  { id: "api_order_execution", index: 6, title: "Step 6 · API Order Execution", description: "Call API for order placement or skip based on decision.", durationMs: 1300 },
+  { id: "erc8004_verify", index: 1, title: "Step 1 · ERC8004 Verification", description: "Agent001 verifies collaborator agents on-chain.", durationMs: 1300 },
+  { id: "xmtp_quote_request", index: 2, title: "Step 2 · XMTP DM Quote Request", description: "Agent001 asks message/technical agents for service quotes.", durationMs: 1500 },
+  { id: "xmtp_quote_return", index: 3, title: "Step 3 · XMTP DM Quote Return", description: "Agents return quotes and Agent001 decides whether to pay.", durationMs: 1600 },
+  { id: "x402_settlement", index: 4, title: "Step 4 · x402 Payment", description: "challenge -> pay+proof -> unlock for paid service access.", durationMs: 2500 },
+  { id: "xmtp_service_result", index: 5, title: "Step 5 · XMTP DM Service Result", description: "Paid service results are returned to Agent001 over DM.", durationMs: 1700 },
+  { id: "api_order_decision", index: 6, title: "Step 6 · Agent001 API Order Decision", description: "Agent001 decides whether to call API order execution.", durationMs: 1300 },
 ];
 
 export const NETWORK_NODES: Node<NetworkNodeData>[] = [
-  { id: "erc8004", type: "network", position: { x: 610, y: 56 }, data: { title: "ERC8004", subtitle: "Identity Registry", kind: "protocol" } },
+  { id: "erc8004", type: "network", position: { x: 610, y: 56 }, data: { title: "ERC8004", subtitle: "Registration · Authentication · Reputation · Agent Discovery", kind: "protocol" } },
   { id: "message-agent", type: "network", position: { x: 92, y: 224 }, data: { title: "Message Agent", subtitle: "News & Sentiment Signal", kind: "agent" } },
   { id: "technical-agent", type: "network", position: { x: 92, y: 452 }, data: { title: "Technical Agent", subtitle: "Indicator & Risk Signal", kind: "agent" } },
   { id: "agent001", type: "network", position: { x: 574, y: 334 }, data: { title: "Agent001", subtitle: "Signal Aggregator & Executor", kind: "agent" } },
   { id: "decision-hub", type: "network", position: { x: 574, y: 534 }, data: { title: "Decision Hub", subtitle: "Should call API order?", kind: "decision" } },
-  { id: "x402", type: "network", position: { x: 920, y: 534 }, data: { title: "x402 Settlement", subtitle: "challenge -> pay -> proof -> unlock", kind: "settlement" } },
+  { id: "x402", type: "network", position: { x: 920, y: 542 }, data: { title: "x402 Settlement", subtitle: "challenge -> pay -> proof -> unlock", kind: "settlement" } },
   { id: "trading-api", type: "network", position: { x: 1248, y: 334 }, data: { title: "Trading API", subtitle: "Web2 Order Service", kind: "api" } },
 ];
 
 export const NETWORK_EDGES: Edge<NetworkEdgeData>[] = [
-  { id: "erc-msg", type: "glow", source: "erc8004", target: "message-agent", sourceHandle: "s-left", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.erc8004 }, data: { label: "ERC8004 proof", channel: "erc8004", labelOffsetX: -8, labelOffsetY: -14, curvature: 0.28 } },
-  { id: "erc-tech", type: "glow", source: "erc8004", target: "technical-agent", sourceHandle: "s-left", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.erc8004 }, data: { label: "ERC8004 proof", channel: "erc8004", labelOffsetX: -6, labelOffsetY: 8, curvature: 0.35 } },
-  { id: "msg-to-agent", type: "glow", source: "message-agent", target: "agent001", sourceHandle: "s-right", targetHandle: "t-left", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.xmtp }, data: { label: "① XMTP Message Signal", channel: "xmtp", labelOffsetY: -14, curvature: 0.22 } },
-  { id: "tech-to-agent", type: "glow", source: "technical-agent", target: "agent001", sourceHandle: "s-right", targetHandle: "t-left", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.xmtp }, data: { label: "② XMTP Technical Signal", channel: "xmtp", labelOffsetY: 18, curvature: 0.15 } },
-  { id: "agent-to-decision", type: "glow", source: "agent001", target: "decision-hub", sourceHandle: "s-bottom", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.decision }, data: { label: "③ Aggregate + Decision", channel: "decision", labelOffsetX: 14, labelOffsetY: -4, curvature: 0.2 } },
-  { id: "decision-to-x402", type: "glow", source: "decision-hub", target: "x402", sourceHandle: "s-right", targetHandle: "t-left", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "④ If approved: x402 settlement", channel: "x402", labelOffsetY: -18, curvature: 0.2 } },
-  { id: "x402-to-api", type: "glow", source: "x402", target: "trading-api", sourceHandle: "s-right", targetHandle: "t-bottom", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "⑤ unlock order channel", channel: "x402", labelOffsetX: 24, labelOffsetY: -4, curvature: 0.22 } },
-  { id: "api-to-agent", type: "glow", source: "trading-api", target: "agent001", sourceHandle: "s-left", targetHandle: "t-right", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.api }, data: { label: "⑥ API Result + receiptRef", channel: "api", labelOffsetY: -16, curvature: 0.24 } },
+  { id: "erc-msg", type: "glow", source: "erc8004", target: "message-agent", sourceHandle: "s-left", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.erc8004 }, data: { label: "", channel: "erc8004", curvature: 0.28 } },
+  { id: "erc-tech", type: "glow", source: "erc8004", target: "technical-agent", sourceHandle: "s-left", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.erc8004 }, data: { label: "", channel: "erc8004", curvature: 0.35 } },
+  { id: "quote-req-msg", type: "glow", source: "agent001", target: "message-agent", sourceHandle: "s-left", targetHandle: "t-right", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.xmtp }, data: { label: "① DM quote request (Message Agent)", channel: "xmtp", labelOffsetY: -30, curvature: 0.28 } },
+  { id: "quote-req-tech", type: "glow", source: "agent001", target: "technical-agent", sourceHandle: "s-left", targetHandle: "t-right", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.xmtp }, data: { label: "① DM quote request (Technical Agent)", channel: "xmtp", labelOffsetY: 28, curvature: 0.16 } },
+  { id: "quote-res-msg", type: "glow", source: "message-agent", target: "agent001", sourceHandle: "s-top", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.xmtp }, data: { label: "② DM quote return", channel: "xmtp", labelOffsetY: -54, curvature: 0.4 } },
+  { id: "quote-res-tech", type: "glow", source: "technical-agent", target: "agent001", sourceHandle: "s-bottom", targetHandle: "t-bottom", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.xmtp }, data: { label: "② DM quote return", channel: "xmtp", labelOffsetY: 54, curvature: 0.4 } },
+  { id: "pay-to-x402", type: "glow", source: "agent001", target: "x402", sourceHandle: "s-bottom", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "③ pay + proof", channel: "x402", labelOffsetY: -6, curvature: 0.24 } },
+  { id: "unlock-msg", type: "glow", source: "x402", target: "message-agent", sourceHandle: "s-left", targetHandle: "t-bottom", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "④ unlock message service", channel: "x402", labelOffsetX: -28, labelOffsetY: -22, curvature: 0.34 } },
+  { id: "unlock-tech", type: "glow", source: "x402", target: "technical-agent", sourceHandle: "s-left", targetHandle: "t-bottom", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "④ unlock technical service", channel: "x402", labelOffsetX: -12, labelOffsetY: 20, curvature: 0.24 } },
+  { id: "result-msg", type: "glow", source: "message-agent", target: "agent001", sourceHandle: "s-right", targetHandle: "t-left", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.xmtp }, data: { label: "⑤ DM service result", channel: "xmtp", labelOffsetY: -10, curvature: 0.22 } },
+  { id: "result-tech", type: "glow", source: "technical-agent", target: "agent001", sourceHandle: "s-right", targetHandle: "t-left", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.xmtp }, data: { label: "⑤ DM service result", channel: "xmtp", labelOffsetY: 18, curvature: 0.15 } },
+  { id: "agent-to-decision", type: "glow", source: "agent001", target: "decision-hub", sourceHandle: "s-bottom", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.decision }, data: { label: "⑥ decide to call API order", channel: "decision", labelOffsetX: 12, labelOffsetY: -5, curvature: 0.2 } },
+  { id: "decision-to-api", type: "glow", source: "decision-hub", target: "trading-api", sourceHandle: "s-right", targetHandle: "t-bottom", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.api }, data: { label: "⑥ API order request", channel: "api", labelOffsetX: 14, labelOffsetY: -8, curvature: 0.22 } },
+  { id: "api-to-agent", type: "glow", source: "trading-api", target: "agent001", sourceHandle: "s-left", targetHandle: "t-right", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.api }, data: { label: "⑥ API result + receiptRef", channel: "api", labelOffsetY: -18, curvature: 0.24 } },
 ];
 
 const ICONS: Record<NodeKind, typeof Bot> = {
@@ -185,18 +193,22 @@ async function fetchJSON<T>(url: string, init: RequestInit = {}, timeout = 7000)
   }
 }
 
-function highlights(step: FlowStepId, shouldExecute: boolean | null) {
+function highlights(step: FlowStepId, quoteAccepted: boolean | null, shouldOrder: boolean | null) {
   if (step === "erc8004_verify") return { nodes: ["erc8004", "message-agent", "technical-agent"], edges: ["erc-msg", "erc-tech"] };
-  if (step === "xmtp_message_signal") return { nodes: ["message-agent", "agent001"], edges: ["msg-to-agent"] };
-  if (step === "xmtp_technical_signal") return { nodes: ["technical-agent", "agent001"], edges: ["tech-to-agent"] };
-  if (step === "trade_plan_decision") return { nodes: ["agent001", "decision-hub"], edges: ["agent-to-decision"] };
+  if (step === "xmtp_quote_request") return { nodes: ["agent001", "message-agent", "technical-agent"], edges: ["quote-req-msg", "quote-req-tech"] };
+  if (step === "xmtp_quote_return") return { nodes: ["agent001", "message-agent", "technical-agent"], edges: ["quote-res-msg", "quote-res-tech"] };
   if (step === "x402_settlement") {
-    if (!shouldExecute) return { nodes: ["decision-hub"], edges: [] };
-    return { nodes: ["decision-hub", "x402", "trading-api"], edges: ["decision-to-x402", "x402-to-api"] };
+    if (!quoteAccepted) return { nodes: ["agent001"], edges: [] };
+    return { nodes: ["agent001", "x402", "message-agent", "technical-agent"], edges: ["pay-to-x402", "unlock-msg", "unlock-tech"] };
   }
-  if (step === "api_order_execution") {
-    if (!shouldExecute) return { nodes: ["decision-hub", "agent001"], edges: [] };
-    return { nodes: ["trading-api", "agent001", "x402"], edges: ["api-to-agent"] };
+  if (step === "xmtp_service_result") {
+    if (!quoteAccepted) return { nodes: ["agent001"], edges: [] };
+    return { nodes: ["agent001", "message-agent", "technical-agent"], edges: ["result-msg", "result-tech"] };
+  }
+  if (step === "api_order_decision") {
+    if (!quoteAccepted) return { nodes: ["agent001", "decision-hub"], edges: ["agent-to-decision"] };
+    if (!shouldOrder) return { nodes: ["agent001", "decision-hub"], edges: ["agent-to-decision"] };
+    return { nodes: ["agent001", "decision-hub", "trading-api"], edges: ["agent-to-decision", "decision-to-api", "api-to-agent"] };
   }
   return { nodes: [], edges: [] };
 }
@@ -253,6 +265,7 @@ function GlowEdge({
   const active = Boolean(data?.active);
   const dim = Boolean(data?.dimmed);
   const dashed = data?.channel === "erc8004";
+  const showLabel = Boolean(data?.label);
 
   return (
     <>
@@ -269,20 +282,22 @@ function GlowEdge({
           animation: active ? "edge-dash 1.2s linear infinite" : undefined,
         }}
       />
-      <EdgeLabelRenderer>
-        <div
-          className="nodrag nopan rounded-full border border-white/20 bg-black/70 px-2 py-1 text-[11px] text-white"
-          style={{
-            position: "absolute",
-            left: 0,
-            top: 0,
-            whiteSpace: "nowrap",
-            transform: `translate(-50%, -50%) translate(${x + (data?.labelOffsetX ?? 0)}px, ${y + (data?.labelOffsetY ?? -8)}px)`,
-          }}
-        >
-          {data?.label}
-        </div>
-      </EdgeLabelRenderer>
+      {showLabel ? (
+        <EdgeLabelRenderer>
+          <div
+            className="nodrag nopan rounded-full border border-white/20 bg-black/70 px-2 py-1 text-[11px] text-white"
+            style={{
+              position: "absolute",
+              left: 0,
+              top: 0,
+              whiteSpace: "nowrap",
+              transform: `translate(-50%, -50%) translate(${x + (data?.labelOffsetX ?? 0)}px, ${y + (data?.labelOffsetY ?? -8)}px)`,
+            }}
+          >
+            {data?.label}
+          </div>
+        </EdgeLabelRenderer>
+      ) : null}
     </>
   );
 }
@@ -299,16 +314,19 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
   const [activeNodeIds, setActiveNodeIds] = useState<string[]>([]);
   const [activeEdgeIds, setActiveEdgeIds] = useState<string[]>([]);
   const [audit, setAudit] = useState<AuditLogEntry[]>([]);
-  const [signalOpen, setSignalOpen] = useState(false);
+  const [dmOpen, setDmOpen] = useState(false);
   const [x402Open, setX402Open] = useState(false);
   const [x402Phase, setX402Phase] = useState<PaymentPhase>("challenge");
-  const [shouldExecute, setShouldExecute] = useState<boolean | null>(null);
-  const [decision, setDecision] = useState("Pending signal aggregation.");
+  const [quoteAccepted, setQuoteAccepted] = useState<boolean | null>(null);
+  const [shouldOrder, setShouldOrder] = useState<boolean | null>(null);
+  const [decision, setDecision] = useState("Pending quote negotiation.");
   const [verificationHash, setVerificationHash] = useState("");
+  const [messageQuote, setMessageQuote] = useState(0);
+  const [technicalQuote, setTechnicalQuote] = useState(0);
   const [messageSnippet, setMessageSnippet] = useState("");
   const [technicalSnippet, setTechnicalSnippet] = useState("");
-  const [messageScore, setMessageScore] = useState(0.58);
-  const [technicalScore, setTechnicalScore] = useState(0.61);
+  const [messageScore, setMessageScore] = useState(0);
+  const [technicalScore, setTechnicalScore] = useState(0);
   const [receiptRef, setReceiptRef] = useState("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
@@ -316,11 +334,19 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
   const x402TimerRef = useRef<number | null>(null);
   const runningRef = useRef(false);
   const playbackRef = useRef<PlaybackState>("idle");
+  const quoteAcceptedRef = useRef<boolean | null>(null);
+  const shouldOrderRef = useRef<boolean | null>(null);
   const baseUrl = backendBaseUrl || process.env.NEXT_PUBLIC_BACKEND_URL || "http://127.0.0.1:3001";
 
   useEffect(() => {
     playbackRef.current = playback;
   }, [playback]);
+  useEffect(() => {
+    quoteAcceptedRef.current = quoteAccepted;
+  }, [quoteAccepted]);
+  useEffect(() => {
+    shouldOrderRef.current = shouldOrder;
+  }, [shouldOrder]);
 
   useEffect(
     () => () => {
@@ -351,7 +377,7 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
       try {
         const step = FLOW_STEPS[idx];
         setStepIndex(idx);
-        const hi = highlights(step.id, shouldExecute);
+        const hi = highlights(step.id, quoteAcceptedRef.current, shouldOrderRef.current);
         setActiveNodeIds(hi.nodes);
         setActiveEdgeIds(hi.edges);
 
@@ -374,90 +400,80 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
           });
         }
 
-        if (step.id === "xmtp_message_signal") {
-          setSignalOpen(true);
-          let snippet = "Fallback: Message agent reports positive macro momentum.";
-          let score = 0.59;
-          let source = "fallback";
-          try {
-            const res = await fetchJSON<{ result?: { summary?: string; confidence?: number } }>(`${baseUrl}/api/analysis/info/run`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ topic: "message signal for BTCUSDT", mode: "auto", maxChars: 360 }),
-            });
-            snippet = res?.result?.summary || snippet;
-            score = Number((res?.result?.confidence ?? score).toFixed(3));
-            source = "backend";
-          } catch {
-            // fallback
-          }
-          setMessageSnippet(snippet);
-          setMessageScore(score);
+        if (step.id === "xmtp_quote_request") {
+          setDmOpen(true);
           appendAudit({
             mode,
             stepId: step.id,
             stepName: step.title,
             blockchainVerifiable: true,
-            xmtpSnippet: snippet,
-            payload: { signalAgent: "message-agent", score, source },
+            xmtpSnippet: "Agent001 requested service quote from Message Agent and Technical Agent via XMTP DM.",
+            payload: {
+              task: "BTCUSDT strategy",
+              requestedFrom: ["message-agent", "technical-agent"],
+            },
           });
         }
 
-        if (step.id === "xmtp_technical_signal") {
-          let snippet = "Fallback: Technical agent reports trend support and manageable volatility.";
-          let score = 0.63;
-          let source = "fallback";
+        if (step.id === "xmtp_quote_return") {
+          let mQuote = 0.00011;
+          let tQuote = 0.0001;
+          let mSource = "fallback";
+          let tSource = "fallback";
           try {
-            const res = await fetchJSON<{ result?: { summary?: string; confidence?: number } }>(`${baseUrl}/api/analysis/info/run`, {
+            const m = await fetchJSON<{ result?: { confidence?: number } }>(`${baseUrl}/api/analysis/info/run`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ topic: "technical signal for BTCUSDT", mode: "auto", maxChars: 360 }),
+              body: JSON.stringify({ topic: "message agent quote for BTCUSDT service", mode: "auto", maxChars: 120 }),
             });
-            snippet = res?.result?.summary || snippet;
-            score = Number((res?.result?.confidence ?? score).toFixed(3));
-            source = "backend";
+            const conf = Number(m?.result?.confidence ?? 0.72);
+            mQuote = Number((0.00008 + (1 - conf) * 0.0001).toFixed(5));
+            mSource = "backend";
           } catch {
             // fallback
           }
-          setTechnicalSnippet(snippet);
-          setTechnicalScore(score);
-          appendAudit({
-            mode,
-            stepId: step.id,
-            stepName: step.title,
-            blockchainVerifiable: true,
-            xmtpSnippet: snippet,
-            payload: { signalAgent: "technical-agent", score, source },
-          });
-        }
+          try {
+            const t = await fetchJSON<{ result?: { confidence?: number } }>(`${baseUrl}/api/analysis/info/run`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ topic: "technical agent quote for BTCUSDT service", mode: "auto", maxChars: 120 }),
+            });
+            const conf = Number(t?.result?.confidence ?? 0.75);
+            tQuote = Number((0.00008 + (1 - conf) * 0.0001).toFixed(5));
+            tSource = "backend";
+          } catch {
+            // fallback
+          }
 
-        if (step.id === "trade_plan_decision") {
-          setSignalOpen(false);
-          const combined = Number((messageScore * 0.45 + technicalScore * 0.55).toFixed(3));
-          const accepted = combined >= 0.62 && messageScore >= 0.45 && technicalScore >= 0.45;
+          setMessageQuote(mQuote);
+          setTechnicalQuote(tQuote);
+          const total = Number((mQuote + tQuote).toFixed(5));
+          const accepted = total <= QUOTE_CAP;
+          setQuoteAccepted(accepted);
+          quoteAcceptedRef.current = accepted;
           const basis = accepted
-            ? `Approved. Combined score ${combined} (message ${messageScore}, technical ${technicalScore}) meets execution threshold.`
-            : `Rejected. Combined score ${combined} (message ${messageScore}, technical ${technicalScore}) is below threshold.`;
-          setShouldExecute(accepted);
+            ? `Quote accepted. Total ${total.toFixed(5)} <= cap ${QUOTE_CAP.toFixed(5)}. Proceed to x402 payment.`
+            : `Quote rejected. Total ${total.toFixed(5)} > cap ${QUOTE_CAP.toFixed(5)}. Stop before payment.`;
           setDecision(basis);
           appendAudit({
             mode,
             stepId: step.id,
             stepName: step.title,
             blockchainVerifiable: true,
+            xmtpSnippet: `Message quote ${mQuote.toFixed(5)}, Technical quote ${tQuote.toFixed(5)}, total ${total.toFixed(5)}.`,
             decisionBasis: basis,
-            payload: { messageScore, technicalScore, weighted: combined, execute: accepted },
+            payload: { messageQuote: mQuote, technicalQuote: tQuote, totalQuote: total, cap: QUOTE_CAP, accepted, source: { message: mSource, technical: tSource } },
           });
         }
 
         if (step.id === "x402_settlement") {
-          if (!shouldExecute) {
+          if (!quoteAcceptedRef.current) {
             appendAudit({
               mode,
               stepId: step.id,
               stepName: step.title,
               blockchainVerifiable: true,
-              decisionBasis: "Skipped. Agent001 did not approve API order execution.",
+              decisionBasis: "Skipped. Quote was not accepted, so payment was not initiated.",
               payload: { executed: false },
             });
           } else {
@@ -496,37 +512,115 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
           }
         }
 
-        if (step.id === "api_order_execution") {
-          if (!shouldExecute) {
+        if (step.id === "xmtp_service_result") {
+          if (!quoteAcceptedRef.current) {
+            setDmOpen(false);
             appendAudit({
               mode,
               stepId: step.id,
               stepName: step.title,
               blockchainVerifiable: true,
-              decisionBasis: "API order call not triggered by Agent001 decision.",
+              decisionBasis: "No service result returned because payment did not complete.",
+              payload: { returned: false },
+            });
+          } else {
+            setDmOpen(true);
+            let mSnippet = "Fallback: Message agent reports risk-on momentum from macro and sentiment channels.";
+            let tSnippet = "Fallback: Technical agent reports trend confirmation with acceptable volatility.";
+            let mScore = 0.64;
+            let tScore = 0.66;
+            try {
+              const m = await fetchJSON<{ result?: { summary?: string; confidence?: number } }>(`${baseUrl}/api/analysis/info/run`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ topic: "message agent service result BTCUSDT", mode: "auto", maxChars: 360 }),
+              });
+              mSnippet = m?.result?.summary || mSnippet;
+              mScore = Number((m?.result?.confidence ?? mScore).toFixed(3));
+            } catch {
+              // fallback
+            }
+            try {
+              const t = await fetchJSON<{ result?: { summary?: string; confidence?: number } }>(`${baseUrl}/api/analysis/info/run`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ topic: "technical agent service result BTCUSDT", mode: "auto", maxChars: 360 }),
+              });
+              tSnippet = t?.result?.summary || tSnippet;
+              tScore = Number((t?.result?.confidence ?? tScore).toFixed(3));
+            } catch {
+              // fallback
+            }
+            setMessageSnippet(mSnippet);
+            setTechnicalSnippet(tSnippet);
+            setMessageScore(mScore);
+            setTechnicalScore(tScore);
+            appendAudit({
+              mode,
+              stepId: step.id,
+              stepName: step.title,
+              blockchainVerifiable: true,
+              xmtpSnippet: `Service payload delivered by XMTP DM. Message: ${mSnippet.slice(0, 90)}...`,
+              decisionBasis: "Service result is returned via XMTP DM. x402 is only for settlement/challenge-proof.",
+              payload: {
+                delivery: "xmtp_dm",
+                messageResult: mSnippet,
+                technicalResult: tSnippet,
+                messageScore: mScore,
+                technicalScore: tScore,
+                receiptRef,
+              },
+            });
+          }
+        }
+
+        if (step.id === "api_order_decision") {
+          setDmOpen(false);
+          if (!quoteAcceptedRef.current) {
+            setShouldOrder(false);
+            shouldOrderRef.current = false;
+            const basis = "Skipped API order decision because quote/payment stage did not pass.";
+            setDecision(basis);
+            appendAudit({
+              mode,
+              stepId: step.id,
+              stepName: step.title,
+              blockchainVerifiable: true,
+              decisionBasis: basis,
               payload: { apiCalled: false },
             });
           } else {
-            let orderRef = `order_${randomHex(8).slice(2)}`;
-            try {
-              const res = await fetchJSON<{ result?: Record<string, unknown> }>(`${baseUrl}/api/workflow/btc-price/run`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ pair: "BTCUSDT", source: "hyperliquid" }),
-              });
-              const maybeRef = String(res?.result?.requestId || res?.result?.receiptRef || "");
-              if (maybeRef) orderRef = maybeRef;
-            } catch {
-              // fallback
+            const combined = Number((messageScore * 0.5 + technicalScore * 0.5).toFixed(3));
+            const approved = combined >= EXECUTION_THRESHOLD && messageScore >= 0.45 && technicalScore >= 0.45;
+            setShouldOrder(approved);
+            shouldOrderRef.current = approved;
+            const basis = approved
+              ? `Order approved. Combined service score ${combined} >= ${EXECUTION_THRESHOLD}. Calling API order endpoint.`
+              : `Order rejected. Combined service score ${combined} < ${EXECUTION_THRESHOLD}.`;
+            setDecision(basis);
+            let orderRef = "";
+            if (approved) {
+              orderRef = `order_${randomHex(8).slice(2)}`;
+              try {
+                const res = await fetchJSON<{ result?: Record<string, unknown> }>(`${baseUrl}/api/workflow/btc-price/run`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ pair: "BTCUSDT", source: "hyperliquid" }),
+                });
+                const maybeRef = String(res?.result?.requestId || res?.result?.receiptRef || "");
+                if (maybeRef) orderRef = maybeRef;
+              } catch {
+                // fallback
+              }
             }
             appendAudit({
               mode,
               stepId: step.id,
               stepName: step.title,
               blockchainVerifiable: true,
-              receiptRef: receiptRef || orderRef,
-              decisionBasis: "Agent001 approved execution and invoked API order flow.",
-              payload: { apiCalled: true, orderRef },
+              receiptRef: receiptRef || orderRef || undefined,
+              decisionBasis: basis,
+              payload: { messageScore, technicalScore, combined, apiCalled: approved, orderRef },
             });
           }
         }
@@ -545,7 +639,7 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
         runningRef.current = false;
       }
     },
-    [appendAudit, baseUrl, messageScore, mode, receiptRef, shouldExecute, technicalScore]
+    [appendAudit, baseUrl, messageScore, mode, receiptRef, technicalScore]
   );
 
   const start = useCallback(() => {
@@ -574,16 +668,21 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
     setActiveNodeIds([]);
     setActiveEdgeIds([]);
     setAudit([]);
-    setSignalOpen(false);
+    setDmOpen(false);
     setX402Open(false);
     setX402Phase("challenge");
-    setShouldExecute(null);
-    setDecision("Pending signal aggregation.");
+    setQuoteAccepted(null);
+    quoteAcceptedRef.current = null;
+    setShouldOrder(null);
+    shouldOrderRef.current = null;
+    setDecision("Pending quote negotiation.");
     setVerificationHash("");
+    setMessageQuote(0);
+    setTechnicalQuote(0);
     setMessageSnippet("");
     setTechnicalSnippet("");
-    setMessageScore(0.58);
-    setTechnicalScore(0.61);
+    setMessageScore(0);
+    setTechnicalScore(0);
     setReceiptRef("");
     setTimeout(() => {
       setPlayback("playing");
@@ -630,7 +729,7 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
             <div className="flex flex-wrap items-center gap-2">
               <Button onClick={start} className="h-10 bg-gradient-to-r from-cyan-400 to-blue-600 text-black">
                 <Play className="size-4" />
-                ? Start Auditable Flow Demo
+                Start Auditable Flow Demo
               </Button>
               <Button variant="outline" className="border-white/30 bg-black/35 text-white" onClick={pause}>
                 <CirclePause className="size-4" />
@@ -657,12 +756,12 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
               <div className="font-mono text-sm">{shortHash(verificationHash)}</div>
             </div>
             <div className="rounded-lg border border-cyan-400/25 bg-cyan-400/8 px-3 py-2">
-              <div className="text-xs text-cyan-200">messageSignal</div>
-              <div className="truncate text-sm">{messageSnippet || "-"}</div>
+              <div className="text-xs text-cyan-200">messageQuote</div>
+              <div className="font-mono text-sm">{messageQuote > 0 ? messageQuote.toFixed(5) : "-"}</div>
             </div>
             <div className="rounded-lg border border-cyan-400/25 bg-cyan-400/8 px-3 py-2">
-              <div className="text-xs text-cyan-200">technicalSignal</div>
-              <div className="truncate text-sm">{technicalSnippet || "-"}</div>
+              <div className="text-xs text-cyan-200">technicalQuote</div>
+              <div className="font-mono text-sm">{technicalQuote > 0 ? technicalQuote.toFixed(5) : "-"}</div>
             </div>
             <div className="rounded-lg border border-emerald-400/25 bg-emerald-400/8 px-3 py-2">
               <div className="text-xs text-emerald-200">receiptRef</div>
@@ -721,19 +820,19 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="inline-block h-[2px] w-8 bg-sky-400" />
-                  Blue arrows = XMTP agent signals
+                  Blue arrows = XMTP DM quote + service results
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="inline-block h-[2px] w-8 bg-amber-400" />
-                  Amber = Agent001 decision logic
+                  Amber = Agent001 order decision
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="inline-block h-[2px] w-8 bg-emerald-500" />
-                  Green = x402 payment unlock flow
+                  Green = x402 payment and unlock flow
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="inline-block h-[2px] w-8 bg-orange-500" />
-                  Orange = API order execution result
+                  Orange = API order request/response
                 </div>
               </div>
             </div>
@@ -803,23 +902,27 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
         </Card>
       </div>
 
-      <Dialog open={signalOpen} onOpenChange={setSignalOpen}>
+      <Dialog open={dmOpen} onOpenChange={setDmOpen}>
         <DialogContent className="max-w-xl border-cyan-400/35 bg-slate-950 text-white">
           <DialogHeader>
-            <DialogTitle className="text-cyan-300">XMTP Signal Ingestion</DialogTitle>
-            <DialogDescription className="text-slate-300">Agent001 receives message and technical signals before decision making.</DialogDescription>
+            <DialogTitle className="text-cyan-300">XMTP DM: Quote + Service Result</DialogTitle>
+            <DialogDescription className="text-slate-300">
+              Agent001 negotiates quotes first, pays through x402, then receives service results via DM.
+            </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 rounded-xl border border-cyan-400/25 bg-slate-900/70 p-4 text-sm">
             <div>
               <div className="text-xs text-cyan-200">Message Agent</div>
-              <p>{messageSnippet || "Waiting for message signal..."}</p>
-              <div className="mt-1 text-xs text-slate-400">score: {messageScore.toFixed(3)}</div>
+              <p>quote: {messageQuote > 0 ? messageQuote.toFixed(5) : "pending..."}</p>
+              <p className="mt-1">{messageSnippet || "service result pending..."}</p>
+              <div className="mt-1 text-xs text-slate-400">result score: {messageScore > 0 ? messageScore.toFixed(3) : "-"}</div>
             </div>
             <Separator className="bg-white/10" />
             <div>
               <div className="text-xs text-cyan-200">Technical Agent</div>
-              <p>{technicalSnippet || "Waiting for technical signal..."}</p>
-              <div className="mt-1 text-xs text-slate-400">score: {technicalScore.toFixed(3)}</div>
+              <p>quote: {technicalQuote > 0 ? technicalQuote.toFixed(5) : "pending..."}</p>
+              <p className="mt-1">{technicalSnippet || "service result pending..."}</p>
+              <div className="mt-1 text-xs text-slate-400">result score: {technicalScore > 0 ? technicalScore.toFixed(3) : "-"}</div>
             </div>
           </div>
         </DialogContent>
