@@ -128,7 +128,7 @@ export const FLOW_STEPS: FlowStep[] = [
   { id: "xmtp_quote_return", index: 3, title: "Step 3 · XMTP DM Quote Return", description: "Agents return quotes and Agent001 decides whether to pay.", durationMs: 1600 },
   { id: "x402_settlement", index: 4, title: "Step 4 · x402 Payment", description: "challenge -> pay+proof -> unlock for paid service access.", durationMs: 2500 },
   { id: "xmtp_service_result", index: 5, title: "Step 5 · XMTP DM Service Result", description: "Paid service results are returned to Agent001 over DM.", durationMs: 1700 },
-  { id: "api_order_decision", index: 6, title: "Step 6 · Agent001 API Order Decision", description: "Agent001 decides whether to call API order execution.", durationMs: 1300 },
+  { id: "api_order_decision", index: 6, title: "Step 6 · Agent001 API Order Decision", description: "Agent001 decides whether to call API, then settles API access via x402.", durationMs: 1500 },
 ];
 
 export const NETWORK_NODES: Node<NetworkNodeData>[] = [
@@ -136,8 +136,8 @@ export const NETWORK_NODES: Node<NetworkNodeData>[] = [
   { id: "message-agent", type: "network", position: { x: 92, y: 224 }, data: { title: "Message Agent", subtitle: "News & Sentiment Signal", kind: "agent" } },
   { id: "technical-agent", type: "network", position: { x: 92, y: 452 }, data: { title: "Technical Agent", subtitle: "Indicator & Risk Signal", kind: "agent" } },
   { id: "agent001", type: "network", position: { x: 574, y: 334 }, data: { title: "Agent001", subtitle: "Signal Aggregator & Executor", kind: "agent" } },
-  { id: "decision-hub", type: "network", position: { x: 574, y: 534 }, data: { title: "Decision Hub", subtitle: "Should call API order?", kind: "decision" } },
-  { id: "x402", type: "network", position: { x: 920, y: 542 }, data: { title: "x402 Settlement", subtitle: "challenge -> pay -> proof -> unlock", kind: "settlement" } },
+  { id: "x402-service", type: "network", position: { x: 860, y: 550 }, data: { title: "x402 Service Settlement", subtitle: "Pay service quote and unlock agent result", kind: "settlement" } },
+  { id: "x402-api", type: "network", position: { x: 960, y: 232 }, data: { title: "x402 API Settlement", subtitle: "Pay API gate and unlock order request", kind: "settlement" } },
   { id: "trading-api", type: "network", position: { x: 1248, y: 334 }, data: { title: "Trading API", subtitle: "Web2 Order Service", kind: "api" } },
 ];
 
@@ -149,13 +149,13 @@ export const NETWORK_EDGES: Edge<NetworkEdgeData>[] = [
   { id: "quote-req-tech", type: "glow", source: "agent001", target: "technical-agent", sourceHandle: "s-left", targetHandle: "t-right", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.xmtp }, data: { label: "① DM quote request (Technical Agent)", channel: "xmtp", labelOffsetY: 28, curvature: 0.16 } },
   { id: "quote-res-msg", type: "glow", source: "message-agent", target: "agent001", sourceHandle: "s-top", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.xmtp }, data: { label: "② DM quote return", channel: "xmtp", labelOffsetY: -54, curvature: 0.4 } },
   { id: "quote-res-tech", type: "glow", source: "technical-agent", target: "agent001", sourceHandle: "s-bottom", targetHandle: "t-bottom", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.xmtp }, data: { label: "② DM quote return", channel: "xmtp", labelOffsetY: 54, curvature: 0.4 } },
-  { id: "pay-to-x402", type: "glow", source: "agent001", target: "x402", sourceHandle: "s-bottom", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "③ pay + proof", channel: "x402", labelOffsetY: -6, curvature: 0.24 } },
-  { id: "unlock-msg", type: "glow", source: "x402", target: "message-agent", sourceHandle: "s-left", targetHandle: "t-bottom", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "④ unlock message service", channel: "x402", labelOffsetX: -28, labelOffsetY: -22, curvature: 0.34 } },
-  { id: "unlock-tech", type: "glow", source: "x402", target: "technical-agent", sourceHandle: "s-left", targetHandle: "t-bottom", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "④ unlock technical service", channel: "x402", labelOffsetX: -12, labelOffsetY: 20, curvature: 0.24 } },
+  { id: "pay-to-x402-service", type: "glow", source: "agent001", target: "x402-service", sourceHandle: "s-bottom", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "③ x402 pay + proof (service)", channel: "x402", labelOffsetY: -6, curvature: 0.24 } },
+  { id: "unlock-msg", type: "glow", source: "x402-service", target: "message-agent", sourceHandle: "s-left", targetHandle: "t-bottom", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "④ unlock message service", channel: "x402", labelOffsetX: -28, labelOffsetY: -22, curvature: 0.34 } },
+  { id: "unlock-tech", type: "glow", source: "x402-service", target: "technical-agent", sourceHandle: "s-left", targetHandle: "t-bottom", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "④ unlock technical service", channel: "x402", labelOffsetX: -12, labelOffsetY: 20, curvature: 0.24 } },
   { id: "result-msg", type: "glow", source: "message-agent", target: "agent001", sourceHandle: "s-right", targetHandle: "t-left", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.xmtp }, data: { label: "⑤ DM service result", channel: "xmtp", labelOffsetY: -10, curvature: 0.22 } },
   { id: "result-tech", type: "glow", source: "technical-agent", target: "agent001", sourceHandle: "s-right", targetHandle: "t-left", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.xmtp }, data: { label: "⑤ DM service result", channel: "xmtp", labelOffsetY: 18, curvature: 0.15 } },
-  { id: "agent-to-decision", type: "glow", source: "agent001", target: "decision-hub", sourceHandle: "s-bottom", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.decision }, data: { label: "⑥ decide to call API order", channel: "decision", labelOffsetX: 12, labelOffsetY: -5, curvature: 0.2 } },
-  { id: "decision-to-api", type: "glow", source: "decision-hub", target: "trading-api", sourceHandle: "s-right", targetHandle: "t-bottom", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.api }, data: { label: "⑥ API order request", channel: "api", labelOffsetX: 14, labelOffsetY: -8, curvature: 0.22 } },
+  { id: "pay-to-x402-api", type: "glow", source: "agent001", target: "x402-api", sourceHandle: "s-right", targetHandle: "t-left", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "⑥ x402 pay + proof (API)", channel: "x402", labelOffsetY: -22, curvature: 0.2 } },
+  { id: "unlock-api", type: "glow", source: "x402-api", target: "trading-api", sourceHandle: "s-right", targetHandle: "t-left", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "⑥ unlock API order channel", channel: "x402", labelOffsetY: 18, curvature: 0.2 } },
   { id: "api-to-agent", type: "glow", source: "trading-api", target: "agent001", sourceHandle: "s-left", targetHandle: "t-right", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.api }, data: { label: "⑥ API result + receiptRef", channel: "api", labelOffsetY: -18, curvature: 0.24 } },
 ];
 
@@ -163,8 +163,8 @@ export const GENERAL_NETWORK_NODES: Node<NetworkNodeData>[] = [
   { id: "erc8004", type: "network", position: { x: 600, y: 56 }, data: { title: "ERC8004", subtitle: "Registration · Authentication · Reputation · Agent Discovery", kind: "protocol" } },
   { id: "other-agent", type: "network", position: { x: 148, y: 338 }, data: { title: "Other Agent", subtitle: "Quoted Service Provider", kind: "agent" } },
   { id: "agent001", type: "network", position: { x: 592, y: 338 }, data: { title: "Agent001", subtitle: "Negotiation · Payment · Decision", kind: "agent" } },
-  { id: "decision-hub", type: "network", position: { x: 592, y: 538 }, data: { title: "Decision Hub", subtitle: "Call API order?", kind: "decision" } },
-  { id: "x402", type: "network", position: { x: 950, y: 538 }, data: { title: "x402 Settlement", subtitle: "challenge -> pay -> proof -> unlock", kind: "settlement" } },
+  { id: "x402-service", type: "network", position: { x: 920, y: 548 }, data: { title: "x402 Service Settlement", subtitle: "Pay service quote and unlock result", kind: "settlement" } },
+  { id: "x402-api", type: "network", position: { x: 960, y: 230 }, data: { title: "x402 API Settlement", subtitle: "Pay API gate and unlock order request", kind: "settlement" } },
   { id: "trading-api", type: "network", position: { x: 1270, y: 338 }, data: { title: "API", subtitle: "Order Execution API", kind: "api" } },
 ];
 
@@ -189,10 +189,10 @@ export const GENERAL_NETWORK_EDGES: Edge<NetworkEdgeData>[] = [
       hintOffsetY: -28,
     },
   },
-  { id: "pay-to-x402", type: "glow", source: "agent001", target: "x402", sourceHandle: "s-bottom", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "③ x402 pay + proof", channel: "x402", labelOffsetY: -6, curvature: 0.24 } },
-  { id: "unlock-other", type: "glow", source: "x402", target: "other-agent", sourceHandle: "s-left", targetHandle: "t-bottom", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "④ unlock service", channel: "x402", labelOffsetX: -22, labelOffsetY: -18, curvature: 0.34 } },
-  { id: "agent-to-decision", type: "glow", source: "agent001", target: "decision-hub", sourceHandle: "s-bottom", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.decision }, data: { label: "⑥ decide to call API", channel: "decision", labelOffsetX: 12, labelOffsetY: -5, curvature: 0.2 } },
-  { id: "decision-to-api", type: "glow", source: "decision-hub", target: "trading-api", sourceHandle: "s-right", targetHandle: "t-bottom", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.api }, data: { label: "⑥ API order request", channel: "api", labelOffsetX: 14, labelOffsetY: -8, curvature: 0.22 } },
+  { id: "pay-to-x402-service", type: "glow", source: "agent001", target: "x402-service", sourceHandle: "s-bottom", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "③ x402 pay + proof (service)", channel: "x402", labelOffsetY: -6, curvature: 0.24 } },
+  { id: "unlock-other", type: "glow", source: "x402-service", target: "other-agent", sourceHandle: "s-left", targetHandle: "t-bottom", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "④ unlock service", channel: "x402", labelOffsetX: -22, labelOffsetY: -18, curvature: 0.34 } },
+  { id: "pay-to-x402-api", type: "glow", source: "agent001", target: "x402-api", sourceHandle: "s-right", targetHandle: "t-left", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "⑥ x402 pay + proof (API)", channel: "x402", labelOffsetY: -22, curvature: 0.2 } },
+  { id: "unlock-api", type: "glow", source: "x402-api", target: "trading-api", sourceHandle: "s-right", targetHandle: "t-left", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "⑥ unlock API order channel", channel: "x402", labelOffsetY: 18, curvature: 0.2 } },
   { id: "api-to-agent", type: "glow", source: "trading-api", target: "agent001", sourceHandle: "s-left", targetHandle: "t-right", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.api }, data: { label: "⑥ API result + receiptRef", channel: "api", labelOffsetY: -18, curvature: 0.24 } },
 ];
 
@@ -243,16 +243,16 @@ function highlights(step: FlowStepId, quoteAccepted: boolean | null, shouldOrder
     if (step === "xmtp_quote_return") return { nodes: ["agent001", "other-agent"], edges: ["dm-bi"] };
     if (step === "x402_settlement") {
       if (!quoteAccepted) return { nodes: ["agent001"], edges: [] };
-      return { nodes: ["agent001", "x402", "other-agent"], edges: ["pay-to-x402", "unlock-other"] };
+      return { nodes: ["agent001", "x402-service", "other-agent"], edges: ["pay-to-x402-service", "unlock-other"] };
     }
     if (step === "xmtp_service_result") {
       if (!quoteAccepted) return { nodes: ["agent001"], edges: [] };
       return { nodes: ["agent001", "other-agent"], edges: ["dm-bi"] };
     }
     if (step === "api_order_decision") {
-      if (!quoteAccepted) return { nodes: ["agent001", "decision-hub"], edges: ["agent-to-decision"] };
-      if (!shouldOrder) return { nodes: ["agent001", "decision-hub"], edges: ["agent-to-decision"] };
-      return { nodes: ["agent001", "decision-hub", "trading-api"], edges: ["agent-to-decision", "decision-to-api", "api-to-agent"] };
+      if (!quoteAccepted) return { nodes: ["agent001"], edges: [] };
+      if (!shouldOrder) return { nodes: ["agent001"], edges: [] };
+      return { nodes: ["agent001", "x402-api", "trading-api"], edges: ["pay-to-x402-api", "unlock-api", "api-to-agent"] };
     }
     return { nodes: [], edges: [] };
   }
@@ -262,16 +262,16 @@ function highlights(step: FlowStepId, quoteAccepted: boolean | null, shouldOrder
   if (step === "xmtp_quote_return") return { nodes: ["agent001", "message-agent", "technical-agent"], edges: ["quote-res-msg", "quote-res-tech"] };
   if (step === "x402_settlement") {
     if (!quoteAccepted) return { nodes: ["agent001"], edges: [] };
-    return { nodes: ["agent001", "x402", "message-agent", "technical-agent"], edges: ["pay-to-x402", "unlock-msg", "unlock-tech"] };
+    return { nodes: ["agent001", "x402-service", "message-agent", "technical-agent"], edges: ["pay-to-x402-service", "unlock-msg", "unlock-tech"] };
   }
   if (step === "xmtp_service_result") {
     if (!quoteAccepted) return { nodes: ["agent001"], edges: [] };
     return { nodes: ["agent001", "message-agent", "technical-agent"], edges: ["result-msg", "result-tech"] };
   }
   if (step === "api_order_decision") {
-    if (!quoteAccepted) return { nodes: ["agent001", "decision-hub"], edges: ["agent-to-decision"] };
-    if (!shouldOrder) return { nodes: ["agent001", "decision-hub"], edges: ["agent-to-decision"] };
-    return { nodes: ["agent001", "decision-hub", "trading-api"], edges: ["agent-to-decision", "decision-to-api", "api-to-agent"] };
+    if (!quoteAccepted) return { nodes: ["agent001"], edges: [] };
+    if (!shouldOrder) return { nodes: ["agent001"], edges: [] };
+    return { nodes: ["agent001", "x402-api", "trading-api"], edges: ["pay-to-x402-api", "unlock-api", "api-to-agent"] };
   }
   return { nodes: [], edges: [] };
 }
@@ -788,11 +788,36 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
             setShouldOrder(approved);
             shouldOrderRef.current = approved;
             const basis = approved
-              ? `Order approved. Combined service score ${combined} >= ${EXECUTION_THRESHOLD}. Calling API order endpoint.`
+              ? `Order approved. Combined service score ${combined} >= ${EXECUTION_THRESHOLD}. Trigger x402(API) gate, then call API endpoint.`
               : `Order rejected. Combined service score ${combined} < ${EXECUTION_THRESHOLD}.`;
             setDecision(basis);
             let orderRef = "";
+            let apiGateReceipt = "";
             if (approved) {
+              setX402Open(true);
+              let p = 0;
+              setX402Phase(X402_PHASES[p]);
+              if (x402TimerRef.current) window.clearInterval(x402TimerRef.current);
+              x402TimerRef.current = window.setInterval(() => {
+                p += 1;
+                if (p >= X402_PHASES.length) {
+                  if (x402TimerRef.current) window.clearInterval(x402TimerRef.current);
+                  return;
+                }
+                setX402Phase(X402_PHASES[p]);
+              }, 480);
+
+              apiGateReceipt = `api_receipt_${randomHex(8).slice(2)}`;
+              try {
+                const gate = await fetchJSON<{ items?: Array<Record<string, unknown>> }>(`${baseUrl}/api/x402/mapping/latest`);
+                const first = Array.isArray(gate?.items) && gate.items.length > 0 ? gate.items[0] : null;
+                const reqId = String(first?.requestId || "");
+                const tx = String(first?.txHash || first?.paymentTxHash || "");
+                if (reqId || tx) apiGateReceipt = `${reqId || "req_unknown"}:${tx || "tx_unknown"}`;
+              } catch {
+                // fallback
+              }
+
               orderRef = `order_${randomHex(8).slice(2)}`;
               try {
                 const res = await fetchJSON<{ result?: Record<string, unknown> }>(`${baseUrl}/api/workflow/btc-price/run`, {
@@ -805,15 +830,16 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
               } catch {
                 // fallback
               }
+              if (apiGateReceipt) setReceiptRef(apiGateReceipt);
             }
             appendAudit({
               mode,
               stepId: step.id,
               stepName: step.title,
               blockchainVerifiable: true,
-              receiptRef: receiptRef || orderRef || undefined,
+              receiptRef: apiGateReceipt || receiptRef || orderRef || undefined,
               decisionBasis: basis,
-              payload: { messageScore, technicalScore, combined, apiCalled: approved, orderRef, demoView },
+              payload: { messageScore, technicalScore, combined, apiCalled: approved, apiGateReceipt, orderRef, demoView },
             });
           }
         }
@@ -925,8 +951,8 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
               </Tabs>
               <div className="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-3 py-2 text-xs text-cyan-200">
                 {demoView === "general"
-                  ? "General Demo: Other Agent <-> Agent001 (DM) -> x402 -> Agent001 decision -> API"
-                  : "Detailed Demo: Message + Technical agents collaborate with Agent001 through quote/pay/result flow"}
+                  ? "General Demo: Other Agent <-> Agent001 (DM) -> x402(Service) -> x402(API) -> API"
+                  : "Detailed Demo: Message + Technical agents collaborate with Agent001 through quote/pay/result + dual x402 flow"}
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -996,7 +1022,7 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
               onNodesChange={onNodesChange}
               onEdgesChange={onEdgesChange}
               onNodeClick={(_, node) => {
-                if (node.id === "x402") setX402Open(true);
+                if (node.id.startsWith("x402")) setX402Open(true);
               }}
               nodeTypes={nodeTypes}
               edgeTypes={edgeTypes}
@@ -1029,11 +1055,11 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="inline-block h-[2px] w-8 bg-amber-400" />
-                  Amber = Agent001 order decision
+                  Amber = Agent001 decision state
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="inline-block h-[2px] w-8 bg-emerald-500" />
-                  Green = x402 payment and unlock flow
+                  Green = x402 service/API payment unlock flows
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="inline-block h-[2px] w-8 bg-orange-500" />
@@ -1113,8 +1139,8 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
             <DialogTitle className="text-cyan-300">XMTP DM: Quote + Service Result</DialogTitle>
             <DialogDescription className="text-slate-300">
               {demoView === "general"
-                ? "Agent001 negotiates one quote with Other Agent, pays through x402, then receives service result via DM."
-                : "Agent001 negotiates quotes first, pays through x402, then receives service results via DM."}
+                ? "Agent001 negotiates one quote with Other Agent, pays via x402(service), then later pays via x402(API) before API call."
+                : "Agent001 negotiates quotes first, pays via x402(service), receives results via DM, then pays via x402(API) before API call."}
             </DialogDescription>
           </DialogHeader>
           {demoView === "general" ? (
