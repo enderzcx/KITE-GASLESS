@@ -9480,9 +9480,11 @@ function buildTraceXmtpEvidence({ traceId = '', requestId = '', taskId = '' } = 
   const normalizedTaskId = String(taskId || '').trim();
 
   const query = { limit: 500 };
-  if (normalizedTraceId) query.traceId = normalizedTraceId;
-  else if (normalizedRequestId) query.requestId = normalizedRequestId;
-  else if (normalizedTaskId) query.taskId = normalizedTaskId;
+  if (normalizedTaskId) {
+    query.taskId = normalizedTaskId;
+  } else if (normalizedTraceId && !normalizedRequestId) {
+    query.traceId = normalizedTraceId;
+  }
 
   const rows = xmtpRuntime.listEvents(query);
   const allowedKinds = new Set(['task-envelope', 'task-result', 'task-ack', 'task-phase']);
@@ -9490,9 +9492,26 @@ function buildTraceXmtpEvidence({ traceId = '', requestId = '', taskId = '' } = 
     .filter((row) => {
       const kind = String(row?.kind || '').trim().toLowerCase();
       if (!allowedKinds.has(kind)) return false;
-      if (normalizedTraceId && String(row?.traceId || '').trim() !== normalizedTraceId) return false;
-      if (normalizedRequestId && String(row?.requestId || '').trim() !== normalizedRequestId) return false;
-      if (normalizedTaskId && String(row?.taskId || '').trim() !== normalizedTaskId) return false;
+      const parsed = row?.parsed && typeof row.parsed === 'object' && !Array.isArray(row.parsed) ? row.parsed : null;
+      const rowTraceId = String(row?.traceId || parsed?.traceId || '').trim();
+      const rowTaskId = String(row?.taskId || parsed?.taskId || '').trim();
+      const relatedRequestIds = [
+        String(row?.requestId || '').trim(),
+        String(parsed?.requestId || '').trim(),
+        String(parsed?.payment?.requestId || '').trim(),
+        String(parsed?.receiptRef?.requestId || '').trim()
+      ].filter(Boolean);
+
+      if (normalizedTaskId && rowTaskId !== normalizedTaskId) return false;
+      if (normalizedTraceId && normalizedRequestId) {
+        const traceMatch = rowTraceId === normalizedTraceId;
+        const requestMatch = relatedRequestIds.includes(normalizedRequestId);
+        if (!traceMatch && !requestMatch) return false;
+      } else if (normalizedTraceId && rowTraceId !== normalizedTraceId) {
+        return false;
+      } else if (normalizedRequestId && !relatedRequestIds.includes(normalizedRequestId)) {
+        return false;
+      }
       return true;
     })
     .map((row) => {
