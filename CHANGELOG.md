@@ -116,6 +116,9 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
   - `backend/docker/openbb/Dockerfile`
 
 ### Changed
+- Refactored AGENT001 intent/order directive parsers into a dedicated module:
+  - `backend/services/agent001Intent.js`
+  - `backend/server.js` now imports parser utilities to reduce file size and keep logic isolated.
 - AGENT001 quote flow now enforces identity hard-gate:
   - provider identity must be verified before entering DM quote negotiation,
   - when no verified provider is available, flow returns `identity_verification_required` and does not quote/pay.
