@@ -1855,13 +1855,10 @@ function getActionConfig(actionRaw = '') {
   }
   if (isInfoAnalysisAction(action)) {
     return {
-      action: action === 'info-analysis-feed' ? 'info-analysis-feed' : 'x-reader-feed',
-      amount: action === 'info-analysis-feed' ? X402_INFO_PRICE : X402_X_READER_PRICE,
+      action: 'info-analysis-feed',
+      amount: X402_INFO_PRICE || X402_X_READER_PRICE,
       recipient: resolveInfoSettlementRecipient(),
-      summary:
-        action === 'info-analysis-feed'
-          ? 'Info analysis unlocked by x402 payment'
-          : 'x-reader digest unlocked by x402 payment'
+      summary: 'Info analysis unlocked by x402 payment'
     };
   }
   if (action === 'hyperliquid-order-testnet') {
@@ -2804,19 +2801,19 @@ function createServiceId() {
 }
 
 function normalizeServiceAction(actionRaw = '') {
-  const action = String(actionRaw || 'btc-price-feed').trim().toLowerCase();
+  const normalized = String(actionRaw || 'btc-price-feed').trim().toLowerCase();
+  const action = normalized === 'x-reader-feed' ? 'info-analysis-feed' : normalized;
   if (
     ![
       'btc-price-feed',
       'risk-score-feed',
       'technical-analysis-feed',
-      'x-reader-feed',
       'info-analysis-feed',
       'hyperliquid-order-testnet'
     ].includes(action)
   ) {
     throw new Error(
-      'Supported service actions: btc-price-feed, risk-score-feed, technical-analysis-feed, x-reader-feed, info-analysis-feed, hyperliquid-order-testnet.'
+      'Supported service actions: btc-price-feed, risk-score-feed, technical-analysis-feed, info-analysis-feed, hyperliquid-order-testnet.'
     );
   }
   return action;
@@ -3069,31 +3066,6 @@ function createDefaultServiceCatalog() {
       publishedBy: 'system'
     },
     {
-      id: 'svc_x_reader_digest',
-      name: 'X Reader Digest (ATAPI)',
-      description: 'Agent-to-API URL digest via x-reader + ERC8004 + x402 payment.',
-      action: 'x-reader-feed',
-      pair: '',
-      source: 'auto',
-      sourceRequested: 'auto',
-      resourceUrl: 'https://x.com/Kite_AI',
-      maxChars: X_READER_MAX_CHARS_DEFAULT,
-      providerAgentId: String(KITE_AGENT2_ID).trim(),
-      recipient: resolveInfoSettlementRecipient(),
-      tokenAddress: normalizeAddress(SETTLEMENT_TOKEN),
-      price: String(Number(Number(X402_X_READER_PRICE || '0.00001').toFixed(6))),
-      tags: ['atapi', 'x402', 'x-reader', 'digest'],
-      slaMs: 15000,
-      rateLimitPerMinute: 8,
-      budgetPerDay: 0.05,
-      allowlistPayers: [],
-      exampleInput: { url: 'https://x.com/Kite_AI', mode: 'auto', maxChars: X_READER_MAX_CHARS_DEFAULT },
-      active: true,
-      createdAt: now,
-      updatedAt: now,
-      publishedBy: 'system'
-    },
-    {
       id: 'svc_info_analysis',
       name: 'Message Info Analysis (A2A)',
       description: 'Agent-to-agent message-side info analysis via market-data + x402 payment.',
@@ -3145,9 +3117,28 @@ function createDefaultServiceCatalog() {
 }
 
 function mergeBuiltinServices(rows = []) {
-  const list = Array.isArray(rows) ? [...rows] : [];
-  const defaults = createDefaultServiceCatalog();
+  const rawList = Array.isArray(rows) ? [...rows] : [];
   let changed = false;
+  const list = rawList
+    .filter((item) => {
+      const id = String(item?.id || '').trim();
+      if (id === 'svc_x_reader_digest') {
+        changed = true;
+        return false;
+      }
+      return true;
+    })
+    .map((item) => {
+      const action = String(item?.action || '').trim().toLowerCase();
+      if (action !== 'x-reader-feed') return item;
+      changed = true;
+      return {
+        ...item,
+        action: 'info-analysis-feed',
+        updatedAt: new Date().toISOString()
+      };
+    });
+  const defaults = createDefaultServiceCatalog();
   for (const service of defaults) {
     const id = String(service?.id || '').trim();
     if (!id) continue;
@@ -3180,7 +3171,7 @@ function mapCapabilityToServiceActions(capability = '') {
     return ['technical-analysis-feed', 'risk-score-feed'];
   }
   if (['info-analysis-feed', 'x-reader-feed', 'url-digest'].includes(normalized)) {
-    return ['info-analysis-feed', 'x-reader-feed'];
+    return ['info-analysis-feed'];
   }
   if (['btc-price-feed', 'market-quote'].includes(normalized)) {
     return ['btc-price-feed'];
@@ -3324,7 +3315,7 @@ function createDefaultNetworkAgents() {
       identityRegistry: String(process.env.XMTP_READER_IDENTITY_REGISTRY || '').trim(),
       identityAgentId: String(process.env.XMTP_READER_IDENTITY_AGENT_ID || '').trim(),
       description: 'Runs x-reader digest for URLs via ATAPI adapter.',
-      capabilities: ['x-reader-feed', 'url-digest', 'info-analysis-feed']
+      capabilities: ['url-digest', 'info-analysis-feed']
     },
     {
       id: 'message-agent',
@@ -3336,7 +3327,7 @@ function createDefaultNetworkAgents() {
       identityRegistry: String(process.env.XMTP_MESSAGE_IDENTITY_REGISTRY || process.env.XMTP_READER_IDENTITY_REGISTRY || '').trim(),
       identityAgentId: String(process.env.XMTP_MESSAGE_IDENTITY_AGENT_ID || process.env.XMTP_READER_IDENTITY_AGENT_ID || '').trim(),
       description: 'Message/news sentiment facade over reader runtime.',
-      capabilities: ['info-analysis-feed', 'url-digest', 'x-reader-feed']
+      capabilities: ['info-analysis-feed', 'url-digest']
     },
     {
       id: 'price-agent',
@@ -3501,9 +3492,10 @@ function resolveAgentAddressesByIds(agentIds = []) {
 
 function normalizeNetworkCommandType(value = '') {
   const type = String(value || '').trim().toLowerCase();
-  if (!type) return 'router-risk-group';
-  if (['router-risk-group', 'router-risk', 'router-info-technical'].includes(type)) return type;
-  throw new Error('Unsupported command type. Supported: router-risk-group, router-risk, router-info-technical.');
+  if (!type) return 'router-info-technical';
+  if (type === 'router-risk-group' || type === 'router-risk') return 'router-info-technical';
+  if (type === 'router-info-technical') return type;
+  throw new Error('Unsupported command type. Supported: router-info-technical.');
 }
 
 function createCommandId() {
@@ -3530,7 +3522,7 @@ function sanitizeNetworkCommandRecord(input = {}, existing = null) {
   const prev = existing && typeof existing === 'object' ? existing : {};
   const now = new Date().toISOString();
   const commandId = String(source.commandId || prev.commandId || createCommandId()).trim();
-  const type = normalizeNetworkCommandType(source.type || prev.type || 'router-risk-group');
+  const type = normalizeNetworkCommandType(source.type || prev.type || 'router-info-technical');
   const label = String(source.label || prev.label || type).trim();
   const statusRaw = String(source.status || prev.status || 'queued').trim().toLowerCase();
   const status = ['queued', 'running', 'done', 'failed'].includes(statusRaw) ? statusRaw : 'queued';
@@ -3633,12 +3625,10 @@ function extractNetworkCommandRefs(result = {}, fallback = {}) {
   };
 }
 
-async function invokeNetworkCommandTarget({ type = 'router-risk-group', payload = {} } = {}) {
+async function invokeNetworkCommandTarget({ type = 'router-info-technical', payload = {} } = {}) {
   const commandType = normalizeNetworkCommandType(type);
-  let endpoint = '/api/network/demo/router-risk/run';
-  if (commandType === 'router-risk-group') {
-    endpoint = '/api/network/demo/router-risk-group/run';
-  } else if (commandType === 'router-info-technical') {
+  let endpoint = '/api/network/demo/router-info-technical/run';
+  if (commandType !== 'router-info-technical') {
     endpoint = '/api/network/demo/router-info-technical/run';
   }
   const internalApiKey = getInternalAgentApiKey();
@@ -6544,16 +6534,6 @@ function buildA2ACapabilities() {
         recipient: resolveTechnicalSettlementRecipient()
       },
       {
-        id: 'x-reader-feed',
-        input: {
-          url: 'string (http/https)',
-          mode: 'auto/jina',
-          maxChars: 'number 200-8000'
-        },
-        price: X402_X_READER_PRICE,
-        recipient: resolveInfoSettlementRecipient()
-      },
-      {
         id: 'info-analysis-feed',
         input: {
           topic: 'string (keyword/topic text) OR url',
@@ -8797,7 +8777,7 @@ app.post('/api/workflow/risk-score/run', requireRole('agent'), async (req, res) 
   }
 });
 
-app.post('/api/workflow/x-reader/run', requireRole('agent'), async (req, res) => {
+app.post('/api/workflow/info/run', requireRole('agent'), async (req, res) => {
   let normalizedTask = null;
   try {
     normalizedTask = normalizeXReaderParams({
@@ -8817,15 +8797,14 @@ app.post('/api/workflow/x-reader/run', requireRole('agent'), async (req, res) =>
   const sourceAgentId = String(req.body?.sourceAgentId || KITE_AGENT1_ID).trim();
   const targetAgentId = String(req.body?.targetAgentId || KITE_AGENT2_ID).trim();
   const prebindOnly = parseBooleanFlag(req.body?.prebindOnly, false);
-  const requestedAction = String(req.body?.action || 'x-reader-feed').trim().toLowerCase();
-  const workflowAction = requestedAction === 'info-analysis-feed' ? 'info-analysis-feed' : 'x-reader-feed';
-  const workflowActionCfg = getActionConfig(workflowAction) || getActionConfig('x-reader-feed');
+  const workflowAction = 'info-analysis-feed';
+  const workflowActionCfg = getActionConfig(workflowAction) || getActionConfig('info-analysis-feed');
   const traceId = resolveWorkflowTraceId(req.body?.traceId);
   const runtime = readSessionRuntime();
   const payer = normalizeAddress(req.body?.payer || runtime.aaWallet || '');
   const workflow = {
     traceId,
-    type: 'x-reader',
+    type: 'info-analysis',
     state: 'running',
     sourceAgentId,
     targetAgentId,
@@ -9010,6 +8989,15 @@ app.post('/api/workflow/x-reader/run', requireRole('agent'), async (req, res) =>
           : null
     });
   }
+});
+
+app.post('/api/workflow/x-reader/run', requireRole('agent'), (req, res) => {
+  return res.status(410).json({
+    ok: false,
+    traceId: req.traceId || '',
+    error: 'route_deprecated',
+    reason: 'x-reader route removed; use /api/workflow/info/run'
+  });
 });
 
 app.post('/api/workflow/hyperliquid-order/run', requireRole('agent'), async (req, res) => {
@@ -9723,7 +9711,7 @@ async function buildXReaderPaymentIntentForTask({
   const workflowAction =
     String(body?.action || '').trim().toLowerCase() === 'info-analysis-feed'
       ? 'info-analysis-feed'
-      : 'x-reader-feed';
+      : 'info-analysis-feed';
   const shouldBindRealX402 =
     bindRealX402 ||
     (String(rawIntent?.mode || '').trim().toLowerCase() === 'x402' &&
@@ -9753,7 +9741,7 @@ async function buildXReaderPaymentIntentForTask({
         prebindOnly
       };
       const { body: result, attempts } = await runAgent001PrebindWorkflowWithRetry({
-        endpoint: '/api/workflow/x-reader/run',
+        endpoint: '/api/workflow/info/run',
         payload,
         label: 'agent001 info prebind'
       });
@@ -10218,11 +10206,11 @@ app.get('/api/receipt/:requestId/excerpt', requireRole('viewer'), async (req, re
   }
 
   const reqItem = requests[reqIndex];
-  if (String(reqItem?.action || '').trim().toLowerCase() !== 'x-reader-feed') {
+  if (!['x-reader-feed', 'info-analysis-feed'].includes(String(reqItem?.action || '').trim().toLowerCase())) {
     return res.status(400).json({
       ok: false,
       error: 'excerpt_not_supported',
-      reason: 'only x-reader-feed supports excerpt retrieval'
+      reason: 'only info-analysis-feed supports excerpt retrieval'
     });
   }
 
@@ -10898,9 +10886,8 @@ async function handleA2AXReader(body = {}) {
   const prebindOnly = parseBooleanFlag(body.prebindOnly, false);
   const taskInput = body.task || {};
   const identityInput = body.identity || {};
-  const requestedAction = String(body.action || 'x-reader-feed').trim().toLowerCase();
-  const taskAction = requestedAction === 'info-analysis-feed' ? 'info-analysis-feed' : 'x-reader-feed';
-  const serviceLabel = taskAction === 'info-analysis-feed' ? 'A2A info analysis' : 'ATAPI x-reader';
+  const taskAction = 'info-analysis-feed';
+  const serviceLabel = 'A2A info analysis';
 
   let task = null;
   try {
@@ -10927,7 +10914,7 @@ async function handleA2AXReader(body = {}) {
   }
 
   const actionCfg = getActionConfig(taskAction);
-  const actionAmount = String(actionCfg?.amount || X402_X_READER_PRICE || '0.00001');
+  const actionAmount = String(actionCfg?.amount || X402_INFO_PRICE || X402_X_READER_PRICE || '0.00001');
   const requests = readX402Requests();
   const a2aQuery = `${serviceLabel} ${task.url || task.topic || ''}`.trim();
 
@@ -11144,7 +11131,7 @@ async function handleA2AXReader(body = {}) {
     taskType: String(reqItem?.a2a?.taskType || taskAction).trim(),
     traceId: String(reqItem?.a2a?.traceId || traceId).trim()
   };
-  let summaryTail = 'x-reader digest';
+  let summaryTail = 'info analysis';
   if (prebindOnly) {
     reqItem.result = {
       summary: `${serviceLabel} payment settled (prebind-only)`,
@@ -11153,7 +11140,7 @@ async function handleA2AXReader(body = {}) {
     summaryTail = `${serviceLabel} payment settled (prebind-only)`;
   } else {
     const reader = await fetchXReaderDigest(reqItem.actionParams || task);
-    summaryTail = reader.title || reader.url || 'x-reader digest';
+    summaryTail = reader.title || reader.url || 'info analysis';
     reqItem.result = {
       summary: `${serviceLabel} unlocked by x402 payment: ${summaryTail}`,
       reader
@@ -11482,7 +11469,7 @@ app.post('/api/a2a/tasks/risk-score', requireRole('agent'), async (req, res) => 
   }
 });
 
-app.post('/api/a2a/tasks/x-reader', requireRole('agent'), async (req, res) => {
+app.post('/api/a2a/tasks/info', requireRole('agent'), async (req, res) => {
   try {
     const result = await handleA2AXReader(req.body);
     return res.status(result.status).json(result.body);
@@ -11493,6 +11480,15 @@ app.post('/api/a2a/tasks/x-reader', requireRole('agent'), async (req, res) => {
       reason: error.message || 'Unknown error'
     });
   }
+});
+
+app.post('/api/a2a/tasks/x-reader', requireRole('agent'), (req, res) => {
+  return res.status(410).json({
+    ok: false,
+    traceId: req.traceId || '',
+    error: 'route_deprecated',
+    reason: 'x-reader task route removed; use /api/a2a/tasks/info'
+  });
 });
 
 app.get('/api/skill/openclaw/manifest', (req, res) => {
@@ -13003,7 +12999,7 @@ app.get('/api/network/commands/:commandId', requireRole('viewer'), (req, res) =>
 app.post('/api/network/commands', requireRole('agent'), async (req, res) => {
   try {
     const body = req.body || {};
-    const type = normalizeNetworkCommandType(body.type || 'router-risk-group');
+    const type = normalizeNetworkCommandType(body.type || 'router-info-technical');
     const label = String(body.label || '').trim() || type;
     const payload = normalizeNetworkCommandPayload(body.payload);
     const createdAt = new Date().toISOString();
@@ -13119,427 +13115,21 @@ app.post('/api/network/commands/:commandId/run', requireRole('agent'), async (re
   });
 });
 
-app.post('/api/network/demo/router-risk/run', requireRole('agent'), async (req, res) => {
-  const body = req.body || {};
-  const autoStart = body.autoStart !== false;
-  if (autoStart) {
-    await startXmtpRuntimes();
-  }
-  const routerStatus = xmtpRuntime.getStatus();
-  if (!routerStatus.running) {
-    return res.status(400).json({
-      ok: false,
-      traceId: req.traceId || '',
-      error: 'xmtp_router_not_running',
-      reason: routerStatus.lastError || 'router runtime is not running'
-    });
-  }
-
-  const riskAgent = findNetworkAgentById('risk-agent');
-  const riskAddress = normalizeAddress(body.toAddress || riskAgent?.xmtpAddress || XMTP_RISK_RESOLVED_ADDRESS);
-  if (!riskAddress) {
-    return res.status(400).json({
-      ok: false,
-      traceId: req.traceId || '',
-      error: 'risk_agent_address_missing',
-      reason: 'Set XMTP_RISK_AGENT_ADDRESS or XMTP_RISK_WALLET_KEY and ensure mapping exists.'
-    });
-  }
-
-  const traceId = String(body.traceId || createTraceId('router_risk_trace')).trim();
-  const requestId = String(body.requestId || createTraceId('router_risk_req')).trim();
-  const taskId = String(body.taskId || createTraceId('router_risk_task')).trim();
-  const capability = String(body.capability || 'risk-score-feed').trim();
-  let paymentPlan = null;
-  try {
-    paymentPlan = await buildRiskScorePaymentIntentForTask({
-      body,
-      traceId,
-      fallbackRequestId: requestId,
-      defaultTask: {
-        symbol: 'BTCUSDT',
-        source: 'hyperliquid',
-        horizonMin: 60
-      }
-    });
-  } catch (error) {
-    return res.status(400).json({
-      ok: false,
-      traceId: req.traceId || '',
-      error: 'bind_real_x402_failed',
-      reason: error?.message || 'bind_real_x402_failed'
-    });
-  }
-  const envelope = {
-    kind: 'task-envelope',
-    protocolVersion: 'kite-agent-task-v1',
-    traceId,
-    requestId,
-    taskId,
-    fromAgentId: 'router-agent',
-    toAgentId: 'risk-agent',
-    channel: 'dm',
-    hopIndex: 1,
-    mode: 'a2a',
-    capability,
-    input: paymentPlan.normalizedTask,
-    paymentIntent: paymentPlan.paymentIntent,
-    expectsReply: true,
-    timestamp: new Date().toISOString()
-  };
-
-  const sent = await xmtpRuntime.sendDm({
-    fromAgentId: 'router-agent',
-    toAgentId: 'risk-agent',
-    toAddress: riskAddress,
-    channel: 'dm',
-    hopIndex: 1,
-    envelope,
-    traceId,
-    requestId,
-    taskId
-  });
-  if (!sent?.ok) {
-    return res.status(400).json({
-      ok: false,
-      traceId: req.traceId || '',
-      error: sent?.error || 'router_risk_send_failed',
-      reason: sent?.reason || 'router_risk_send_failed',
-      details: sent
-    });
-  }
-
-  const waitMsLimit = Math.max(500, Math.min(Number(body.waitMs || 10_000), 20_000));
-  const deadline = Date.now() + waitMsLimit;
-  let resultEvent = null;
-  let ackEvent = null;
-  while (Date.now() <= deadline) {
-    const resultHits = xmtpRuntime.listEvents({
-      runtimeName: 'router-runtime',
-      direction: 'inbound',
-      kind: 'task-result',
-      taskId
-    });
-    if (Array.isArray(resultHits) && resultHits.length > 0) {
-      resultEvent = resultHits[0];
-      break;
-    }
-
-    const ackHits = xmtpRuntime.listEvents({
-      runtimeName: 'router-runtime',
-      direction: 'inbound',
-      kind: 'task-ack',
-      taskId
-    });
-    if (!ackEvent && Array.isArray(ackHits) && ackHits.length > 0) {
-      ackEvent = ackHits[0];
-    }
-    await waitMs(350);
-  }
-  const taskResult = resultEvent?.parsed && typeof resultEvent.parsed === 'object' ? resultEvent.parsed : null;
-  const resultPayment = taskResult?.payment && typeof taskResult.payment === 'object' ? taskResult.payment : null;
-  const resultReceiptRef = taskResult?.receiptRef && typeof taskResult.receiptRef === 'object' ? taskResult.receiptRef : null;
-  const boundEvidence =
-    resultPayment?.requestId && String(resultPayment?.mode || '').trim().toLowerCase() === 'x402'
-      ? resolveX402EvidenceByRequestId(resultPayment.requestId)
-      : null;
-  const finalPayment =
-    boundEvidence?.txHash
-      ? {
-          mode: 'x402',
-          requestId: boundEvidence.requestId,
-          txHash: boundEvidence.txHash,
-          block: boundEvidence.block,
-          status: boundEvidence.status,
-          explorer: boundEvidence.explorer,
-          verifiedAt: boundEvidence.verifiedAt
-        }
-      : resultPayment;
-  const finalReceiptRef =
-    boundEvidence?.receiptRef
-      ? boundEvidence.receiptRef
-      : resultReceiptRef;
-
-  return res.json({
-    ok: true,
+app.post('/api/network/demo/router-risk/run', requireRole('agent'), (req, res) => {
+  return res.status(410).json({
+    ok: false,
     traceId: req.traceId || '',
-    task: {
-      traceId,
-      requestId,
-      taskId,
-      fromAgentId: 'router-agent',
-      toAgentId: 'risk-agent',
-      capability,
-      hopIndex: 1
-    },
-    xmtp: sent,
-    resultReceived: Boolean(resultEvent),
-    resultEvent,
-    taskResult,
-    payment: finalPayment,
-    receiptRef: finalReceiptRef,
-    paymentBinding: paymentPlan.workflowBinding,
-    warnings: paymentPlan.warnings,
-    ackReceived: Boolean(ackEvent),
-    ackEvent,
-    runtime: getAllXmtpRuntimeStatuses()
+    error: 'route_deprecated',
+    reason: 'router-risk demo removed; use /api/network/demo/router-info-technical/run'
   });
 });
 
-app.post('/api/network/demo/router-risk-group/run', requireRole('agent'), async (req, res) => {
-  const body = req.body || {};
-  const autoStart = body.autoStart !== false;
-  if (autoStart) {
-    await startXmtpRuntimes();
-  }
-  const routerStatus = xmtpRuntime.getStatus();
-  if (!routerStatus.running) {
-    return res.status(400).json({
-      ok: false,
-      traceId: req.traceId || '',
-      error: 'xmtp_router_not_running',
-      reason: routerStatus.lastError || 'router runtime is not running'
-    });
-  }
-
-  const riskAgent = findNetworkAgentById('risk-agent');
-  const riskAddress = normalizeAddress(body.toAddress || riskAgent?.xmtpAddress || XMTP_RISK_RESOLVED_ADDRESS);
-  if (!riskAddress) {
-    return res.status(400).json({
-      ok: false,
-      traceId: req.traceId || '',
-      error: 'risk_agent_address_missing',
-      reason: 'Set XMTP_RISK_AGENT_ADDRESS or XMTP_RISK_WALLET_KEY and ensure mapping exists.'
-    });
-  }
-
-  const traceId = String(body.traceId || createTraceId('router_risk_trace')).trim();
-  const requestId = String(body.requestId || createTraceId('router_risk_req')).trim();
-  const taskId = String(body.taskId || createTraceId('router_risk_task')).trim();
-  const capability = String(body.capability || 'risk-score-feed').trim();
-  let paymentPlan = null;
-  try {
-    paymentPlan = await buildRiskScorePaymentIntentForTask({
-      body,
-      traceId,
-      fallbackRequestId: requestId,
-      defaultTask: {
-        symbol: 'BTCUSDT',
-        source: 'hyperliquid',
-        horizonMin: 60
-      }
-    });
-  } catch (error) {
-    return res.status(400).json({
-      ok: false,
-      traceId: req.traceId || '',
-      error: 'bind_real_x402_failed',
-      reason: error?.message || 'bind_real_x402_failed'
-    });
-  }
-  const groupLabel = String(body.groupLabel || XMTP_WORKERS_GROUP_LABEL || 'workers-group').trim();
-  const existingGroup = findXmtpGroupRecord({ groupId: body.groupId, label: groupLabel });
-  const workerIds = parseAgentIdList(
-    body.workerAgentIds || existingGroup?.memberAgentIds || XMTP_WORKERS_GROUP_AGENT_IDS
-  );
-  const workerMembers = resolveAgentAddressesByIds(workerIds);
-  const groupEnsure = await xmtpRuntime.ensureGroup({
-    groupId: String(body.groupId || existingGroup?.groupId || '').trim(),
-    groupName: String(body.groupName || existingGroup?.groupName || XMTP_WORKERS_GROUP_NAME).trim(),
-    groupDescription: String(body.groupDescription || existingGroup?.description || 'Agent001 workers collaboration channel').trim(),
-    memberAddresses: workerMembers.map((item) => item.address)
-  });
-  if (!groupEnsure?.ok) {
-    return res.status(400).json({
-      ok: false,
-      traceId: req.traceId || '',
-      error: groupEnsure?.error || 'workers_group_ensure_failed',
-      reason: groupEnsure?.reason || 'workers_group_ensure_failed',
-      details: groupEnsure
-    });
-  }
-  const groupRecord = upsertXmtpGroupRecord({
-    groupId: groupEnsure.groupId,
-    label: groupLabel,
-    groupName: groupEnsure.groupName || XMTP_WORKERS_GROUP_NAME,
-    description: String(body.groupDescription || existingGroup?.description || '').trim(),
-    runtimeName: 'router-runtime',
-    memberAgentIds: workerIds,
-    memberAddresses: groupEnsure.memberAddresses || workerMembers.map((item) => item.address),
-    updatedAt: new Date().toISOString(),
-    lastUsedAt: new Date().toISOString()
-  });
-
-  const phaseMessages = [];
-  const sendPhase = async (phase, status, detail = '') => {
-    const envelope = {
-      kind: 'task-phase',
-      protocolVersion: 'kite-agent-task-v1',
-      traceId,
-      requestId,
-      taskId,
-      fromAgentId: 'router-agent',
-      toAgentId: groupLabel || 'workers-group',
-      channel: 'group',
-      hopIndex: 1,
-      mode: 'a2a',
-      capability,
-      phase,
-      status,
-      detail: String(detail || '').trim(),
-      timestamp: new Date().toISOString()
-    };
-    const sentGroup = await xmtpRuntime.sendGroup({
-      groupId: groupEnsure.groupId,
-      fromAgentId: 'router-agent',
-      channel: 'group',
-      hopIndex: 1,
-      envelope,
-      traceId,
-      requestId,
-      taskId
-    });
-    phaseMessages.push({
-      phase,
-      status,
-      ok: Boolean(sentGroup?.ok),
-      message: sentGroup
-    });
-    return sentGroup;
-  };
-
-  await sendPhase('started', 'running', 'router dispatching DM task to risk-agent');
-
-  const envelope = {
-    kind: 'task-envelope',
-    protocolVersion: 'kite-agent-task-v1',
-    traceId,
-    requestId,
-    taskId,
-    fromAgentId: 'router-agent',
-    toAgentId: 'risk-agent',
-    channel: 'dm',
-    hopIndex: 1,
-    mode: 'a2a',
-    capability,
-    input: paymentPlan.normalizedTask,
-    paymentIntent: paymentPlan.paymentIntent,
-    expectsReply: true,
-    timestamp: new Date().toISOString()
-  };
-
-  const sentDm = await xmtpRuntime.sendDm({
-    fromAgentId: 'router-agent',
-    toAgentId: 'risk-agent',
-    toAddress: riskAddress,
-    channel: 'dm',
-    hopIndex: 1,
-    envelope,
-    traceId,
-    requestId,
-    taskId
-  });
-  if (!sentDm?.ok) {
-    await sendPhase('failed', 'failed', sentDm?.reason || sentDm?.error || 'router_risk_send_failed');
-    return res.status(400).json({
-      ok: false,
-      traceId: req.traceId || '',
-      error: sentDm?.error || 'router_risk_send_failed',
-      reason: sentDm?.reason || 'router_risk_send_failed',
-      task: {
-        traceId,
-        requestId,
-        taskId
-      },
-      group: groupRecord,
-      phaseMessages
-    });
-  }
-
-  await sendPhase('running', 'running', 'risk-agent is processing task-envelope');
-
-  const waitMsLimit = Math.max(500, Math.min(Number(body.waitMs || 12_000), 30_000));
-  const deadline = Date.now() + waitMsLimit;
-  let resultEvent = null;
-  let ackEvent = null;
-  while (Date.now() <= deadline) {
-    const resultHits = xmtpRuntime.listEvents({
-      runtimeName: 'router-runtime',
-      direction: 'inbound',
-      kind: 'task-result',
-      taskId
-    });
-    if (Array.isArray(resultHits) && resultHits.length > 0) {
-      resultEvent = resultHits[0];
-      break;
-    }
-    const ackHits = xmtpRuntime.listEvents({
-      runtimeName: 'router-runtime',
-      direction: 'inbound',
-      kind: 'task-ack',
-      taskId
-    });
-    if (!ackEvent && Array.isArray(ackHits) && ackHits.length > 0) ackEvent = ackHits[0];
-    await waitMs(350);
-  }
-  const taskResult = resultEvent?.parsed && typeof resultEvent.parsed === 'object' ? resultEvent.parsed : null;
-  const resultPayment = taskResult?.payment && typeof taskResult.payment === 'object' ? taskResult.payment : null;
-  const resultReceiptRef = taskResult?.receiptRef && typeof taskResult.receiptRef === 'object' ? taskResult.receiptRef : null;
-  const boundEvidence =
-    resultPayment?.requestId && String(resultPayment?.mode || '').trim().toLowerCase() === 'x402'
-      ? resolveX402EvidenceByRequestId(resultPayment.requestId)
-      : null;
-  const finalPayment =
-    boundEvidence?.txHash
-      ? {
-          mode: 'x402',
-          requestId: boundEvidence.requestId,
-          txHash: boundEvidence.txHash,
-          block: boundEvidence.block,
-          status: boundEvidence.status,
-          explorer: boundEvidence.explorer,
-          verifiedAt: boundEvidence.verifiedAt
-        }
-      : resultPayment;
-  const finalReceiptRef =
-    boundEvidence?.receiptRef
-      ? boundEvidence.receiptRef
-      : resultReceiptRef;
-
-  if (resultEvent) {
-    await sendPhase('done', 'done', taskResult?.result?.summary || 'task-result received');
-  } else {
-    await sendPhase('failed', 'failed', `task-result timeout after ${waitMsLimit}ms`);
-  }
-
-  return res.json({
-    ok: true,
+app.post('/api/network/demo/router-risk-group/run', requireRole('agent'), (req, res) => {
+  return res.status(410).json({
+    ok: false,
     traceId: req.traceId || '',
-    task: {
-      traceId,
-      requestId,
-      taskId,
-      fromAgentId: 'router-agent',
-      toAgentId: 'risk-agent',
-      capability,
-      hopIndex: 1
-    },
-    group: groupRecord,
-    workers: workerMembers,
-    xmtp: {
-      dm: sentDm,
-      phaseMessages
-    },
-    resultReceived: Boolean(resultEvent),
-    resultEvent,
-    taskResult,
-    payment: finalPayment,
-    receiptRef: finalReceiptRef,
-    paymentBinding: paymentPlan.workflowBinding,
-    warnings: paymentPlan.warnings,
-    ackReceived: Boolean(ackEvent),
-    ackEvent,
-    runtime: getAllXmtpRuntimeStatuses()
+    error: 'route_deprecated',
+    reason: 'router-risk-group demo removed; use /api/network/demo/router-info-technical/run'
   });
 });
 
@@ -14080,6 +13670,7 @@ app.post('/api/services/:serviceId/invoke', requireRole('agent'), async (req, re
     return res.status(409).json({ ok: false, error: 'service_inactive', reason: 'Service is not active.' });
   }
   const action = String(service.action || '').trim().toLowerCase();
+  const effectiveAction = action === 'x-reader-feed' ? 'info-analysis-feed' : action;
   const supportedServiceActions = [
     'btc-price-feed',
     'risk-score-feed',
@@ -14122,7 +13713,7 @@ app.post('/api/services/:serviceId/invoke', requireRole('agent'), async (req, re
   const invocation = {
     invocationId,
     serviceId,
-    action,
+    action: effectiveAction,
     traceId,
     requestId: '',
     state: 'running',
@@ -14145,8 +13736,8 @@ app.post('/api/services/:serviceId/invoke', requireRole('agent'), async (req, re
     const internalApiKey = getInternalAgentApiKey();
     const headers = { 'Content-Type': 'application/json' };
     if (internalApiKey) headers['x-api-key'] = internalApiKey;
-    const isTechnicalServiceAction = action === 'risk-score-feed' || action === 'technical-analysis-feed';
-    const isInfoServiceAction = action === 'x-reader-feed' || action === 'info-analysis-feed';
+    const isTechnicalServiceAction = effectiveAction === 'risk-score-feed' || effectiveAction === 'technical-analysis-feed';
+    const isInfoServiceAction = effectiveAction === 'info-analysis-feed';
     const invokePayload =
       isTechnicalServiceAction
         ? {
@@ -14156,7 +13747,7 @@ app.post('/api/services/:serviceId/invoke', requireRole('agent'), async (req, re
             symbol: service.pair || 'BTCUSDT',
             horizonMin: Number(service.horizonMin || 60),
             source: service.source || 'hyperliquid',
-            action,
+            action: effectiveAction,
             payer
           }
         : isInfoServiceAction
@@ -14168,10 +13759,10 @@ app.post('/api/services/:serviceId/invoke', requireRole('agent'), async (req, re
               topic: body.topic || service.exampleInput?.topic || '',
               mode: service.source || service.mode || 'auto',
               maxChars: Number(service.maxChars || service.exampleInput?.maxChars || X_READER_MAX_CHARS_DEFAULT),
-              action,
+              action: effectiveAction,
               payer
             }
-        : action === 'hyperliquid-order-testnet'
+        : effectiveAction === 'hyperliquid-order-testnet'
           ? {
               traceId,
               sourceAgentId,
@@ -14202,10 +13793,10 @@ app.post('/api/services/:serviceId/invoke', requireRole('agent'), async (req, re
       isTechnicalServiceAction
         ? '/api/workflow/risk-score/run'
         : isInfoServiceAction
-          ? '/api/workflow/x-reader/run'
-          : action === 'hyperliquid-order-testnet'
+          ? '/api/workflow/info/run'
+          : effectiveAction === 'hyperliquid-order-testnet'
             ? '/api/workflow/hyperliquid-order/run'
-          : '/api/workflow/btc-price/run';
+            : '/api/workflow/btc-price/run';
 
     const resp = await fetch(`http://127.0.0.1:${PORT}${workflowPath}`, {
       method: 'POST',
@@ -15007,3 +14598,5 @@ process.on('SIGINT', () => {
 process.on('SIGTERM', () => {
   shutdownServer().finally(() => process.exit(0));
 });
+
+

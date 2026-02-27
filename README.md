@@ -59,7 +59,7 @@ Current Version: `v1.8.0`
 - Agent-to-agent and agent-to-api flow evidence in one console
 - Service directory MVP: publish service, discover service, invoke with per-call x402 settlement
 - Real A2A service in market: `risk-score-feed` (agent invokes agent capability with x402 settlement)
-- Real ATAPI service in market: `x-reader-feed` (legacy endpoint name, now backed by OpenAlice info analysis)
+- Real ATAPI service in market: `info-analysis-feed` (legacy `x-reader-feed` is deprecated)
 - BTC quote loop is a sample scenario; platform model supports publishing and consuming arbitrary agent services
 - BTC demo summary wording uses `ATAPI` for the paid quote path to avoid A2A naming confusion.
 - Verifiable agent identity (registry-backed)
@@ -141,9 +141,9 @@ Operational implications:
 
 - `POST /api/workflow/btc-price/run`
 - `POST /api/workflow/risk-score/run`
-- `POST /api/workflow/x-reader/run`
+- `POST /api/workflow/info/run`
 - `POST /api/workflow/hyperliquid-order/run`
-- `POST /api/a2a/tasks/x-reader`
+- `POST /api/a2a/tasks/info`
 - `GET /api/demo/price-series?limit=60`
 - `GET /api/demo/trace/:traceId`
 - `GET /api/demo/trace-by-request/:requestId`
@@ -161,8 +161,6 @@ Operational implications:
 - `GET /api/reputation/agents`
 - `GET /api/network/agents`
 - `POST /api/network/tasks/run`
-- `POST /api/network/demo/router-risk/run`
-- `POST /api/network/demo/router-risk-group/run`
 - `POST /api/network/demo/router-info-technical/run`
 - `GET /api/network/commands`
 - `GET /api/network/commands/:commandId`
@@ -241,33 +239,8 @@ Stop local stack:
 powershell -ExecutionPolicy Bypass -File .\backend\scripts\stop-xmtp-local-env.ps1
 ```
 
-### XMTP Router->Risk Quick Verify (Local)
-
-```powershell
-cd backend
-powershell -ExecutionPolicy Bypass -File .\scripts\run-xmtp-router-risk-demo.ps1 `
-  -BaseUrl "http://127.0.0.1:3001" `
-  -AdminApiKey "<admin_key>" `
-  -AgentApiKey "<agent_key>" `
-  -ViewerApiKey "<viewer_key>" `
-  -BindRealX402
-```
-
 `GET /api/xmtp/status` now returns runtime states for:
 `router`, `risk`, `reader`, `price`, `executor`.
-
-### XMTP Router->Risk + Group Quick Verify (Local)
-
-```powershell
-cd backend
-powershell -ExecutionPolicy Bypass -File .\scripts\run-xmtp-router-risk-group-demo.ps1 `
-  -BaseUrl "http://127.0.0.1:3001" `
-  -AdminApiKey "<admin_key>" `
-  -AgentApiKey "<agent_key>" `
-  -ViewerApiKey "<viewer_key>" `
-  -GroupLabel "workers-group" `
-  -BindRealX402
-```
 
 ### XMTP Workers Capability Verify (Local)
 
