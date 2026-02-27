@@ -1,5 +1,4 @@
-﻿
-"use client";
+﻿"use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -43,21 +42,20 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import "reactflow/dist/style.css";
 
-export type FlowMode = "a2a" | "atapi";
+export type FlowMode = "unified";
 export type PlaybackState = "idle" | "playing" | "paused" | "completed";
 type PaymentPhase = "challenge" | "pay+proof" | "verify" | "unlock";
 
 export type FlowStepId =
   | "erc8004_verify"
-  | "xmtp_dm_negotiate"
-  | "xmtp_result_return"
+  | "xmtp_message_signal"
+  | "xmtp_technical_signal"
   | "trade_plan_decision"
   | "x402_settlement"
-  | "atapi_order_gate";
+  | "api_order_execution";
 
 export interface FlowStep {
   id: FlowStepId;
@@ -83,27 +81,23 @@ export interface AuditLogEntry {
 }
 
 export interface AgentNetworkProps {
-  initialMode?: FlowMode;
   backendBaseUrl?: string;
   auditMaxEntries?: number;
 }
 
 type NodeKind = "agent" | "protocol" | "settlement" | "api" | "decision";
-type NodeLane = "a2a" | "atapi" | "global";
-type EdgeChannel = "xmtp" | "x402" | "erc8004" | "http" | "atapi";
+type EdgeChannel = "xmtp" | "x402" | "erc8004" | "decision" | "api";
 
 interface NetworkNodeData {
   title: string;
   subtitle: string;
   kind: NodeKind;
-  lane: NodeLane;
-  status?: "idle" | "active" | "dimmed";
+  status?: "idle" | "active";
 }
 
 interface NetworkEdgeData {
   label: string;
   channel: EdgeChannel;
-  lane: "a2a" | "atapi" | "both";
   active?: boolean;
   dimmed?: boolean;
   labelOffsetX?: number;
@@ -112,59 +106,59 @@ interface NetworkEdgeData {
 }
 
 const COLORS: Record<EdgeChannel, string> = {
-  xmtp: "#3b82f6",
+  xmtp: "#38bdf8",
   x402: "#22c55e",
   erc8004: "#a855f7",
-  http: "#94a3b8",
-  atapi: "#f97316",
+  decision: "#f59e0b",
+  api: "#f97316",
 };
 
-const QUOTE_CAP = 0.00015;
 const X402_PHASES: PaymentPhase[] = ["challenge", "pay+proof", "verify", "unlock"];
 
 export const FLOW_STEPS: FlowStep[] = [
-  { id: "erc8004_verify", index: 1, title: "Step 1 · ERC8004 Identity Verification", description: "Verify identity proofs.", durationMs: 1300 },
-  { id: "xmtp_dm_negotiate", index: 2, title: "Step 2 · XMTP DM Negotiation", description: "Negotiate task and quote.", durationMs: 1600 },
-  { id: "xmtp_result_return", index: 3, title: "Step 3 · XMTP Result Return", description: "Receive final quote.", durationMs: 1300 },
-  { id: "trade_plan_decision", index: 4, title: "Step 4 · Decision Logic", description: "Check quote against threshold.", durationMs: 1200 },
-  { id: "x402_settlement", index: 5, title: "Step 5 · x402 Settlement", description: "challenge -> pay+proof -> unlock", durationMs: 2500 },
-  { id: "atapi_order_gate", index: 6, title: "Step 6 · ATAPI Route Gate", description: "Decide ATAPI execution route.", durationMs: 1300 },
+  { id: "erc8004_verify", index: 1, title: "Step 1 · ERC8004 Identity Verification", description: "Agent001 verifies message and technical agents.", durationMs: 1300 },
+  { id: "xmtp_message_signal", index: 2, title: "Step 2 · XMTP Message Signal", description: "Receive market narrative and event signal.", durationMs: 1600 },
+  { id: "xmtp_technical_signal", index: 3, title: "Step 3 · XMTP Technical Signal", description: "Receive technical/risk analysis signal.", durationMs: 1600 },
+  { id: "trade_plan_decision", index: 4, title: "Step 4 · Agent001 Decision", description: "Aggregate both signals and decide whether to place order.", durationMs: 1400 },
+  { id: "x402_settlement", index: 5, title: "Step 5 · x402 Settlement", description: "challenge -> pay+proof -> unlock, only if execution is approved.", durationMs: 2500 },
+  { id: "api_order_execution", index: 6, title: "Step 6 · API Order Execution", description: "Call API for order placement or skip based on decision.", durationMs: 1300 },
 ];
 
 export const NETWORK_NODES: Node<NetworkNodeData>[] = [
-  { id: "erc8004", type: "network", position: { x: 530, y: 48 }, data: { title: "ERC8004", subtitle: "Trust & Registration", kind: "protocol", lane: "global" } },
-  { id: "a2a-agent001", type: "network", position: { x: 80, y: 282 }, data: { title: "Agent001", subtitle: "Task Initiator", kind: "agent", lane: "a2a" } },
-  { id: "a2a-msgtech", type: "network", position: { x: 450, y: 282 }, data: { title: "Msg/Tech Agent", subtitle: "Service Provider Agent", kind: "agent", lane: "a2a" } },
-  { id: "a2a-x402", type: "network", position: { x: 270, y: 500 }, data: { title: "x402 Settlement", subtitle: "challenge -> pay -> proof -> unlock", kind: "settlement", lane: "a2a" } },
-  { id: "decision-hub", type: "network", position: { x: 560, y: 188 }, data: { title: "Decision Hub", subtitle: "Is quote acceptable?", kind: "decision", lane: "global" } },
-  { id: "atapi-agent001", type: "network", position: { x: 860, y: 282 }, data: { title: "Agent001", subtitle: "Task Initiator", kind: "agent", lane: "atapi" } },
-  { id: "atapi-api", type: "network", position: { x: 1240, y: 282 }, data: { title: "Trading API", subtitle: "Web2 Trading Service", kind: "api", lane: "atapi" } },
-  { id: "atapi-x402", type: "network", position: { x: 1020, y: 500 }, data: { title: "x402 Settlement", subtitle: "challenge -> pay -> proof -> unlock", kind: "settlement", lane: "atapi" } },
+  { id: "erc8004", type: "network", position: { x: 610, y: 56 }, data: { title: "ERC8004", subtitle: "Identity Registry", kind: "protocol" } },
+  { id: "message-agent", type: "network", position: { x: 92, y: 224 }, data: { title: "Message Agent", subtitle: "News & Sentiment Signal", kind: "agent" } },
+  { id: "technical-agent", type: "network", position: { x: 92, y: 452 }, data: { title: "Technical Agent", subtitle: "Indicator & Risk Signal", kind: "agent" } },
+  { id: "agent001", type: "network", position: { x: 574, y: 334 }, data: { title: "Agent001", subtitle: "Signal Aggregator & Executor", kind: "agent" } },
+  { id: "decision-hub", type: "network", position: { x: 574, y: 534 }, data: { title: "Decision Hub", subtitle: "Should call API order?", kind: "decision" } },
+  { id: "x402", type: "network", position: { x: 920, y: 534 }, data: { title: "x402 Settlement", subtitle: "challenge -> pay -> proof -> unlock", kind: "settlement" } },
+  { id: "trading-api", type: "network", position: { x: 1248, y: 334 }, data: { title: "Trading API", subtitle: "Web2 Order Service", kind: "api" } },
 ];
 
 export const NETWORK_EDGES: Edge<NetworkEdgeData>[] = [
-  { id: "a2a-1", type: "glow", source: "a2a-agent001", target: "a2a-msgtech", sourceHandle: "s-right", targetHandle: "t-left", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.xmtp }, data: { label: "① XMTP Negotiation (Task & Price)", channel: "xmtp", lane: "a2a", labelOffsetY: -16, curvature: 0.22 } },
-  { id: "a2a-2", type: "glow", source: "a2a-msgtech", target: "a2a-agent001", sourceHandle: "s-top", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "② x402 challenge", channel: "x402", lane: "a2a", labelOffsetY: -34, curvature: 0.35 } },
-  { id: "a2a-3", type: "glow", source: "a2a-agent001", target: "a2a-x402", sourceHandle: "s-bottom", targetHandle: "t-left", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "③ pay + proof", channel: "x402", lane: "a2a", labelOffsetX: -10, labelOffsetY: -2, curvature: 0.22 } },
-  { id: "a2a-4", type: "glow", source: "a2a-x402", target: "a2a-msgtech", sourceHandle: "s-right", targetHandle: "t-bottom", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "④ unlock", channel: "x402", lane: "a2a", labelOffsetX: 16, labelOffsetY: 0, curvature: 0.2 } },
-  { id: "a2a-5", type: "glow", source: "a2a-msgtech", target: "a2a-agent001", sourceHandle: "s-bottom", targetHandle: "t-bottom", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.xmtp }, data: { label: "⑤ XMTP Result + receiptRef", channel: "xmtp", lane: "a2a", labelOffsetY: 32, curvature: 0.35 } },
-  { id: "api-1", type: "glow", source: "atapi-agent001", target: "atapi-api", sourceHandle: "s-right", targetHandle: "t-left", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.http }, data: { label: "① HTTP Request", channel: "http", lane: "atapi", labelOffsetY: -14, curvature: 0.2 } },
-  { id: "api-2", type: "glow", source: "atapi-api", target: "atapi-agent001", sourceHandle: "s-top", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "② x402 challenge", channel: "x402", lane: "atapi", labelOffsetY: -34, curvature: 0.33 } },
-  { id: "api-3", type: "glow", source: "atapi-agent001", target: "atapi-x402", sourceHandle: "s-bottom", targetHandle: "t-left", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "③ pay + proof", channel: "x402", lane: "atapi", labelOffsetX: -10, curvature: 0.22 } },
-  { id: "api-4", type: "glow", source: "atapi-x402", target: "atapi-api", sourceHandle: "s-right", targetHandle: "t-bottom", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "④ unlock", channel: "x402", lane: "atapi", labelOffsetX: 18, labelOffsetY: 4, curvature: 0.2 } },
-  { id: "api-5", type: "glow", source: "atapi-api", target: "atapi-agent001", sourceHandle: "s-bottom", targetHandle: "t-bottom", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.atapi }, data: { label: "⑤ HTTP Result + receiptRef", channel: "atapi", lane: "atapi", labelOffsetY: 30, curvature: 0.33 } },
-  { id: "erc-a2a-agent", type: "glow", source: "erc8004", target: "a2a-agent001", sourceHandle: "s-left", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.erc8004 }, data: { label: "ERC8004 proof", channel: "erc8004", lane: "both", labelOffsetX: -16, labelOffsetY: -10, curvature: 0.26 } },
-  { id: "erc-a2a-msg", type: "glow", source: "erc8004", target: "a2a-msgtech", sourceHandle: "s-bottom", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.erc8004 }, data: { label: "ERC8004 proof", channel: "erc8004", lane: "both", labelOffsetX: 14, labelOffsetY: -2, curvature: 0.2 } },
-  { id: "erc-atapi-agent", type: "glow", source: "erc8004", target: "atapi-agent001", sourceHandle: "s-right", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.erc8004 }, data: { label: "ERC8004 proof", channel: "erc8004", lane: "both", labelOffsetX: -10, labelOffsetY: 10, curvature: 0.3 } },
+  { id: "erc-msg", type: "glow", source: "erc8004", target: "message-agent", sourceHandle: "s-left", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.erc8004 }, data: { label: "ERC8004 proof", channel: "erc8004", labelOffsetX: -8, labelOffsetY: -14, curvature: 0.28 } },
+  { id: "erc-tech", type: "glow", source: "erc8004", target: "technical-agent", sourceHandle: "s-left", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.erc8004 }, data: { label: "ERC8004 proof", channel: "erc8004", labelOffsetX: -6, labelOffsetY: 8, curvature: 0.35 } },
+  { id: "msg-to-agent", type: "glow", source: "message-agent", target: "agent001", sourceHandle: "s-right", targetHandle: "t-left", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.xmtp }, data: { label: "① XMTP Message Signal", channel: "xmtp", labelOffsetY: -14, curvature: 0.22 } },
+  { id: "tech-to-agent", type: "glow", source: "technical-agent", target: "agent001", sourceHandle: "s-right", targetHandle: "t-left", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.xmtp }, data: { label: "② XMTP Technical Signal", channel: "xmtp", labelOffsetY: 18, curvature: 0.15 } },
+  { id: "agent-to-decision", type: "glow", source: "agent001", target: "decision-hub", sourceHandle: "s-bottom", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.decision }, data: { label: "③ Aggregate + Decision", channel: "decision", labelOffsetX: 14, labelOffsetY: -4, curvature: 0.2 } },
+  { id: "decision-to-x402", type: "glow", source: "decision-hub", target: "x402", sourceHandle: "s-right", targetHandle: "t-left", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "④ If approved: x402 settlement", channel: "x402", labelOffsetY: -18, curvature: 0.2 } },
+  { id: "x402-to-api", type: "glow", source: "x402", target: "trading-api", sourceHandle: "s-right", targetHandle: "t-bottom", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "⑤ unlock order channel", channel: "x402", labelOffsetX: 24, labelOffsetY: -4, curvature: 0.22 } },
+  { id: "api-to-agent", type: "glow", source: "trading-api", target: "agent001", sourceHandle: "s-left", targetHandle: "t-right", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.api }, data: { label: "⑥ API Result + receiptRef", channel: "api", labelOffsetY: -16, curvature: 0.24 } },
 ];
 
-const ICONS: Record<NodeKind, typeof Bot> = { agent: Bot, protocol: ShieldCheck, settlement: Wallet, api: Server, decision: Cpu };
+const ICONS: Record<NodeKind, typeof Bot> = {
+  agent: Bot,
+  protocol: ShieldCheck,
+  settlement: Wallet,
+  api: Server,
+  decision: Cpu,
+};
+
 const BORDERS: Record<NodeKind, string> = {
-  agent: "rgba(56, 189, 248, 0.72)",
-  protocol: "rgba(168, 85, 247, 0.76)",
-  settlement: "rgba(34, 197, 94, 0.74)",
-  api: "rgba(249, 115, 22, 0.74)",
-  decision: "rgba(245, 158, 11, 0.7)",
+  agent: "rgba(56, 189, 248, 0.75)",
+  protocol: "rgba(168, 85, 247, 0.8)",
+  settlement: "rgba(34, 197, 94, 0.78)",
+  api: "rgba(249, 115, 22, 0.78)",
+  decision: "rgba(245, 158, 11, 0.78)",
 };
 
 function shortHash(v: string): string {
@@ -191,28 +185,29 @@ async function fetchJSON<T>(url: string, init: RequestInit = {}, timeout = 7000)
   }
 }
 
-function highlights(step: FlowStepId, mode: FlowMode, shouldExecute: boolean | null) {
-  if (step === "erc8004_verify") return { nodes: ["erc8004", "a2a-agent001", "a2a-msgtech", "atapi-agent001"], edges: ["erc-a2a-agent", "erc-a2a-msg", "erc-atapi-agent"] };
-  if (step === "xmtp_dm_negotiate") return { nodes: ["a2a-agent001", "a2a-msgtech"], edges: ["a2a-1"] };
-  if (step === "xmtp_result_return") return { nodes: ["a2a-agent001", "a2a-msgtech"], edges: ["a2a-5"] };
-  if (step === "trade_plan_decision") return { nodes: ["decision-hub", mode === "atapi" ? "atapi-agent001" : "a2a-agent001"], edges: [] };
+function highlights(step: FlowStepId, shouldExecute: boolean | null) {
+  if (step === "erc8004_verify") return { nodes: ["erc8004", "message-agent", "technical-agent"], edges: ["erc-msg", "erc-tech"] };
+  if (step === "xmtp_message_signal") return { nodes: ["message-agent", "agent001"], edges: ["msg-to-agent"] };
+  if (step === "xmtp_technical_signal") return { nodes: ["technical-agent", "agent001"], edges: ["tech-to-agent"] };
+  if (step === "trade_plan_decision") return { nodes: ["agent001", "decision-hub"], edges: ["agent-to-decision"] };
   if (step === "x402_settlement") {
-    return mode === "atapi"
-      ? { nodes: ["atapi-agent001", "atapi-api", "atapi-x402"], edges: ["api-2", "api-3", "api-4"] }
-      : { nodes: ["a2a-agent001", "a2a-msgtech", "a2a-x402"], edges: ["a2a-2", "a2a-3", "a2a-4"] };
+    if (!shouldExecute) return { nodes: ["decision-hub"], edges: [] };
+    return { nodes: ["decision-hub", "x402", "trading-api"], edges: ["decision-to-x402", "x402-to-api"] };
   }
-  if (mode === "atapi" && shouldExecute) return { nodes: ["atapi-agent001", "atapi-api", "decision-hub"], edges: ["api-5"] };
-  return { nodes: ["decision-hub"], edges: [] };
+  if (step === "api_order_execution") {
+    if (!shouldExecute) return { nodes: ["decision-hub", "agent001"], edges: [] };
+    return { nodes: ["trading-api", "agent001", "x402"], edges: ["api-to-agent"] };
+  }
+  return { nodes: [], edges: [] };
 }
 
 function NetworkNode({ data }: NodeProps<NetworkNodeData>) {
   const Icon = ICONS[data.kind];
   const active = data.status === "active";
-  const dim = data.status === "dimmed";
   return (
     <motion.div
-      animate={{ scale: active ? 1.03 : 1, boxShadow: active ? `0 0 25px ${BORDERS[data.kind]}` : "none" }}
-      className={cn("min-w-[210px] rounded-2xl border bg-black/55 px-4 py-3 text-white backdrop-blur-lg", dim && "opacity-40")}
+      animate={{ scale: active ? 1.03 : 1, boxShadow: active ? `0 0 26px ${BORDERS[data.kind]}` : "none" }}
+      className="min-w-[220px] rounded-2xl border bg-black/55 px-4 py-3 text-white backdrop-blur-lg"
       style={{ borderColor: BORDERS[data.kind] }}
     >
       <Handle id="t-top" type="target" position={Position.Top} className="!opacity-0" />
@@ -234,7 +229,17 @@ function NetworkNode({ data }: NodeProps<NetworkNodeData>) {
   );
 }
 
-function GlowEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, markerEnd, data }: EdgeProps<NetworkEdgeData>) {
+function GlowEdge({
+  id,
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  sourcePosition,
+  targetPosition,
+  markerEnd,
+  data,
+}: EdgeProps<NetworkEdgeData>) {
   const [path, x, y] = getBezierPath({
     sourceX,
     sourceY,
@@ -244,11 +249,11 @@ function GlowEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targ
     targetPosition,
     curvature: data?.curvature ?? 0.24,
   });
-  const color = COLORS[data?.channel ?? "http"];
+  const color = COLORS[data?.channel ?? "api"];
   const active = Boolean(data?.active);
   const dim = Boolean(data?.dimmed);
   const dashed = data?.channel === "erc8004";
-  const showLabel = !dim || active;
+
   return (
     <>
       <BaseEdge
@@ -258,28 +263,26 @@ function GlowEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targ
         style={{
           stroke: color,
           strokeWidth: active ? 3 : 2,
-          opacity: dim ? 0.22 : active ? 1 : 0.7,
+          opacity: dim ? 0.15 : active ? 1 : 0.72,
           filter: active ? `drop-shadow(0 0 8px ${color})` : "none",
           strokeDasharray: dashed ? "8 6" : active ? "14 8" : undefined,
           animation: active ? "edge-dash 1.2s linear infinite" : undefined,
         }}
       />
-      {showLabel ? (
-        <EdgeLabelRenderer>
-          <div
-            className="nodrag nopan rounded-full border border-white/20 bg-black/70 px-2 py-1 text-[11px] text-white"
-            style={{
-              position: "absolute",
-              left: 0,
-              top: 0,
-              whiteSpace: "nowrap",
-              transform: `translate(-50%, -50%) translate(${x + (data?.labelOffsetX ?? 0)}px, ${y + (data?.labelOffsetY ?? -8)}px)`,
-            }}
-          >
-            {data?.label}
-          </div>
-        </EdgeLabelRenderer>
-      ) : null}
+      <EdgeLabelRenderer>
+        <div
+          className="nodrag nopan rounded-full border border-white/20 bg-black/70 px-2 py-1 text-[11px] text-white"
+          style={{
+            position: "absolute",
+            left: 0,
+            top: 0,
+            whiteSpace: "nowrap",
+            transform: `translate(-50%, -50%) translate(${x + (data?.labelOffsetX ?? 0)}px, ${y + (data?.labelOffsetY ?? -8)}px)`,
+          }}
+        >
+          {data?.label}
+        </div>
+      </EdgeLabelRenderer>
     </>
   );
 }
@@ -287,8 +290,8 @@ function GlowEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targ
 const nodeTypes = { network: NetworkNode };
 const edgeTypes = { glow: GlowEdge };
 
-export default function AgentNetwork({ initialMode = "a2a", backendBaseUrl, auditMaxEntries = 200 }: AgentNetworkProps) {
-  const [mode, setMode] = useState<FlowMode>(initialMode);
+export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: AgentNetworkProps) {
+  const mode: FlowMode = "unified";
   const [nodes, , onNodesChange] = useNodesState(NETWORK_NODES);
   const [edges, , onEdgesChange] = useEdgesState(NETWORK_EDGES);
   const [playback, setPlayback] = useState<PlaybackState>("idle");
@@ -296,14 +299,16 @@ export default function AgentNetwork({ initialMode = "a2a", backendBaseUrl, audi
   const [activeNodeIds, setActiveNodeIds] = useState<string[]>([]);
   const [activeEdgeIds, setActiveEdgeIds] = useState<string[]>([]);
   const [audit, setAudit] = useState<AuditLogEntry[]>([]);
-  const [dmOpen, setDmOpen] = useState(false);
+  const [signalOpen, setSignalOpen] = useState(false);
   const [x402Open, setX402Open] = useState(false);
   const [x402Phase, setX402Phase] = useState<PaymentPhase>("challenge");
-  const [quote, setQuote] = useState(0.00014);
   const [shouldExecute, setShouldExecute] = useState<boolean | null>(null);
-  const [decision, setDecision] = useState("Pending quote validation.");
+  const [decision, setDecision] = useState("Pending signal aggregation.");
   const [verificationHash, setVerificationHash] = useState("");
-  const [xmtpSnippet, setXmtpSnippet] = useState("");
+  const [messageSnippet, setMessageSnippet] = useState("");
+  const [technicalSnippet, setTechnicalSnippet] = useState("");
+  const [messageScore, setMessageScore] = useState(0.58);
+  const [technicalScore, setTechnicalScore] = useState(0.61);
   const [receiptRef, setReceiptRef] = useState("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
@@ -317,130 +322,231 @@ export default function AgentNetwork({ initialMode = "a2a", backendBaseUrl, audi
     playbackRef.current = playback;
   }, [playback]);
 
-  useEffect(() => () => {
-    if (timerRef.current) window.clearTimeout(timerRef.current);
-    if (x402TimerRef.current) window.clearInterval(x402TimerRef.current);
-  }, []);
+  useEffect(
+    () => () => {
+      if (timerRef.current) window.clearTimeout(timerRef.current);
+      if (x402TimerRef.current) window.clearInterval(x402TimerRef.current);
+    },
+    []
+  );
 
-  const appendAudit = useCallback((entry: Omit<AuditLogEntry, "id" | "tsISO" | "tsLocal">) => {
-    const now = new Date();
-    const row: AuditLogEntry = {
-      ...entry,
-      id: `${now.getTime()}_${Math.random().toString(36).slice(2, 8)}`,
-      tsISO: now.toISOString(),
-      tsLocal: now.toLocaleTimeString("en-US", { hour12: false }),
-    };
-    setAudit((prev) => [...prev, row].slice(-auditMaxEntries));
-  }, [auditMaxEntries]);
+  const appendAudit = useCallback(
+    (entry: Omit<AuditLogEntry, "id" | "tsISO" | "tsLocal">) => {
+      const now = new Date();
+      const row: AuditLogEntry = {
+        ...entry,
+        id: `${now.getTime()}_${Math.random().toString(36).slice(2, 8)}`,
+        tsISO: now.toISOString(),
+        tsLocal: now.toLocaleTimeString("en-US", { hour12: false }),
+      };
+      setAudit((prev) => [...prev, row].slice(-auditMaxEntries));
+    },
+    [auditMaxEntries]
+  );
 
-  const executeStep = useCallback(async function run(idx: number) {
-    if (runningRef.current || idx < 0 || idx >= FLOW_STEPS.length) return;
-    runningRef.current = true;
-    try {
-      const step = FLOW_STEPS[idx];
-      setStepIndex(idx);
-      const hi = highlights(step.id, mode, shouldExecute);
-      setActiveNodeIds(hi.nodes);
-      setActiveEdgeIds(hi.edges);
+  const executeStep = useCallback(
+    async function run(idx: number) {
+      if (runningRef.current || idx < 0 || idx >= FLOW_STEPS.length) return;
+      runningRef.current = true;
+      try {
+        const step = FLOW_STEPS[idx];
+        setStepIndex(idx);
+        const hi = highlights(step.id, shouldExecute);
+        setActiveNodeIds(hi.nodes);
+        setActiveEdgeIds(hi.edges);
 
-      if (step.id === "erc8004_verify") {
-        let proof = randomHex();
-        try {
-          const agents = await fetchJSON<{ agents?: unknown[] }>(`${baseUrl}/api/network/agents`);
-          proof = `0xerc_${String(agents?.agents?.length ?? 0).padStart(2, "0")}${randomHex(58).slice(2)}`;
-        } catch {
-          // fallback
-        }
-        setVerificationHash(proof);
-        appendAudit({ mode, stepId: step.id, stepName: step.title, blockchainVerifiable: true, verificationHash: proof, payload: { layer: "ERC8004", proof } });
-      }
-
-      if (step.id === "xmtp_dm_negotiate") {
-        setDmOpen(true);
-        let snippet = "Fallback: Negotiation completed over XMTP DM.";
-        let q = 0.00014;
-        let source = "fallback";
-        try {
-          const res = await fetchJSON<{ result?: { summary?: string; confidence?: number } }>(`${baseUrl}/api/analysis/info/run`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ topic: "BTCUSDT strategy negotiation", mode: "auto", maxChars: 400 }),
-          });
-          snippet = res?.result?.summary || snippet;
-          const conf = Number(res?.result?.confidence ?? 0.75);
-          q = Number((0.0001 + (1 - conf) * 0.00007).toFixed(5));
-          source = "backend";
-        } catch {
-          // fallback
-        }
-        setXmtpSnippet(snippet);
-        setQuote(q);
-        appendAudit({ mode, stepId: step.id, stepName: step.title, blockchainVerifiable: true, xmtpSnippet: snippet, payload: { quote: q, source } });
-      }
-
-      if (step.id === "xmtp_result_return") {
-        setDmOpen(false);
-        appendAudit({ mode, stepId: step.id, stepName: step.title, blockchainVerifiable: true, xmtpSnippet: xmtpSnippet || "XMTP final quote return.", payload: { finalQuote: quote, ttlSec: 90 } });
-      }
-
-      if (step.id === "trade_plan_decision") {
-        const accepted = quote <= QUOTE_CAP;
-        const basis = accepted ? `Quote ${quote.toFixed(5)} <= cap ${QUOTE_CAP.toFixed(5)}. Execution approved.` : `Quote ${quote.toFixed(5)} > cap ${QUOTE_CAP.toFixed(5)}. Execution rejected.`;
-        setShouldExecute(accepted);
-        setDecision(basis);
-        appendAudit({ mode, stepId: step.id, stepName: step.title, blockchainVerifiable: true, decisionBasis: basis, payload: { quote, cap: QUOTE_CAP, execute: accepted } });
-      }
-
-      if (step.id === "x402_settlement") {
-        setX402Open(true);
-        let p = 0;
-        setX402Phase(X402_PHASES[p]);
-        if (x402TimerRef.current) window.clearInterval(x402TimerRef.current);
-        x402TimerRef.current = window.setInterval(() => {
-          p += 1;
-          if (p >= X402_PHASES.length) {
-            if (x402TimerRef.current) window.clearInterval(x402TimerRef.current);
-            return;
+        if (step.id === "erc8004_verify") {
+          let proof = randomHex();
+          try {
+            const agents = await fetchJSON<{ agents?: unknown[] }>(`${baseUrl}/api/network/agents`);
+            proof = `0xerc_${String(agents?.agents?.length ?? 0).padStart(2, "0")}${randomHex(58).slice(2)}`;
+          } catch {
+            // fallback
           }
-          setX402Phase(X402_PHASES[p]);
-        }, 550);
-
-        let receipt = `receipt_${randomHex(10).slice(2)}`;
-        try {
-          const res = await fetchJSON<{ items?: Array<Record<string, unknown>> }>(`${baseUrl}/api/x402/mapping/latest`);
-          const first = Array.isArray(res?.items) && res.items.length > 0 ? res.items[0] : null;
-          const reqId = String(first?.requestId || "");
-          const tx = String(first?.txHash || first?.paymentTxHash || "");
-          if (reqId || tx) receipt = `${reqId || "req_unknown"}:${tx || "tx_unknown"}`;
-        } catch {
-          // fallback
+          setVerificationHash(proof);
+          appendAudit({
+            mode,
+            stepId: step.id,
+            stepName: step.title,
+            blockchainVerifiable: true,
+            verificationHash: proof,
+            payload: { layer: "ERC8004", verifiedAgents: ["message-agent", "technical-agent"], proof },
+          });
         }
-        setReceiptRef(receipt);
-        appendAudit({ mode, stepId: step.id, stepName: step.title, blockchainVerifiable: true, receiptRef: receipt, payload: { phases: X402_PHASES, receipt } });
-      }
 
-      if (step.id === "atapi_order_gate") {
-        if (mode === "atapi" && shouldExecute) {
-          appendAudit({ mode, stepId: step.id, stepName: step.title, blockchainVerifiable: true, receiptRef: receiptRef || `receipt_${randomHex(8).slice(2)}`, decisionBasis: "ATAPI route enabled.", payload: { atapiRouted: true } });
-        } else {
-          appendAudit({ mode, stepId: step.id, stepName: step.title, blockchainVerifiable: true, decisionBasis: mode !== "atapi" ? "ATAPI route skipped in A2A mode." : "ATAPI route skipped due to quote threshold.", payload: { atapiRouted: false } });
+        if (step.id === "xmtp_message_signal") {
+          setSignalOpen(true);
+          let snippet = "Fallback: Message agent reports positive macro momentum.";
+          let score = 0.59;
+          let source = "fallback";
+          try {
+            const res = await fetchJSON<{ result?: { summary?: string; confidence?: number } }>(`${baseUrl}/api/analysis/info/run`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ topic: "message signal for BTCUSDT", mode: "auto", maxChars: 360 }),
+            });
+            snippet = res?.result?.summary || snippet;
+            score = Number((res?.result?.confidence ?? score).toFixed(3));
+            source = "backend";
+          } catch {
+            // fallback
+          }
+          setMessageSnippet(snippet);
+          setMessageScore(score);
+          appendAudit({
+            mode,
+            stepId: step.id,
+            stepName: step.title,
+            blockchainVerifiable: true,
+            xmtpSnippet: snippet,
+            payload: { signalAgent: "message-agent", score, source },
+          });
         }
-      }
 
-      if (playbackRef.current === "playing") {
-        if (idx >= FLOW_STEPS.length - 1) {
-          setPlayback("completed");
-        } else {
-          if (timerRef.current) window.clearTimeout(timerRef.current);
-          timerRef.current = window.setTimeout(() => {
-            if (playbackRef.current === "playing") void run(idx + 1);
-          }, step.durationMs);
+        if (step.id === "xmtp_technical_signal") {
+          let snippet = "Fallback: Technical agent reports trend support and manageable volatility.";
+          let score = 0.63;
+          let source = "fallback";
+          try {
+            const res = await fetchJSON<{ result?: { summary?: string; confidence?: number } }>(`${baseUrl}/api/analysis/info/run`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ topic: "technical signal for BTCUSDT", mode: "auto", maxChars: 360 }),
+            });
+            snippet = res?.result?.summary || snippet;
+            score = Number((res?.result?.confidence ?? score).toFixed(3));
+            source = "backend";
+          } catch {
+            // fallback
+          }
+          setTechnicalSnippet(snippet);
+          setTechnicalScore(score);
+          appendAudit({
+            mode,
+            stepId: step.id,
+            stepName: step.title,
+            blockchainVerifiable: true,
+            xmtpSnippet: snippet,
+            payload: { signalAgent: "technical-agent", score, source },
+          });
         }
+
+        if (step.id === "trade_plan_decision") {
+          setSignalOpen(false);
+          const combined = Number((messageScore * 0.45 + technicalScore * 0.55).toFixed(3));
+          const accepted = combined >= 0.62 && messageScore >= 0.45 && technicalScore >= 0.45;
+          const basis = accepted
+            ? `Approved. Combined score ${combined} (message ${messageScore}, technical ${technicalScore}) meets execution threshold.`
+            : `Rejected. Combined score ${combined} (message ${messageScore}, technical ${technicalScore}) is below threshold.`;
+          setShouldExecute(accepted);
+          setDecision(basis);
+          appendAudit({
+            mode,
+            stepId: step.id,
+            stepName: step.title,
+            blockchainVerifiable: true,
+            decisionBasis: basis,
+            payload: { messageScore, technicalScore, weighted: combined, execute: accepted },
+          });
+        }
+
+        if (step.id === "x402_settlement") {
+          if (!shouldExecute) {
+            appendAudit({
+              mode,
+              stepId: step.id,
+              stepName: step.title,
+              blockchainVerifiable: true,
+              decisionBasis: "Skipped. Agent001 did not approve API order execution.",
+              payload: { executed: false },
+            });
+          } else {
+            setX402Open(true);
+            let p = 0;
+            setX402Phase(X402_PHASES[p]);
+            if (x402TimerRef.current) window.clearInterval(x402TimerRef.current);
+            x402TimerRef.current = window.setInterval(() => {
+              p += 1;
+              if (p >= X402_PHASES.length) {
+                if (x402TimerRef.current) window.clearInterval(x402TimerRef.current);
+                return;
+              }
+              setX402Phase(X402_PHASES[p]);
+            }, 550);
+
+            let receipt = `receipt_${randomHex(10).slice(2)}`;
+            try {
+              const res = await fetchJSON<{ items?: Array<Record<string, unknown>> }>(`${baseUrl}/api/x402/mapping/latest`);
+              const first = Array.isArray(res?.items) && res.items.length > 0 ? res.items[0] : null;
+              const reqId = String(first?.requestId || "");
+              const tx = String(first?.txHash || first?.paymentTxHash || "");
+              if (reqId || tx) receipt = `${reqId || "req_unknown"}:${tx || "tx_unknown"}`;
+            } catch {
+              // fallback
+            }
+            setReceiptRef(receipt);
+            appendAudit({
+              mode,
+              stepId: step.id,
+              stepName: step.title,
+              blockchainVerifiable: true,
+              receiptRef: receipt,
+              payload: { phases: X402_PHASES, receipt, executed: true },
+            });
+          }
+        }
+
+        if (step.id === "api_order_execution") {
+          if (!shouldExecute) {
+            appendAudit({
+              mode,
+              stepId: step.id,
+              stepName: step.title,
+              blockchainVerifiable: true,
+              decisionBasis: "API order call not triggered by Agent001 decision.",
+              payload: { apiCalled: false },
+            });
+          } else {
+            let orderRef = `order_${randomHex(8).slice(2)}`;
+            try {
+              const res = await fetchJSON<{ result?: Record<string, unknown> }>(`${baseUrl}/api/workflow/btc-price/run`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ pair: "BTCUSDT", source: "hyperliquid" }),
+              });
+              const maybeRef = String(res?.result?.requestId || res?.result?.receiptRef || "");
+              if (maybeRef) orderRef = maybeRef;
+            } catch {
+              // fallback
+            }
+            appendAudit({
+              mode,
+              stepId: step.id,
+              stepName: step.title,
+              blockchainVerifiable: true,
+              receiptRef: receiptRef || orderRef,
+              decisionBasis: "Agent001 approved execution and invoked API order flow.",
+              payload: { apiCalled: true, orderRef },
+            });
+          }
+        }
+
+        if (playbackRef.current === "playing") {
+          if (idx >= FLOW_STEPS.length - 1) {
+            setPlayback("completed");
+          } else {
+            if (timerRef.current) window.clearTimeout(timerRef.current);
+            timerRef.current = window.setTimeout(() => {
+              if (playbackRef.current === "playing") void run(idx + 1);
+            }, step.durationMs);
+          }
+        }
+      } finally {
+        runningRef.current = false;
       }
-    } finally {
-      runningRef.current = false;
-    }
-  }, [appendAudit, baseUrl, mode, quote, receiptRef, shouldExecute, xmtpSnippet]);
+    },
+    [appendAudit, baseUrl, messageScore, mode, receiptRef, shouldExecute, technicalScore]
+  );
 
   const start = useCallback(() => {
     setPlayback("playing");
@@ -468,32 +574,41 @@ export default function AgentNetwork({ initialMode = "a2a", backendBaseUrl, audi
     setActiveNodeIds([]);
     setActiveEdgeIds([]);
     setAudit([]);
-    setDmOpen(false);
+    setSignalOpen(false);
     setX402Open(false);
     setX402Phase("challenge");
-    setVerificationHash("");
-    setXmtpSnippet("");
-    setReceiptRef("");
-    setDecision("Pending quote validation.");
     setShouldExecute(null);
-    setQuote(0.00014);
+    setDecision("Pending signal aggregation.");
+    setVerificationHash("");
+    setMessageSnippet("");
+    setTechnicalSnippet("");
+    setMessageScore(0.58);
+    setTechnicalScore(0.61);
+    setReceiptRef("");
     setTimeout(() => {
       setPlayback("playing");
       void executeStep(0);
     }, 120);
   }, [executeStep]);
 
-  const drawNodes = useMemo(() => nodes.map((n) => {
-    const active = activeNodeIds.includes(n.id);
-    const dim = n.data.lane !== "global" && ((mode === "a2a" && n.data.lane === "atapi") || (mode === "atapi" && n.data.lane === "a2a"));
-    return { ...n, data: { ...n.data, status: active ? "active" : dim ? "dimmed" : "idle" } };
-  }), [activeNodeIds, mode, nodes]);
+  const drawNodes = useMemo(
+    () =>
+      nodes.map((n) => {
+        const active = activeNodeIds.includes(n.id);
+        return { ...n, data: { ...n.data, status: active ? "active" : "idle" } };
+      }),
+    [activeNodeIds, nodes]
+  );
 
-  const drawEdges = useMemo(() => edges.map((e) => {
-    const active = activeEdgeIds.includes(e.id);
-    const dim = e.data?.lane !== "both" && ((mode === "a2a" && e.data?.lane === "atapi") || (mode === "atapi" && e.data?.lane === "a2a"));
-    return { ...e, animated: active, data: { ...e.data, active, dimmed: dim } };
-  }), [activeEdgeIds, edges, mode]);
+  const drawEdges = useMemo(
+    () =>
+      edges.map((e) => {
+        const active = activeEdgeIds.includes(e.id);
+        const dimmed = activeEdgeIds.length > 0 && !active;
+        return { ...e, animated: active, data: { ...e.data, active, dimmed } };
+      }),
+    [activeEdgeIds, edges]
+  );
 
   const current = stepIndex >= 0 ? FLOW_STEPS[stepIndex] : null;
   const progress = stepIndex >= 0 ? ((stepIndex + 1) / FLOW_STEPS.length) * 100 : 0;
@@ -509,92 +624,178 @@ export default function AgentNetwork({ initialMode = "a2a", backendBaseUrl, audi
       <Card className="border-white/10 bg-black/45 py-4 text-white">
         <CardContent className="space-y-4 px-4 sm:px-6">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            <Tabs value={mode} onValueChange={(v) => setMode(v as FlowMode)} className="w-full lg:max-w-[430px]">
-              <TabsList className="grid w-full grid-cols-2 bg-white/8">
-                <TabsTrigger value="a2a" className="data-[state=active]:bg-blue-500/30">A2A Path</TabsTrigger>
-                <TabsTrigger value="atapi" className="data-[state=active]:bg-orange-500/30">ATAPI Path</TabsTrigger>
-              </TabsList>
-            </Tabs>
+            <div className="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-3 py-2 text-xs text-cyan-200">
+              Unified Agent Network: Message + Technical → Agent001 → Decision → x402 → API
+            </div>
             <div className="flex flex-wrap items-center gap-2">
-              <Button onClick={start} className="h-10 bg-gradient-to-r from-cyan-400 to-blue-600 text-black"><Play className="size-4" />▶ Start Auditable Flow Demo</Button>
-              <Button variant="outline" className="border-white/30 bg-black/35 text-white" onClick={pause}><CirclePause className="size-4" />Pause</Button>
-              <Button variant="outline" className="border-white/30 bg-black/35 text-white" onClick={next}><SkipForward className="size-4" />Next Step</Button>
-              <Button variant="outline" className="border-white/30 bg-black/35 text-white" onClick={replay}><RotateCcw className="size-4" />Replay</Button>
+              <Button onClick={start} className="h-10 bg-gradient-to-r from-cyan-400 to-blue-600 text-black">
+                <Play className="size-4" />
+                ? Start Auditable Flow Demo
+              </Button>
+              <Button variant="outline" className="border-white/30 bg-black/35 text-white" onClick={pause}>
+                <CirclePause className="size-4" />
+                Pause
+              </Button>
+              <Button variant="outline" className="border-white/30 bg-black/35 text-white" onClick={next}>
+                <SkipForward className="size-4" />
+                Next Step
+              </Button>
+              <Button variant="outline" className="border-white/30 bg-black/35 text-white" onClick={replay}>
+                <RotateCcw className="size-4" />
+                Replay
+              </Button>
             </div>
           </div>
-          <div className="grid gap-2 text-sm md:grid-cols-4">
-            <div className="rounded-lg border border-white/10 bg-white/5 px-3 py-2"><div className="text-xs text-slate-300">Playback</div><div className="font-semibold">{playback.toUpperCase()}</div></div>
-            <div className="rounded-lg border border-purple-400/25 bg-purple-400/8 px-3 py-2"><div className="text-xs text-purple-200">verificationHash</div><div className="font-mono text-sm">{shortHash(verificationHash)}</div></div>
-            <div className="rounded-lg border border-cyan-400/25 bg-cyan-400/8 px-3 py-2"><div className="text-xs text-cyan-200">xmtpSnippet</div><div className="truncate text-sm">{xmtpSnippet || "-"}</div></div>
-            <div className="rounded-lg border border-emerald-400/25 bg-emerald-400/8 px-3 py-2"><div className="text-xs text-emerald-200">receiptRef</div><div className="font-mono text-sm">{shortHash(receiptRef)}</div></div>
+
+          <div className="grid gap-2 text-sm md:grid-cols-5">
+            <div className="rounded-lg border border-white/10 bg-white/5 px-3 py-2">
+              <div className="text-xs text-slate-300">Playback</div>
+              <div className="font-semibold">{playback.toUpperCase()}</div>
+            </div>
+            <div className="rounded-lg border border-purple-400/25 bg-purple-400/8 px-3 py-2">
+              <div className="text-xs text-purple-200">verificationHash</div>
+              <div className="font-mono text-sm">{shortHash(verificationHash)}</div>
+            </div>
+            <div className="rounded-lg border border-cyan-400/25 bg-cyan-400/8 px-3 py-2">
+              <div className="text-xs text-cyan-200">messageSignal</div>
+              <div className="truncate text-sm">{messageSnippet || "-"}</div>
+            </div>
+            <div className="rounded-lg border border-cyan-400/25 bg-cyan-400/8 px-3 py-2">
+              <div className="text-xs text-cyan-200">technicalSignal</div>
+              <div className="truncate text-sm">{technicalSnippet || "-"}</div>
+            </div>
+            <div className="rounded-lg border border-emerald-400/25 bg-emerald-400/8 px-3 py-2">
+              <div className="text-xs text-emerald-200">receiptRef</div>
+              <div className="font-mono text-sm">{shortHash(receiptRef)}</div>
+            </div>
           </div>
-          <div className="h-2 overflow-hidden rounded-full bg-white/10"><motion.div animate={{ width: `${progress}%` }} className="h-full bg-gradient-to-r from-cyan-400 via-emerald-400 to-orange-400" /></div>
+
+          <div className="h-2 overflow-hidden rounded-full bg-white/10">
+            <motion.div animate={{ width: `${progress}%` }} className="h-full bg-gradient-to-r from-cyan-400 via-emerald-400 to-orange-400" />
+          </div>
           <p className="text-sm text-slate-300">{current ? `${current.title}: ${current.description}` : "Ready to run complete auditable agent workflow."}</p>
         </CardContent>
       </Card>
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
         <Card className="relative overflow-hidden border-white/10 bg-black/45 py-0 text-white">
-          <div className="relative h-[68vh] min-h-[560px]">
+          <div className="relative h-[70vh] min-h-[620px]">
             <div className="pointer-events-none absolute inset-0 z-0">
-              <div className={cn("absolute left-4 top-24 h-[74%] w-[46%] rounded-[32px] border border-cyan-300/20 bg-cyan-400/10", mode === "a2a" && "bg-cyan-400/16 shadow-[0_0_60px_rgba(56,189,248,0.25)]")} />
-              <div className={cn("absolute right-4 top-24 h-[74%] w-[46%] rounded-[32px] border border-orange-300/20 bg-orange-400/10", mode === "atapi" && "bg-orange-400/16 shadow-[0_0_60px_rgba(249,115,22,0.25)]")} />
+              <div className="absolute left-3 top-24 h-[76%] w-[34%] rounded-[30px] border border-cyan-300/20 bg-cyan-400/10 shadow-[0_0_40px_rgba(56,189,248,0.15)]" />
+              <div className="absolute left-[38%] top-24 h-[76%] w-[24%] rounded-[30px] border border-blue-300/18 bg-blue-400/10 shadow-[0_0_40px_rgba(59,130,246,0.12)]" />
+              <div className="absolute right-3 top-24 h-[76%] w-[35%] rounded-[30px] border border-orange-300/20 bg-orange-400/10 shadow-[0_0_40px_rgba(249,115,22,0.14)]" />
             </div>
+
             <ReactFlow
               nodes={drawNodes}
               edges={drawEdges}
               onNodesChange={onNodesChange}
               onEdgesChange={onEdgesChange}
-              onNodeClick={(_, node) => { if (node.id.includes("x402")) setX402Open(true); }}
+              onNodeClick={(_, node) => {
+                if (node.id === "x402") setX402Open(true);
+              }}
               nodeTypes={nodeTypes}
               edgeTypes={edgeTypes}
               fitView
               fitViewOptions={{ padding: 0.08 }}
               connectionLineType={ConnectionLineType.Bezier}
               className="!bg-transparent"
-              minZoom={0.5}
-              maxZoom={1.3}
+              minZoom={0.55}
+              maxZoom={1.35}
               proOptions={{ hideAttribution: true }}
             >
-              <Background color={mode === "a2a" ? "#0f172a" : "#1f1307"} gap={24} size={1} />
+              <Background color="#111827" gap={24} size={1} />
               <Controls className="!border-white/20 !bg-black/70 !text-white" />
               <MiniMap className="!hidden sm:!block !border !border-white/10 !bg-black/60" />
-              <div className="pointer-events-none absolute left-1/2 top-4 z-10 -translate-x-1/2 rounded-full border border-white/20 bg-black/70 px-4 py-2 text-xs tracking-wide">AGENT NETWORK · FULL AUDITABILITY</div>
+              <div className="pointer-events-none absolute left-1/2 top-4 z-10 -translate-x-1/2 rounded-full border border-white/20 bg-black/70 px-4 py-2 text-xs tracking-wide">
+                AGENT NETWORK · FULL AUDITABILITY
+              </div>
             </ReactFlow>
-            <div className="pointer-events-none absolute bottom-4 left-4 z-20 w-[300px] rounded-xl border border-white/15 bg-black/65 p-3 text-xs text-slate-100">
+
+            <div className="pointer-events-none absolute bottom-4 left-4 z-20 w-[320px] rounded-xl border border-white/15 bg-black/65 p-3 text-xs text-slate-100">
               <div className="mb-2 font-semibold text-white">Legend</div>
               <div className="grid gap-1.5">
-                <div className="flex items-center gap-2"><span className="inline-block h-[2px] w-8 bg-blue-500" />Blue arrows = XMTP communication</div>
-                <div className="flex items-center gap-2"><span className="inline-block h-[2px] w-8 bg-emerald-500" />Green arrows = x402 payment/settlement</div>
-                <div className="flex items-center gap-2"><span className="inline-block h-[2px] w-8 border-t-2 border-dashed border-purple-500" />Dashed = ERC8004 verification</div>
-                <div className="flex items-center gap-2"><span className="inline-block h-[2px] w-8 bg-orange-500" />Orange highlight = ATAPI route</div>
+                <div className="flex items-center gap-2">
+                  <span className="inline-block h-[2px] w-8 bg-purple-500" />
+                  Purple dashed = ERC8004 verification
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="inline-block h-[2px] w-8 bg-sky-400" />
+                  Blue arrows = XMTP agent signals
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="inline-block h-[2px] w-8 bg-amber-400" />
+                  Amber = Agent001 decision logic
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="inline-block h-[2px] w-8 bg-emerald-500" />
+                  Green = x402 payment unlock flow
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="inline-block h-[2px] w-8 bg-orange-500" />
+                  Orange = API order execution result
+                </div>
               </div>
             </div>
           </div>
         </Card>
 
-        <Card className="h-[68vh] min-h-[560px] border-white/10 bg-black/45 py-0 text-white">
+        <Card className="h-[70vh] min-h-[620px] border-white/10 bg-black/45 py-0 text-white">
           <CardHeader className="border-b border-white/10 pb-4">
-            <CardTitle className="flex items-center gap-2 text-lg"><Sparkles className="size-4 text-cyan-300" />Audit Trail</CardTitle>
-            <CardDescription className="text-slate-300">Step-by-step verifiable workflow records.</CardDescription>
+            <CardTitle className="flex items-center gap-2 text-lg">
+              <Sparkles className="size-4 text-cyan-300" />
+              Audit Trail
+            </CardTitle>
+            <CardDescription className="text-slate-300">Step-by-step verifiable records from signal ingestion to execution decision.</CardDescription>
           </CardHeader>
-          <CardContent className="h-[calc(68vh-92px)] space-y-3 overflow-y-auto px-4 pb-4 pt-4">
+          <CardContent className="h-[calc(70vh-92px)] space-y-3 overflow-y-auto px-4 pb-4 pt-4">
             {audit.length === 0 ? <div className="rounded-lg border border-white/10 bg-white/5 p-4 text-sm text-slate-300">No audit entries yet. Start demo playback.</div> : null}
             {audit.map((entry) => (
               <motion.div key={entry.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="space-y-2 rounded-xl border border-white/10 bg-white/5 p-3">
                 <div className="flex items-start justify-between gap-3">
-                  <div><div className="text-sm font-semibold">{entry.stepName}</div><div className="text-xs text-slate-400">{entry.tsLocal} · {entry.mode.toUpperCase()}</div></div>
+                  <div>
+                    <div className="text-sm font-semibold">{entry.stepName}</div>
+                    <div className="text-xs text-slate-400">
+                      {entry.tsLocal} · {entry.mode.toUpperCase()}
+                    </div>
+                  </div>
                   <Badge className="bg-emerald-500/20 text-emerald-200">Blockchain Verifiable</Badge>
                 </div>
                 <Separator className="bg-white/10" />
                 <div className="space-y-1 text-xs text-slate-200">
-                  {entry.verificationHash ? <p><span className="text-slate-400">verificationHash:</span> <span className="font-mono">{shortHash(entry.verificationHash)}</span></p> : null}
-                  {entry.xmtpSnippet ? <p><span className="text-slate-400">xmtpSnippet:</span> {entry.xmtpSnippet}</p> : null}
-                  {entry.receiptRef ? <p><span className="text-slate-400">receiptRef:</span> <span className="font-mono">{shortHash(entry.receiptRef)}</span></p> : null}
-                  {entry.decisionBasis ? <p><span className="text-slate-400">decisionBasis:</span> {entry.decisionBasis}</p> : null}
+                  {entry.verificationHash ? (
+                    <p>
+                      <span className="text-slate-400">verificationHash:</span> <span className="font-mono">{shortHash(entry.verificationHash)}</span>
+                    </p>
+                  ) : null}
+                  {entry.xmtpSnippet ? (
+                    <p>
+                      <span className="text-slate-400">xmtpSnippet:</span> {entry.xmtpSnippet}
+                    </p>
+                  ) : null}
+                  {entry.receiptRef ? (
+                    <p>
+                      <span className="text-slate-400">receiptRef:</span> <span className="font-mono">{shortHash(entry.receiptRef)}</span>
+                    </p>
+                  ) : null}
+                  {entry.decisionBasis ? (
+                    <p>
+                      <span className="text-slate-400">decisionBasis:</span> {entry.decisionBasis}
+                    </p>
+                  ) : null}
                 </div>
                 <Button variant="outline" size="sm" className="h-8 border-white/20 bg-black/35 text-xs text-white" onClick={() => void copyAudit(entry)}>
-                  {copiedId === entry.id ? <><Check className="size-3.5" />Copied</> : <><ClipboardCopy className="size-3.5" />Copy</>}
+                  {copiedId === entry.id ? (
+                    <>
+                      <Check className="size-3.5" />
+                      Copied
+                    </>
+                  ) : (
+                    <>
+                      <ClipboardCopy className="size-3.5" />
+                      Copy
+                    </>
+                  )}
                 </Button>
               </motion.div>
             ))}
@@ -602,17 +803,24 @@ export default function AgentNetwork({ initialMode = "a2a", backendBaseUrl, audi
         </Card>
       </div>
 
-      <Dialog open={dmOpen} onOpenChange={setDmOpen}>
+      <Dialog open={signalOpen} onOpenChange={setSignalOpen}>
         <DialogContent className="max-w-xl border-cyan-400/35 bg-slate-950 text-white">
           <DialogHeader>
-            <DialogTitle className="text-cyan-300">XMTP DM Negotiation</DialogTitle>
-            <DialogDescription className="text-slate-300">Task scope + quote negotiation thread.</DialogDescription>
+            <DialogTitle className="text-cyan-300">XMTP Signal Ingestion</DialogTitle>
+            <DialogDescription className="text-slate-300">Agent001 receives message and technical signals before decision making.</DialogDescription>
           </DialogHeader>
-          <div className="space-y-2 rounded-xl border border-cyan-400/25 bg-slate-900/70 p-4 text-sm">
-            <p>Agent001: Need BTCUSDT 60m signal and execution policy.</p>
-            <p>Msg/Tech Agent: Quote {quote.toFixed(5)} with x402 settlement binding.</p>
-            <p>Agent001: Include confidence and risk factors.</p>
-            <p>Msg/Tech Agent: Accepted. Returning audited payload.</p>
+          <div className="space-y-3 rounded-xl border border-cyan-400/25 bg-slate-900/70 p-4 text-sm">
+            <div>
+              <div className="text-xs text-cyan-200">Message Agent</div>
+              <p>{messageSnippet || "Waiting for message signal..."}</p>
+              <div className="mt-1 text-xs text-slate-400">score: {messageScore.toFixed(3)}</div>
+            </div>
+            <Separator className="bg-white/10" />
+            <div>
+              <div className="text-xs text-cyan-200">Technical Agent</div>
+              <p>{technicalSnippet || "Waiting for technical signal..."}</p>
+              <div className="mt-1 text-xs text-slate-400">score: {technicalScore.toFixed(3)}</div>
+            </div>
           </div>
         </DialogContent>
       </Dialog>
@@ -628,7 +836,14 @@ export default function AgentNetwork({ initialMode = "a2a", backendBaseUrl, audi
               const active = phase === x402Phase;
               const done = X402_PHASES.indexOf(x402Phase) > i;
               return (
-                <motion.div key={phase} animate={{ opacity: active || done ? 1 : 0.45, scale: active ? 1.02 : 1 }} className={cn("flex items-center justify-between rounded-lg border px-3 py-2 text-sm", active ? "border-emerald-400/70 bg-emerald-500/15" : done ? "border-emerald-400/35 bg-emerald-500/8" : "border-white/15 bg-white/5")}>
+                <motion.div
+                  key={phase}
+                  animate={{ opacity: active || done ? 1 : 0.45, scale: active ? 1.02 : 1 }}
+                  className={cn(
+                    "flex items-center justify-between rounded-lg border px-3 py-2 text-sm",
+                    active ? "border-emerald-400/70 bg-emerald-500/15" : done ? "border-emerald-400/35 bg-emerald-500/8" : "border-white/15 bg-white/5"
+                  )}
+                >
                   <span>{phase}</span>
                   {active || done ? <Activity className="size-4 text-emerald-300" /> : null}
                 </motion.div>
@@ -652,3 +867,4 @@ export default function AgentNetwork({ initialMode = "a2a", backendBaseUrl, audi
     </div>
   );
 }
+
