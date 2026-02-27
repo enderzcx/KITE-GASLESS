@@ -7,6 +7,11 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 ## [Unreleased]
 
 ### Added
+- Added AGENT001 trade-plan automation loop (default disabled) with 10-minute default interval:
+  - `GET /api/automation/trade-plan/status`
+  - `POST /api/automation/trade-plan/start`
+  - `POST /api/automation/trade-plan/stop`
+  - each tick runs message-side + technical-side trade planning and records whether order was placed (`ordered` / `no-order` / `failed`).
 - Added one-click backend launcher script and npm entries:
   - `backend/scripts/start-backend-one.ps1`
   - `npm run start:one` / `npm run start:one:dry` in `backend/package.json`
