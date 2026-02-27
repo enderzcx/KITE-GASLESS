@@ -111,6 +111,12 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
   - `backend/docker/openbb/Dockerfile`
 
 ### Changed
+- Backend `npm start` XMTP bootstrap now auto-enables by key presence (when `XMTP_ENABLED` is not explicitly set) and starts all enabled runtimes on startup:
+  - `router`
+  - `risk`
+  - `reader`
+  - `price`
+  - `executor`
 - AGENT001 analysis path is now quote-first (`service-quote`) before strict x402 prebind for both:
   - `technical-analysis-feed`
   - `info-analysis-feed`

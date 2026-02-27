@@ -149,7 +149,23 @@ const AUTO_BTC_PRICE_PAIR = String(process.env.AUTO_BTC_PRICE_PAIR || 'BTCUSDT')
 const AUTO_BTC_PRICE_SOURCE = String(process.env.AUTO_BTC_PRICE_SOURCE || 'hyperliquid').trim().toLowerCase();
 const AUTO_BTC_PRICE_PAYER = String(process.env.AUTO_BTC_PRICE_PAYER || '').trim();
 const X_READER_MAX_CHARS_DEFAULT = Math.max(200, Math.min(8000, Number(process.env.X_READER_MAX_CHARS_DEFAULT || 1200)));
-const XMTP_ENABLED = /^(1|true|yes|on)$/i.test(String(process.env.XMTP_ENABLED || '').trim());
+const XMTP_ROUTER_KEY_AVAILABLE = Boolean(
+  String(process.env.XMTP_ROUTER_WALLET_KEY || process.env.XMTP_WALLET_KEY || '').trim()
+);
+const XMTP_RISK_KEY_AVAILABLE = Boolean(String(process.env.XMTP_RISK_WALLET_KEY || '').trim());
+const XMTP_READER_KEY_AVAILABLE = Boolean(String(process.env.XMTP_READER_WALLET_KEY || '').trim());
+const XMTP_PRICE_KEY_AVAILABLE = Boolean(String(process.env.XMTP_PRICE_WALLET_KEY || '').trim());
+const XMTP_EXECUTOR_KEY_AVAILABLE = Boolean(String(process.env.XMTP_EXECUTOR_WALLET_KEY || '').trim());
+const XMTP_ANY_KEY_AVAILABLE =
+  XMTP_ROUTER_KEY_AVAILABLE ||
+  XMTP_RISK_KEY_AVAILABLE ||
+  XMTP_READER_KEY_AVAILABLE ||
+  XMTP_PRICE_KEY_AVAILABLE ||
+  XMTP_EXECUTOR_KEY_AVAILABLE;
+const XMTP_ENABLED_RAW = String(process.env.XMTP_ENABLED || '').trim();
+const XMTP_ENABLED = XMTP_ENABLED_RAW
+  ? /^(1|true|yes|on)$/i.test(XMTP_ENABLED_RAW)
+  : XMTP_ANY_KEY_AVAILABLE;
 const XMTP_AUTO_ACK = /^(1|true|yes|on)$/i.test(String(process.env.XMTP_AUTO_ACK || '').trim());
 const XMTP_EVENT_RETENTION = Math.max(50, Math.min(Number(process.env.XMTP_EVENT_RETENTION || 600), 5000));
 const XMTP_ENV = String(process.env.XMTP_ENV || 'dev').trim().toLowerCase() || 'dev';
@@ -175,20 +191,26 @@ const XMTP_READER_AGENT_AA_ADDRESS = String(process.env.XMTP_READER_AGENT_AA_ADD
 const XMTP_PRICE_AGENT_AA_ADDRESS = String(process.env.XMTP_PRICE_AGENT_AA_ADDRESS || '').trim();
 const XMTP_EXECUTOR_AGENT_AA_ADDRESS = String(process.env.XMTP_EXECUTOR_AGENT_AA_ADDRESS || '').trim();
 const XMTP_ROUTER_RUNTIME_ENABLED = /^(1|true|yes|on)$/i.test(
-  String(process.env.XMTP_ROUTER_RUNTIME_ENABLED || (XMTP_ENABLED ? '1' : '0')).trim()
+  String(process.env.XMTP_ROUTER_RUNTIME_ENABLED || (XMTP_ENABLED && XMTP_ROUTER_KEY_AVAILABLE ? '1' : '0')).trim()
 );
 const XMTP_RISK_RUNTIME_ENABLED = /^(1|true|yes|on)$/i.test(
-  String(process.env.XMTP_RISK_RUNTIME_ENABLED || (XMTP_ENABLED && XMTP_RISK_WALLET_KEY ? '1' : '0')).trim()
+  String(process.env.XMTP_RISK_RUNTIME_ENABLED || (XMTP_ENABLED && XMTP_RISK_KEY_AVAILABLE ? '1' : '0')).trim()
 );
 const XMTP_READER_RUNTIME_ENABLED = /^(1|true|yes|on)$/i.test(
-  String(process.env.XMTP_READER_RUNTIME_ENABLED || (XMTP_ENABLED && XMTP_READER_WALLET_KEY ? '1' : '0')).trim()
+  String(process.env.XMTP_READER_RUNTIME_ENABLED || (XMTP_ENABLED && XMTP_READER_KEY_AVAILABLE ? '1' : '0')).trim()
 );
 const XMTP_PRICE_RUNTIME_ENABLED = /^(1|true|yes|on)$/i.test(
-  String(process.env.XMTP_PRICE_RUNTIME_ENABLED || (XMTP_ENABLED && XMTP_PRICE_WALLET_KEY ? '1' : '0')).trim()
+  String(process.env.XMTP_PRICE_RUNTIME_ENABLED || (XMTP_ENABLED && XMTP_PRICE_KEY_AVAILABLE ? '1' : '0')).trim()
 );
 const XMTP_EXECUTOR_RUNTIME_ENABLED = /^(1|true|yes|on)$/i.test(
-  String(process.env.XMTP_EXECUTOR_RUNTIME_ENABLED || (XMTP_ENABLED && XMTP_EXECUTOR_WALLET_KEY ? '1' : '0')).trim()
+  String(process.env.XMTP_EXECUTOR_RUNTIME_ENABLED || (XMTP_ENABLED && XMTP_EXECUTOR_KEY_AVAILABLE ? '1' : '0')).trim()
 );
+const XMTP_ANY_RUNTIME_ENABLED =
+  XMTP_ROUTER_RUNTIME_ENABLED ||
+  XMTP_RISK_RUNTIME_ENABLED ||
+  XMTP_READER_RUNTIME_ENABLED ||
+  XMTP_PRICE_RUNTIME_ENABLED ||
+  XMTP_EXECUTOR_RUNTIME_ENABLED;
 const XMTP_AUTO_NETWORK_ENABLED = /^(1|true|yes|on)$/i.test(String(process.env.XMTP_AUTO_NETWORK_ENABLED || '').trim());
 const XMTP_AUTO_NETWORK_INTERVAL_MS = Math.max(15_000, Number(process.env.XMTP_AUTO_NETWORK_INTERVAL_MS || 60_000));
 const XMTP_AUTO_NETWORK_SOURCE_AGENT_ID = String(process.env.XMTP_AUTO_NETWORK_SOURCE_AGENT_ID || 'router-agent').trim().toLowerCase();
@@ -15340,6 +15362,17 @@ app.post('/api/session/pay', requireRole('agent'), async (req, res) => {
 
 let httpServer = null;
 
+function logXmtpRuntimeStartup(name = '', runtimeStatus = null) {
+  if (!runtimeStatus?.enabled) return;
+  if (runtimeStatus?.running) {
+    console.log(
+      `[xmtp/${name}] env=${runtimeStatus.env} address=${runtimeStatus.address || '-'} inbox=${runtimeStatus.inboxId || '-'}`
+    );
+    return;
+  }
+  console.warn(`[xmtp/${name}] failed to start: ${runtimeStatus?.lastError || 'unknown_error'}`);
+}
+
 async function startServer() {
   await initializePersistence();
   ensureServiceCatalog();
@@ -15362,36 +15395,25 @@ async function startServer() {
       );
     }
   });
-  if (XMTP_ROUTER_RUNTIME_ENABLED || XMTP_RISK_RUNTIME_ENABLED) {
+  if (XMTP_ANY_RUNTIME_ENABLED) {
     const status = await startXmtpRuntimes();
-    if (status?.router?.running) {
+    logXmtpRuntimeStartup('router', status?.router);
+    logXmtpRuntimeStartup('risk', status?.risk);
+    logXmtpRuntimeStartup('reader', status?.reader);
+    logXmtpRuntimeStartup('price', status?.price);
+    logXmtpRuntimeStartup('executor', status?.executor);
+    if (status?.router?.running && XMTP_AUTO_NETWORK_ENABLED) {
+      startAutoXmtpNetworkLoop({
+        intervalMs: XMTP_AUTO_NETWORK_INTERVAL_MS,
+        sourceAgentId: XMTP_AUTO_NETWORK_SOURCE_AGENT_ID,
+        targetAgentIds: XMTP_AUTO_NETWORK_TARGET_AGENT_IDS,
+        capability: XMTP_AUTO_NETWORK_CAPABILITY,
+        immediate: true,
+        reason: 'startup'
+      });
       console.log(
-        `[xmtp/router] env=${status.router.env} address=${status.router.address || '-'} inbox=${status.router.inboxId || '-'}`
+        `[auto-xmtp] enabled intervalMs=${XMTP_AUTO_NETWORK_INTERVAL_MS} source=${XMTP_AUTO_NETWORK_SOURCE_AGENT_ID} targets=${parseAgentIdList(XMTP_AUTO_NETWORK_TARGET_AGENT_IDS).join(',')}`
       );
-      if (XMTP_AUTO_NETWORK_ENABLED) {
-        startAutoXmtpNetworkLoop({
-          intervalMs: XMTP_AUTO_NETWORK_INTERVAL_MS,
-          sourceAgentId: XMTP_AUTO_NETWORK_SOURCE_AGENT_ID,
-          targetAgentIds: XMTP_AUTO_NETWORK_TARGET_AGENT_IDS,
-          capability: XMTP_AUTO_NETWORK_CAPABILITY,
-          immediate: true,
-          reason: 'startup'
-        });
-        console.log(
-          `[auto-xmtp] enabled intervalMs=${XMTP_AUTO_NETWORK_INTERVAL_MS} source=${XMTP_AUTO_NETWORK_SOURCE_AGENT_ID} targets=${parseAgentIdList(XMTP_AUTO_NETWORK_TARGET_AGENT_IDS).join(',')}`
-        );
-      }
-    } else {
-      console.warn(`[xmtp/router] failed to start: ${status?.router?.lastError || 'unknown_error'}`);
-    }
-    if (status?.risk?.enabled) {
-      if (status?.risk?.running) {
-        console.log(
-          `[xmtp/risk] env=${status.risk.env} address=${status.risk.address || '-'} inbox=${status.risk.inboxId || '-'}`
-        );
-      } else {
-        console.warn(`[xmtp/risk] failed to start: ${status?.risk?.lastError || 'unknown_error'}`);
-      }
     }
   }
 }
