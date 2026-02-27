@@ -16,13 +16,14 @@
 - 已完成意图修复：`4822a29`（“仅消息面/不要技术面”不再误判）。
 - 后端瘦身已做三轮，`backend/server.js` 约从 `15186` 行降到 `14353` 行。
 - 当前主线可用：消息面/技术面/交易执行、x402 证据回传（`requestId/txHash`）、失败结构化返回。
+- OpenAlice 历史残留已清理：移除兼容别名与废弃健康路由，文档同步到当前 provider-router 主链路。
 
 ## 3) 最近提交（新对话先看这几条）
-1. `2917b19` `refactor(backend): extract message provider analysis service`
-2. `c5843ca` `refactor(backend): extract x402 receipt and graph helpers`
-3. `b9e283a` `refactor(backend): extract agent001 planning helpers`
-4. `0c2b9e8` `refactor(backend): extract agent001 execution helpers and prune deprecated routes`
-5. `97b9e6e` `refactor(backend): extract orchestrator and remove legacy btc auto polling`
+1. `30717da` `refactor(analysis): remove legacy OpenAlice runtime remnants`
+2. `2917b19` `refactor(backend): extract message provider analysis service`
+3. `c5843ca` `refactor(backend): extract x402 receipt and graph helpers`
+4. `b9e283a` `refactor(backend): extract agent001 planning helpers`
+5. `0c2b9e8` `refactor(backend): extract agent001 execution helpers and prune deprecated routes`
 
 ## 4) 下一步（默认按顺序执行）
 1. 继续瘦身 `backend/server.js`：优先抽离 workflow/A2A handler 大段路由逻辑到 `backend/services/`。
