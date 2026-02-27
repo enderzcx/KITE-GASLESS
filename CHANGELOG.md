@@ -121,6 +121,7 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
   - removed legacy auto BTC per-minute polling module from backend startup and APIs (`/api/automation/btc-price/*`).
 - Continued backend slimming:
   - extracted AGENT001 execution/delivery helpers into `backend/services/agent001ExecutionService.js`
+  - extracted AGENT001 trade planning helpers into `backend/services/agent001PlanningService.js`
   - removed obsolete compatibility routes returning 410:
     - `POST /api/workflow/x-reader/run`
     - `POST /api/a2a/tasks/x-reader`
