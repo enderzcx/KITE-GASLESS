@@ -13,6 +13,11 @@ KiteTrace Platform: an Agent Network + Service Market on Kite Testnet, where ERC
 
 Current Version: `v1.8.0`
 
+## Upcoming Change (vNext)
+
+- The BTC price demo page (`/`, Network Overview with paid BTC chart) is planned to be removed in the next version.
+- The core product flow remains on `/market`, `/trace/:requestId`, and `/ops`.
+
 ## Availability
 
 ### Public Web Demo
@@ -21,7 +26,7 @@ Current Version: `v1.8.0`
 - Status: publicly available deployment on Kite Testnet.
 - Purpose: judge-facing online demo for end-to-end flow validation.
 - Expected pages:
-  - Network Overview (`/`) - paid BTC line chart + ERC8004/x402 flow card (Phase 1 anchor scene)
+  - Network Overview (`/`) - paid BTC line chart + ERC8004/x402 flow card (Phase 1 anchor scene, planned removal in vNext)
   - Service Market (`/market`) - publish/discover/invoke agent services (MVP)
   - Trace Evidence (`/trace/:requestId`) - request-level proof chain + downloadable receipt
   - Ops Console (`/ops`) - KPI/traces/events/evidence/session setup
@@ -118,6 +123,8 @@ Operational implications:
 - If an existing AA is still legacy, upgrade proxy implementation before production use.
 
 ## Real Demo Flow (Current Implementation)
+
+> Note: this section describes the current `v1.8.x` demo flow. The `/` BTC chart page is planned to be removed in the next version.
 
 1. Open `/` and click `Run Demo` (success path) or `Fail Demo` (graceful failure path).
 2. Backend runs BTC paid workflow:
@@ -384,6 +391,8 @@ Status model: `queued -> running -> done|failed`, each command keeps `attempts` 
 - For judge demos, pre-run a few traces so the chart already has successful paid points.
 
 ## Judge Quick Verify
+
+> For current `v1.8.x` only: step 1-2 uses the `/` BTC chart page, which is planned to be removed in vNext.
 
 1. Open `/` and click `Run Demo`.
 2. Confirm the flow reaches on-chain confirmation and chart point updates only after paid unlock.
