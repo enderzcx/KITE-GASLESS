@@ -2020,32 +2020,40 @@ function normalizeBtcPriceParams(input = {}) {
   const rawSource = String(input.source || 'hyperliquid').trim().toLowerCase();
   const compactPair = rawPair.replace(/[-_\s]/g, '');
 
-  if (!['BTC', 'BTCUSDT', 'BTCUSD'].includes(compactPair)) {
-    throw new Error('BTC price task requires pair BTC/BTCUSDT/BTCUSD/BTC-USDT.');
+  const symbolBase = compactPair.startsWith('ETH') ? 'ETH' : compactPair.startsWith('BTC') ? 'BTC' : '';
+  if (!symbolBase) {
+    throw new Error('Price task requires pair BTC/ETH (BTCUSDT/BTCUSD/ETHUSDT/ETHUSD).');
   }
   if (!['hyperliquid', 'auto', 'binance', 'okx', 'coingecko'].includes(rawSource)) {
     throw new Error('BTC price task source must be one of hyperliquid/auto/binance/okx/coingecko.');
   }
 
+  const normalizedPair = `${symbolBase}USDT`;
+  let providers = ['hyperliquid', 'binance', 'okx'];
+  if (rawSource === 'binance') providers = ['binance', 'hyperliquid', 'okx'];
+  else if (rawSource === 'okx') providers = ['okx', 'hyperliquid', 'binance'];
+  else if (rawSource === 'coingecko') providers = ['binance', 'okx', 'hyperliquid'];
+
   return {
-    pair: 'BTCUSDT',
+    pair: normalizedPair,
     source: 'hyperliquid',
     sourceRequested: rawSource,
-    providers: ['hyperliquid', 'binance', 'okx']
+    providers
   };
 }
 
 function normalizeRiskScoreParams(input = {}) {
   const rawSymbol = String(input.symbol || input.pair || 'BTCUSDT').trim().toUpperCase();
   const symbolCompact = rawSymbol.replace(/[-_\s]/g, '');
-  if (!['BTC', 'BTCUSDT', 'BTCUSD'].includes(symbolCompact)) {
-    throw new Error('Risk-score task requires symbol BTC/BTCUSDT/BTCUSD.');
+  const symbolBase = symbolCompact.startsWith('ETH') ? 'ETH' : symbolCompact.startsWith('BTC') ? 'BTC' : '';
+  if (!symbolBase) {
+    throw new Error('Risk-score task requires symbol BTC/ETH (BTCUSDT/BTCUSD/ETHUSDT/ETHUSD).');
   }
   const horizonMinRaw = Number(input.horizonMin ?? input.horizonMins ?? 60);
   const horizonMin = Number.isFinite(horizonMinRaw) ? Math.max(5, Math.min(Math.round(horizonMinRaw), 240)) : 60;
   const normalizedBtc = normalizeBtcPriceParams({ source: input.source || 'hyperliquid', pair: rawSymbol });
   return {
-    symbol: symbolCompact === 'BTC' || symbolCompact === 'BTCUSD' ? 'BTCUSDT' : symbolCompact,
+    symbol: normalizedBtc.pair,
     horizonMin,
     source: normalizedBtc.source,
     sourceRequested: normalizedBtc.sourceRequested,
@@ -2940,13 +2948,15 @@ async function fetchXReaderDigest(params = {}) {
   };
 }
 
-async function fetchBtcFromHyperliquid() {
+async function fetchBtcFromHyperliquid(pair = 'BTCUSDT') {
   const body = await fetchJsonWithTimeout('https://api.hyperliquid.xyz/info', 8000, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ type: 'allMids' })
   });
-  const price = Number(body?.BTC);
+  const normalizedPair = String(pair || 'BTCUSDT').trim().toUpperCase().replace(/[-_\s]/g, '');
+  const symbolBase = normalizedPair.startsWith('ETH') ? 'ETH' : 'BTC';
+  const price = Number(body?.[symbolBase]);
   if (!Number.isFinite(price) || price <= 0) throw new Error('invalid price');
   return price;
 }
@@ -2958,8 +2968,11 @@ async function fetchBtcFromBinance(pair = 'BTCUSDT') {
   return price;
 }
 
-async function fetchBtcFromOkx() {
-  const body = await fetchJsonWithTimeout('https://www.okx.com/api/v5/market/ticker?instId=BTC-USDT', 8000);
+async function fetchBtcFromOkx(pair = 'BTCUSDT') {
+  const normalizedPair = String(pair || 'BTCUSDT').trim().toUpperCase().replace(/[-_\s]/g, '');
+  const symbolBase = normalizedPair.startsWith('ETH') ? 'ETH' : 'BTC';
+  const instId = `${symbolBase}-USDT`;
+  const body = await fetchJsonWithTimeout(`https://www.okx.com/api/v5/market/ticker?instId=${instId}`, 8000);
   const price = Number(body?.data?.[0]?.last);
   if (!Number.isFinite(price) || price <= 0) throw new Error('invalid price');
   return price;
@@ -2975,11 +2988,11 @@ async function fetchBtcPriceQuote(params = {}) {
     try {
       let price = NaN;
       if (provider === 'hyperliquid') {
-        price = await fetchBtcFromHyperliquid();
+        price = await fetchBtcFromHyperliquid(pair);
       } else if (provider === 'binance') {
         price = await fetchBtcFromBinance(pair);
       } else if (provider === 'okx') {
-        price = await fetchBtcFromOkx();
+        price = await fetchBtcFromOkx(pair);
       }
 
       if (!Number.isFinite(price) || price <= 0) throw new Error('invalid price');
@@ -4665,8 +4678,10 @@ function extractFirstUrlFromText(text = '') {
   return match ? String(match[0] || '').trim() : '';
 }
 
-function extractBtcSymbolFromText(text = '') {
+function extractTradingSymbolFromText(text = '') {
   const raw = String(text || '').toUpperCase();
+  if (/\bETHUSD[T]?\b/.test(raw)) return 'ETHUSDT';
+  if (/\bETH\b/.test(raw)) return 'ETHUSDT';
   if (/\bBTCUSD[T]?\b/.test(raw)) return 'BTCUSDT';
   if (/\bBTC\b/.test(raw)) return 'BTCUSDT';
   return 'BTCUSDT';
@@ -4684,7 +4699,7 @@ function extractHorizonFromText(text = '') {
 function buildAgent001HelpText() {
   return [
     'AGENT001 在线，可直接自然语言下单给我：',
-    '1) 技术面：例如 “分析 BTCUSDT 技术面 60m”',
+    '1) 技术面：例如 “分析 BTCUSDT 技术面 60m” 或 “分析 ETHUSDT 技术面 60m”',
     '2) 消息面：例如 “分析 btc market sentiment today” 或发送 URL',
     '3) 联合分析：例如 “给我 BTC 的消息+技术联合结论”',
     '4) 交易计划：例如 “基于消息+技术给我 BTC 挂单计划，60m”',
@@ -4770,10 +4785,10 @@ function classifyAgent001IntentFallback(text = '') {
   const overrides = detectAgent001IntentOverrides(rawText);
   const hasTrade = /(交易|下单|挂单|做多|做空|交易计划|order|place order|plan|entry|exit|strategy|trade)/i.test(rawText);
   const hasTechKeyword = /(技术|technical|risk|指标|rsi|macd|ema|atr|布林|均线|支撑|阻力|趋势)/i.test(rawText);
-  const hasBtcSymbol = /\bBTCUSD[T]?\b|\bBTC\b/i.test(rawText);
+  const hasMajorSymbol = /\bBTCUSD[T]?\b|\bBTC\b|\bETHUSD[T]?\b|\bETH\b/i.test(rawText);
   const hasHorizon = /(\d{1,3})\s*(m|min|minute|minutes|h|hr|hour|hours|分钟|分|小时)/i.test(rawText);
   const hasInfo = /(消息|news|sentiment|舆情|资讯|情绪|headline|digest|x-reader|http:\/\/|https:\/\/)/i.test(rawText);
-  const hasTech = hasTechKeyword || (hasBtcSymbol && hasHorizon && !hasInfo);
+  const hasTech = hasTechKeyword || (hasMajorSymbol && hasHorizon && !hasInfo);
   const askHelp = /(help|功能|怎么用|命令|示例)/i.test(rawText);
   if (!rawText || askHelp) {
     return { intent: 'help', symbol: 'BTCUSDT', horizonMin: 60, source: 'hyperliquid', topic: '' };
@@ -4795,7 +4810,7 @@ function classifyAgent001IntentFallback(text = '') {
   const topic = url || rawText;
   return {
     intent,
-    symbol: extractBtcSymbolFromText(rawText),
+    symbol: extractTradingSymbolFromText(rawText),
     horizonMin: extractHorizonFromText(rawText),
     source: 'hyperliquid',
     topic
@@ -4949,6 +4964,59 @@ async function ensureDispatchRuntimesHealthy(toAgentId = '') {
   };
 }
 
+function isLegacyBtcOnlyTechnicalFailure(taskResult = null, capability = '', input = {}) {
+  const normalizedCapability = String(capability || '').trim().toLowerCase();
+  if (normalizedCapability !== 'technical-analysis-feed' && normalizedCapability !== 'risk-score-feed') return false;
+  const symbol = String(input?.symbol || input?.pair || '').trim().toUpperCase().replace(/[-_\s]/g, '');
+  if (!symbol.startsWith('ETH')) return false;
+  const status = String(taskResult?.status || '').trim().toLowerCase();
+  if (!['failed', 'error', 'rejected'].includes(status)) return false;
+  const combined = [
+    String(taskResult?.error || '').trim(),
+    String(taskResult?.result?.summary || '').trim(),
+    String(taskResult?.result?.failure?.reason || '').trim()
+  ]
+    .join(' ')
+    .toLowerCase();
+  return combined.includes('risk-score task requires symbol') && combined.includes('btc/btcusdt/btcusd');
+}
+
+async function buildLocalTechnicalRecoveryDispatch({
+  capability = '',
+  input = {},
+  sent = null,
+  task = {},
+  attempt = 1,
+  recovery = []
+} = {}) {
+  const technicalTask = normalizeRiskScoreParams({
+    symbol: input?.symbol || input?.pair || 'BTCUSDT',
+    source: input?.source || 'hyperliquid',
+    horizonMin: input?.horizonMin ?? 60
+  });
+  const local = await runRiskScoreAnalysis(technicalTask);
+  return {
+    ok: true,
+    sent,
+    task,
+    resultEvent: null,
+    taskResult: {
+      kind: 'task-result',
+      protocolVersion: 'kite-agent-task-v1',
+      status: 'done',
+      result: {
+        ...local,
+        analysisType: 'technical',
+        analysis: local?.technical && typeof local.technical === 'object' ? local.technical : null
+      },
+      error: '',
+      fallback: 'local-technical-recovery'
+    },
+    attempt,
+    recovery: Array.isArray(recovery) ? recovery : []
+  };
+}
+
 async function runAgent001DispatchTask({
   toAgentId = '',
   capability = '',
@@ -5040,6 +5108,20 @@ async function runAgent001DispatchTask({
         ? resultEvent.parsed
         : null;
       if (taskResult) {
+        if (isLegacyBtcOnlyTechnicalFailure(taskResult, capability, input)) {
+          try {
+            return await buildLocalTechnicalRecoveryDispatch({
+              capability,
+              input,
+              sent,
+              task: { traceId, requestId, taskId, toAgentId: resolvedToAgentId, capability },
+              attempt,
+              recovery
+            });
+          } catch {
+            // local recovery failed, keep original failure result
+          }
+        }
         return {
           ok: true,
           sent,
@@ -5162,7 +5244,7 @@ async function applyAgent001LocalFallback({
 } = {}) {
   let nextTechnical = technical;
   let nextInfo = info;
-  const symbol = String(intent?.symbol || extractBtcSymbolFromText(rawText) || 'BTCUSDT').trim().toUpperCase() || 'BTCUSDT';
+  const symbol = String(intent?.symbol || extractTradingSymbolFromText(rawText) || 'BTCUSDT').trim().toUpperCase() || 'BTCUSDT';
   const horizonMin = Number.isFinite(Number(intent?.horizonMin))
     ? Math.max(5, Math.min(Math.round(Number(intent.horizonMin)), 240))
     : extractHorizonFromText(rawText);
@@ -5334,7 +5416,7 @@ async function runAgent001QuoteNegotiation({
 } = {}) {
   const input = {
     wantedCapability: String(wantedCapability || '').trim().toLowerCase(),
-    symbol: String(intent?.symbol || extractBtcSymbolFromText(rawText) || 'BTCUSDT').trim().toUpperCase(),
+    symbol: String(intent?.symbol || extractTradingSymbolFromText(rawText) || 'BTCUSDT').trim().toUpperCase(),
     horizonMin: Number.isFinite(Number(intent?.horizonMin))
       ? Math.max(5, Math.min(Math.round(Number(intent.horizonMin)), 240))
       : extractHorizonFromText(rawText),
@@ -5362,7 +5444,7 @@ async function buildAgent001StrictPaymentPlan({
     return buildRiskScorePaymentIntentForTask({
       body: {
         input: {
-          symbol: intent?.symbol || extractBtcSymbolFromText(rawText) || 'BTCUSDT',
+          symbol: intent?.symbol || extractTradingSymbolFromText(rawText) || 'BTCUSDT',
           source: intent?.source || 'hyperliquid',
           horizonMin: intent?.horizonMin || extractHorizonFromText(rawText)
         },
@@ -5564,7 +5646,7 @@ function buildAgent001TradePlan({
       analysis?.symbol ||
         risk?.symbol ||
         intent?.symbol ||
-        extractBtcSymbolFromText(rawText) ||
+        extractTradingSymbolFromText(rawText) ||
         'BTCUSDT'
     )
       .trim()
@@ -5851,12 +5933,23 @@ async function handleRouterRuntimeTextMessage({ text = '', context = null } = {}
   if (hardOverrides.technicalOnly && !hardOverrides.infoOnly) {
     intent.intent = 'technical';
   }
+  if (intent.intent === 'chat' && AGENT001_REQUIRE_X402) {
+    const fallbackIntent = classifyAgent001IntentFallback(rawText);
+    if (['info', 'technical', 'both', 'trade'].includes(fallbackIntent.intent)) {
+      intent = {
+        ...intent,
+        ...fallbackIntent,
+        intent: fallbackIntent.intent,
+        topic: String(intent.topic || fallbackIntent.topic || rawText).trim()
+      };
+    }
+  }
   if (intent.intent === 'help') {
     return buildAgent001HelpText();
   }
   if (intent.intent === 'chat') {
     if (AGENT001_REQUIRE_X402) {
-      return '当前已开启强制计费：除 help/status 外均需 x402 支付。请发送“分析 BTCUSDT 技术面 60m”或“分析 btc market sentiment today”。';
+      return '当前已开启强制计费：除 help/status 外均需 x402 支付。请发送“分析 BTCUSDT/ETHUSDT 技术面 60m”或“分析 btc market sentiment today”。';
     }
     const chat = await openclawAdapter.chat({
       message: `你是 AGENT001，请用简洁中文回复用户。\n用户消息: ${rawText}`,
@@ -7359,7 +7452,7 @@ function buildA2ACapabilities() {
       {
         id: 'risk-score-feed',
         input: {
-          symbol: 'string (BTC/BTCUSDT/BTCUSD)',
+          symbol: 'string (BTC/ETH, e.g. BTCUSDT/ETHUSDT/BTCUSD/ETHUSD)',
           horizonMin: 'number 5-240',
           source: 'hyperliquid (fallback: binance, okx)'
         },
@@ -7369,7 +7462,7 @@ function buildA2ACapabilities() {
       {
         id: 'technical-analysis-feed',
         input: {
-          symbol: 'string (BTC/BTCUSDT/BTCUSD)',
+          symbol: 'string (BTC/ETH, e.g. BTCUSDT/ETHUSDT/BTCUSD/ETHUSD)',
           horizonMin: 'number 5-240',
           source: 'hyperliquid (fallback: binance, okx)'
         },
