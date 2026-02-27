@@ -4783,7 +4783,10 @@ function detectAgent001IntentOverrides(text = '') {
 function classifyAgent001IntentFallback(text = '') {
   const rawText = String(text || '').trim();
   const overrides = detectAgent001IntentOverrides(rawText);
-  const hasTrade = /(交易|下单|挂单|做多|做空|交易计划|order|place order|plan|entry|exit|strategy|trade)/i.test(rawText);
+  const hasTrade =
+    /(交易|下单|挂单|做多|做空|交易计划|买入|卖出|开多|开空|建仓|平仓|市价|限价|止盈|止损|order|place order|plan|entry|exit|strategy|trade|buy|sell|long|short|market|limit|take profit|stop loss|tp|sl)/i.test(
+      rawText
+    );
   const hasTechKeyword = /(技术|technical|risk|指标|rsi|macd|ema|atr|布林|均线|支撑|阻力|趋势)/i.test(rawText);
   const hasMajorSymbol = /\bBTCUSD[T]?\b|\bBTC\b|\bETHUSD[T]?\b|\bETH\b/i.test(rawText);
   const hasHorizon = /(\d{1,3})\s*(m|min|minute|minutes|h|hr|hour|hours|分钟|分|小时)/i.test(rawText);

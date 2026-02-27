@@ -138,6 +138,8 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 - AGENT001 trade flow now parses direct order directives from natural language:
   - supports explicit `market/limit`, `buy/sell`, `size/price`, and `TP/SL` (`止盈/止损`) extraction from user text,
   - when TP/SL is provided (or requested), backend triggers `/api/workflow/stop-order/run` after main order and returns separate TP/SL x402 evidence.
+- AGENT001 intent fallback trade detection now includes direct order phrasing without explicit `下单/交易` words:
+  - phrases like `市价买入`, `限价卖出`, `止盈`, `止损` are promoted to trade flow instead of chat fallback.
 - AGENT001 analysis path is now quote-first (`service-quote`) before strict x402 prebind for both:
   - `technical-analysis-feed`
   - `info-analysis-feed`
