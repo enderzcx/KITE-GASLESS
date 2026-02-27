@@ -119,6 +119,13 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 - Further slimmed backend server composition:
   - extracted AGENT001 provider/quote/payment orchestration into `backend/services/agent001Orchestrator.js`
   - removed legacy auto BTC per-minute polling module from backend startup and APIs (`/api/automation/btc-price/*`).
+- Continued backend slimming:
+  - extracted AGENT001 execution/delivery helpers into `backend/services/agent001ExecutionService.js`
+  - removed obsolete compatibility routes returning 410:
+    - `POST /api/workflow/x-reader/run`
+    - `POST /api/a2a/tasks/x-reader`
+    - `POST /api/network/demo/router-risk/run`
+    - `POST /api/network/demo/router-risk-group/run`
 - Refactored AGENT001 intent/order directive parsers into a dedicated module:
   - `backend/services/agent001Intent.js`
   - `backend/server.js` now imports parser utilities to reduce file size and keep logic isolated.
