@@ -64,7 +64,7 @@ async function fetchJSON<T>(url: string, init: RequestInit = {}, timeoutMs = 15_
 }
 
 export default function HistoryPage() {
-  const baseUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://127.0.0.1:3001";
+  const baseUrl = process.env.NEXT_PUBLIC_BACKEND_URL || (typeof window !== "undefined" ? window.location.origin : "");
   const [rows, setRows] = useState<X402RequestItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [downloadingId, setDownloadingId] = useState("");

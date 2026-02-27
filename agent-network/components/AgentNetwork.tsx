@@ -528,7 +528,10 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
   const shouldOrderRef = useRef<boolean | null>(null);
   const liveServiceRunRef = useRef<RealServiceRun | null>(null);
   const liveServiceRunPromiseRef = useRef<Promise<RealServiceRun> | null>(null);
-  const baseUrl = backendBaseUrl || process.env.NEXT_PUBLIC_BACKEND_URL || "http://127.0.0.1:3001";
+  const baseUrl =
+    backendBaseUrl ||
+    process.env.NEXT_PUBLIC_BACKEND_URL ||
+    (typeof window !== "undefined" ? window.location.origin : "");
 
   useEffect(() => {
     playbackRef.current = playback;

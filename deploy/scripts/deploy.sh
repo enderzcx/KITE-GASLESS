@@ -3,7 +3,6 @@ set -euo pipefail
 
 APP_ROOT="${APP_ROOT:-/srv/kiteclaw}"
 APP_DIR="${APP_DIR:-$APP_ROOT/app}"
-WEB_ROOT="${WEB_ROOT:-$APP_ROOT/www}"
 DATA_ROOT="${DATA_ROOT:-$APP_ROOT/data}"
 LOG_ROOT="${LOG_ROOT:-$APP_ROOT/logs}"
 REPO_URL="${REPO_URL:-}"
@@ -21,7 +20,7 @@ require_cmd npm
 require_cmd node
 require_cmd pm2
 
-mkdir -p "$APP_ROOT" "$WEB_ROOT" "$DATA_ROOT" "$LOG_ROOT"
+mkdir -p "$APP_ROOT" "$DATA_ROOT" "$LOG_ROOT"
 
 if [[ -d "$APP_DIR/.git" ]]; then
   echo "[INFO] Updating existing repo in $APP_DIR"
@@ -38,15 +37,15 @@ else
 fi
 
 BACKEND_DIR="$APP_DIR/backend"
-FRONTEND_DIR="$APP_DIR/frontend"
+AGENT_NETWORK_DIR="$APP_DIR/agent-network"
 
 if [[ ! -f "$BACKEND_DIR/.env" ]]; then
   echo "[ERROR] Missing $BACKEND_DIR/.env. Copy backend/.env.production.example first." >&2
   exit 1
 fi
 
-if [[ ! -f "$FRONTEND_DIR/.env.production" ]]; then
-  echo "[ERROR] Missing $FRONTEND_DIR/.env.production. Copy frontend/.env.production.example first." >&2
+if [[ ! -f "$AGENT_NETWORK_DIR/package.json" ]]; then
+  echo "[ERROR] Missing $AGENT_NETWORK_DIR/package.json. agent-network project is required." >&2
   exit 1
 fi
 
@@ -71,15 +70,11 @@ fi
 echo "[INFO] Installing backend deps"
 npm --prefix "$BACKEND_DIR" ci
 
-echo "[INFO] Installing frontend deps"
-npm --prefix "$FRONTEND_DIR" ci
+echo "[INFO] Installing agent-network deps"
+npm --prefix "$AGENT_NETWORK_DIR" ci
 
-echo "[INFO] Building frontend"
-npm --prefix "$FRONTEND_DIR" run build
-
-echo "[INFO] Publishing frontend dist to $WEB_ROOT"
-rm -rf "$WEB_ROOT"/*
-cp -a "$FRONTEND_DIR/dist/." "$WEB_ROOT/"
+echo "[INFO] Building agent-network"
+npm --prefix "$AGENT_NETWORK_DIR" run build
 
 echo "[INFO] Starting/reloading PM2 app"
 pm2 startOrReload "$APP_DIR/deploy/pm2/ecosystem.config.cjs" --update-env
