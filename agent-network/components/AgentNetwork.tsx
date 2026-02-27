@@ -143,7 +143,7 @@ const COLORS: Record<EdgeChannel, string> = {
 };
 
 const X402_PHASES: PaymentPhase[] = ["challenge", "pay+proof", "verify", "unlock"];
-const QUOTE_CAP = 0.00024;
+const QUOTE_CAP = 0.0003;
 const EXECUTION_THRESHOLD = 0.62;
 const TX_STALE_MS = 60 * 60 * 1000;
 
@@ -517,6 +517,14 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
     shouldOrderRef.current = shouldOrder;
   }, [shouldOrder]);
 
+  const abortFlow = useCallback((reason: string) => {
+    if (timerRef.current) window.clearTimeout(timerRef.current);
+    if (x402TimerRef.current) window.clearInterval(x402TimerRef.current);
+    playbackRef.current = "completed";
+    setPlayback("completed");
+    if (reason) setDecision(reason);
+  }, []);
+
   useEffect(
     () => () => {
       if (timerRef.current) window.clearTimeout(timerRef.current);
@@ -763,7 +771,8 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
             });
           } catch (error) {
             const reason = String((error as Error)?.message || "live_dm_failed").trim();
-            setDecision(`Live XMTP run failed: ${reason}`);
+            const abortReason = `Live XMTP run failed: ${reason}`;
+            setDecision(abortReason);
             setQuoteAccepted(false);
             quoteAcceptedRef.current = false;
             appendAudit({
@@ -778,6 +787,8 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
                 error: reason,
               },
             });
+            abortFlow(abortReason);
+            return;
           }
         }
 
@@ -807,6 +818,8 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
               decisionBasis: basis,
               payload: { accepted: false, reason: "live_run_missing" },
             });
+            abortFlow(basis);
+            return;
           } else {
             const mQuote = Number((live.info.amount || 0).toFixed(5));
             const tQuote = demoView === "general" ? 0 : Number((live.technical.amount || 0).toFixed(5));
@@ -841,6 +854,10 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
                 technicalRequestId: live.technical.requestId,
               },
             });
+            if (!accepted) {
+              abortFlow(basis);
+              return;
+            }
           }
         }
 
@@ -896,6 +913,7 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
                 decisionBasis: reason,
                 payload: { executed: false, reason: "missing_live_settlement" },
               });
+              abortFlow(reason);
               return;
             }
             setReceiptRef(receipt);
@@ -958,6 +976,8 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
                 decisionBasis: reason,
                 payload: { delivery: "xmtp_dm", returned: false },
               });
+              abortFlow(reason);
+              return;
             } else if (demoView === "general") {
               const snippet = live.info.summary || live.technical.summary;
               const score = live.info.confidence || live.technical.confidence || 0;
@@ -1044,12 +1064,12 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
             let apiGateReceipt = "";
             let apiGateTxHash = "";
             let apiGatePaidAt = "";
-            let orderSimulated: boolean | null = null;
             const orderSide = combined >= 0.72 ? "buy" : "sell";
             const orderType = "market";
             const orderSize = 0.001;
             let orderSummary = "";
             let orderError = "";
+            let apiExecutionFailed = false;
             if (approved) {
               setX402Open(true);
               let p = 0;
@@ -1064,47 +1084,30 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
                 setX402Phase(X402_PHASES[p]);
               }, 480);
 
-              apiGateReceipt = `api_receipt_${randomHex(8).slice(2)}`;
-              orderRef = "";
+              apiGateReceipt = "";
               try {
-                const runOrder = async (simulate: boolean): Promise<Record<string, unknown>> =>
-                  fetchJSON<Record<string, unknown>>(
-                    `${baseUrl}/api/agent001/hyperliquid/order`,
-                    {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({
-                        symbol: "BTCUSDT",
-                        side: orderSide,
-                        orderType,
-                        size: orderSize,
-                        tif: "Ioc",
-                        reduceOnly: false,
-                        simulate,
-                      }),
-                    },
-                    240_000
-                  );
-
-                let apiRun: Record<string, unknown>;
-                try {
-                  apiRun = await runOrder(false);
-                  orderSimulated = false;
-                } catch (realError) {
-                  const realReason = String((realError as Error)?.message || "real_order_failed").trim();
-                  apiRun = await runOrder(true);
-                  orderSimulated = true;
-                  orderError = `real_order_failed:${realReason}`;
-                }
+                const apiRun = await fetchJSON<Record<string, unknown>>(
+                  `${baseUrl}/api/agent001/hyperliquid/order`,
+                  {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      symbol: "BTCUSDT",
+                      side: orderSide,
+                      orderType,
+                      size: orderSize,
+                      tif: "Ioc",
+                      reduceOnly: false,
+                      simulate: false,
+                    }),
+                  },
+                  240_000
+                );
 
                 orderRef = String(apiRun["requestId"] || "").trim();
                 apiGateTxHash = String(apiRun["txHash"] || "").trim();
                 const payment =
                   apiRun["payment"] && typeof apiRun["payment"] === "object" ? (apiRun["payment"] as Record<string, unknown>) : {};
-                const orderResult =
-                  apiRun["orderResult"] && typeof apiRun["orderResult"] === "object"
-                    ? (apiRun["orderResult"] as Record<string, unknown>)
-                    : {};
                 const workflow =
                   apiRun["workflow"] && typeof apiRun["workflow"] === "object"
                     ? (apiRun["workflow"] as Record<string, unknown>)
@@ -1120,13 +1123,6 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
                     ? ((workflow["result"] as Record<string, unknown>)["summary"] || "")
                     : "") || apiRun["reason"] || ""
                 ).trim();
-                const simulatedRaw =
-                  orderResult["simulated"] ?? (workflow["input"] && typeof workflow["input"] === "object"
-                    ? (workflow["input"] as Record<string, unknown>)["simulate"]
-                    : null);
-                if (typeof simulatedRaw === "boolean") {
-                  orderSimulated = simulatedRaw;
-                }
 
                 if (!apiGatePaidAt) {
                   const reqTime = await fetchRequestTiming(orderRef);
@@ -1138,13 +1134,13 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
                 if (orderRef && apiGateTxHash) {
                   apiGateReceipt = `${orderRef}:${apiGateTxHash}`;
                 }
-                finalBasis = `${basis} Hyperliquid ${orderType} ${orderSide} submitted${orderSimulated ? " (simulated fallback)." : " (real mode)."}`;
+                finalBasis = `${basis} Hyperliquid ${orderType} ${orderSide} submitted (real mode).`;
                 setDecision(finalBasis);
               } catch (error) {
                 const reason = String((error as Error)?.message || "api_gate_run_failed").trim();
-                apiGateReceipt = apiGateReceipt || `api_gate_failed_${Date.now()}`;
+                apiExecutionFailed = true;
                 orderError = reason;
-                finalBasis = `${basis} Hyperliquid API execution failed: ${reason}`;
+                finalBasis = `${basis} Hyperliquid API execution failed (real-only, no fallback): ${reason}`;
                 setDecision(finalBasis);
               }
               if (apiGateReceipt) setReceiptRef(apiGateReceipt);
@@ -1167,7 +1163,7 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
                 orderType,
                 orderSide,
                 orderSize,
-                orderSimulated,
+                orderSimulated: false,
                 orderSummary,
                 orderError,
                 apiGateReceipt,
@@ -1178,6 +1174,10 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
                 demoView,
               },
             });
+            if (apiExecutionFailed) {
+              abortFlow(finalBasis);
+              return;
+            }
           }
         }
 
@@ -1195,7 +1195,7 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
         runningRef.current = false;
       }
     },
-    [appendAudit, baseUrl, demoView, ensureLiveServiceRun, fetchRequestTiming, messageScore, mode, receiptRef, technicalScore]
+    [abortFlow, appendAudit, baseUrl, demoView, ensureLiveServiceRun, fetchRequestTiming, messageScore, mode, receiptRef, technicalScore]
   );
 
   const start = useCallback(() => {
