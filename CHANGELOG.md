@@ -11,6 +11,10 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
   - `backend/scripts/start-backend-one.ps1`
   - `npm run start:one` / `npm run start:one:dry` in `backend/package.json`
   - launcher auto-loads shared token (`OPENNEWS_TOKEN/TWITTER_TOKEN`) and injects both OpenNews/Twitter env before backend start.
+- Added AGENT001 intent-mode regression verify scripts:
+  - `backend/scripts/verify-agent001-intent-modes.ps1`
+  - `backend/scripts/verify-agent001-intent-modes.mjs`
+  - `npm run verify:agent001:intent` (single command to verify info-only / technical-only / structured failure path).
 - Added x402 maintenance endpoints for runtime-safe stale request cleanup:
   - `GET /api/x402/maintenance/summary`
   - `POST /api/x402/maintenance/expire-stale`
