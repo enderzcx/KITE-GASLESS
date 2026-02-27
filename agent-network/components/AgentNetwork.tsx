@@ -139,6 +139,7 @@ export const NETWORK_NODES: Node<NetworkNodeData>[] = [
 export const NETWORK_EDGES: Edge<NetworkEdgeData>[] = [
   { id: "erc-msg", type: "glow", source: "erc8004", target: "message-agent", sourceHandle: "s-left", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.erc8004 }, data: { label: "", channel: "erc8004", curvature: 0.28 } },
   { id: "erc-tech", type: "glow", source: "erc8004", target: "technical-agent", sourceHandle: "s-left", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.erc8004 }, data: { label: "", channel: "erc8004", curvature: 0.35 } },
+  { id: "erc-agent001", type: "glow", source: "erc8004", target: "agent001", sourceHandle: "s-bottom", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.erc8004 }, data: { label: "", channel: "erc8004", curvature: 0.24 } },
   { id: "quote-req-msg", type: "glow", source: "agent001", target: "message-agent", sourceHandle: "s-left", targetHandle: "t-right", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.xmtp }, data: { label: "① DM quote request (Message Agent)", channel: "xmtp", labelOffsetY: -30, curvature: 0.28 } },
   { id: "quote-req-tech", type: "glow", source: "agent001", target: "technical-agent", sourceHandle: "s-left", targetHandle: "t-right", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.xmtp }, data: { label: "① DM quote request (Technical Agent)", channel: "xmtp", labelOffsetY: 28, curvature: 0.16 } },
   { id: "quote-res-msg", type: "glow", source: "message-agent", target: "agent001", sourceHandle: "s-top", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.xmtp }, data: { label: "② DM quote return", channel: "xmtp", labelOffsetY: -54, curvature: 0.4 } },
@@ -194,7 +195,7 @@ async function fetchJSON<T>(url: string, init: RequestInit = {}, timeout = 7000)
 }
 
 function highlights(step: FlowStepId, quoteAccepted: boolean | null, shouldOrder: boolean | null) {
-  if (step === "erc8004_verify") return { nodes: ["erc8004", "message-agent", "technical-agent"], edges: ["erc-msg", "erc-tech"] };
+  if (step === "erc8004_verify") return { nodes: ["erc8004", "agent001", "message-agent", "technical-agent"], edges: ["erc-msg", "erc-tech", "erc-agent001"] };
   if (step === "xmtp_quote_request") return { nodes: ["agent001", "message-agent", "technical-agent"], edges: ["quote-req-msg", "quote-req-tech"] };
   if (step === "xmtp_quote_return") return { nodes: ["agent001", "message-agent", "technical-agent"], edges: ["quote-res-msg", "quote-res-tech"] };
   if (step === "x402_settlement") {
@@ -396,7 +397,7 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
             stepName: step.title,
             blockchainVerifiable: true,
             verificationHash: proof,
-            payload: { layer: "ERC8004", verifiedAgents: ["message-agent", "technical-agent"], proof },
+            payload: { layer: "ERC8004", verifiedAgents: ["agent001", "message-agent", "technical-agent"], proof },
           });
         }
 
