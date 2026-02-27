@@ -5590,17 +5590,38 @@ async function selectAgent001ProviderPlan({ capability = '' } = {}) {
       ? item.capabilities.map((c) => String(c || '').trim().toLowerCase()).includes(normalizedCapability)
       : false
   );
+  const fallbackAgent = findNetworkAgentById(fallbackAgentId);
+  const candidateMap = new Map();
+  for (const row of candidateAgents) {
+    const key = String(row?.id || '').trim().toLowerCase();
+    if (key) candidateMap.set(key, row);
+  }
+  if (fallbackAgent?.active !== false) {
+    const fallbackKey = String(fallbackAgent?.id || '').trim().toLowerCase();
+    if (fallbackKey) candidateMap.set(fallbackKey, fallbackAgent);
+  }
+  const finalCandidates = Array.from(candidateMap.values());
   const identityRows = [];
-  for (const agent of candidateAgents) {
+  for (const agent of finalCandidates) {
     const identity = await readNetworkAgentIdentityStatus(agent);
     identityRows.push({ agent, identity });
   }
   const verifiedFirst = identityRows.filter((item) => item.identity?.verified);
-  const pickedIdentityRow =
-    (verifiedFirst.length > 0 ? verifiedFirst[0] : identityRows[0]) ||
-    (findNetworkAgentById(fallbackAgentId)
-      ? { agent: findNetworkAgentById(fallbackAgentId), identity: await readNetworkAgentIdentityStatus(findNetworkAgentById(fallbackAgentId)) }
-      : null);
+  if (verifiedFirst.length === 0) {
+    const reasonParts = identityRows.map((item) => {
+      const id = String(item?.agent?.id || '').trim().toLowerCase() || 'unknown-agent';
+      const status = item?.identity?.configured ? 'configured' : 'not-configured';
+      const detail = String(item?.identity?.reason || '').trim();
+      return `${id}:${status}${detail ? `(${detail})` : ''}`;
+    });
+    return {
+      ok: false,
+      error: 'identity_verification_required',
+      reason: `Identity must be verified before quote negotiation for capability ${normalizedCapability}.`,
+      details: reasonParts
+    };
+  }
+  const pickedIdentityRow = verifiedFirst[0];
   const pickedAgent = pickedIdentityRow?.agent || null;
   const identity = pickedIdentityRow?.identity || { configured: false, verified: false };
 
@@ -5617,7 +5638,12 @@ async function selectAgent001ProviderPlan({ capability = '' } = {}) {
   const workflowByTraceId = new Map(workflows.map((item) => [String(item?.traceId || '').trim(), item]));
   const requests = readX402Requests();
   const requestById = new Map(requests.map((item) => [String(item?.requestId || '').trim(), item]));
-  const rows = services.map((service) => {
+  const verifiedAgentId = String(pickedAgent?.id || fallbackAgentId).trim().toLowerCase();
+  const servicesByVerifiedProvider = services.filter(
+    (service) => String(service?.providerAgentId || '').trim().toLowerCase() === verifiedAgentId
+  );
+  const candidateServices = servicesByVerifiedProvider.length > 0 ? servicesByVerifiedProvider : services;
+  const rows = candidateServices.map((service) => {
     const perServiceInv = invocations.filter(
       (item) => String(item?.serviceId || '').trim() === String(service?.id || '').trim()
     );
@@ -5637,7 +5663,7 @@ async function selectAgent001ProviderPlan({ capability = '' } = {}) {
   return {
     ok: true,
     capability: normalizedCapability,
-    toAgentId: String(pickedAgent?.id || fallbackAgentId).trim().toLowerCase(),
+    toAgentId: verifiedAgentId,
     agent: pickedAgent,
     identity,
     service: pickedService.service,

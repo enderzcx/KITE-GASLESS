@@ -116,6 +116,9 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
   - `backend/docker/openbb/Dockerfile`
 
 ### Changed
+- AGENT001 quote flow now enforces identity hard-gate:
+  - provider identity must be verified before entering DM quote negotiation,
+  - when no verified provider is available, flow returns `identity_verification_required` and does not quote/pay.
 - Backend `npm start` XMTP bootstrap now auto-enables by key presence (when `XMTP_ENABLED` is not explicitly set) and starts all enabled runtimes on startup:
   - `router`
   - `risk`
