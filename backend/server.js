@@ -4702,7 +4702,7 @@ function buildAgent001HelpText() {
     '1) 技术面：例如 “分析 BTCUSDT 技术面 60m” 或 “分析 ETHUSDT 技术面 60m”',
     '2) 消息面：例如 “分析 btc market sentiment today” 或发送 URL',
     '3) 联合分析：例如 “给我 BTC 的消息+技术联合结论”',
-    '4) 交易计划：例如 “基于消息+技术给我 BTC 挂单计划，60m”',
+    '4) 交易执行：例如 “市价下单 BTCUSDT 买入 size=0.001 止盈 90000 止损 82000” 或 “限价下单 BTCUSDT 卖出 price=95000 size=0.001”',
     '我会自动与 technical-agent / message-agent 通过 XMTP 协作，再回你结果。'
   ].join('\n');
 }
@@ -5533,6 +5533,64 @@ async function runAgent001HyperliquidOrderWorkflow({
   return payload;
 }
 
+async function runAgent001StopOrderWorkflow({
+  symbol = 'BTCUSDT',
+  takeProfit = NaN,
+  stopLoss = NaN,
+  quantity = NaN,
+  payer = '',
+  sourceAgentId = 'router-agent',
+  targetAgentId = 'risk-agent',
+  traceId = ''
+} = {}) {
+  if (!Number.isFinite(Number(takeProfit)) || Number(takeProfit) <= 0) {
+    throw new Error('stop_order_take_profit_required');
+  }
+  if (!Number.isFinite(Number(stopLoss)) || Number(stopLoss) <= 0) {
+    throw new Error('stop_order_stop_loss_required');
+  }
+  const stopTimeoutMs = Math.max(12_000, Math.min(Number(process.env.AGENT001_STOP_ORDER_TIMEOUT_MS || 120_000), 300_000));
+  const body = {
+    traceId: traceId || createTraceId('agent001_stop_order'),
+    symbol: String(symbol || 'BTCUSDT').trim().toUpperCase() || 'BTCUSDT',
+    takeProfit: Number(takeProfit),
+    stopLoss: Number(stopLoss),
+    payer,
+    sourceAgentId,
+    targetAgentId
+  };
+  if (Number.isFinite(Number(quantity)) && Number(quantity) > 0) {
+    body.quantity = Number(quantity);
+  }
+  const maxAttempts = Math.max(1, Math.min(Number(process.env.AGENT001_STOP_ORDER_RETRIES || 3), 6));
+  let lastError = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const { response, payload } = await fetchJsonResponseWithTimeout(
+        `http://127.0.0.1:${PORT}/api/workflow/stop-order/run`,
+        {
+          method: 'POST',
+          headers: buildInternalAgentHeaders(),
+          timeoutMs: stopTimeoutMs,
+          label: 'agent001 stop-order workflow',
+          body: JSON.stringify(body)
+        }
+      );
+      if (!response.ok || payload?.ok === false) {
+        throw new Error(String(payload?.reason || payload?.error || `workflow/stop-order/run failed: HTTP ${response.status}`).trim());
+      }
+      return payload;
+    } catch (error) {
+      lastError = error;
+      const reason = String(error?.message || 'stop_order_failed').trim();
+      const retryable = isTransientTransportError(reason) || reason.toLowerCase().includes('tls connection');
+      if (!retryable || attempt >= maxAttempts) break;
+      await waitMs(Math.min(2000 * attempt, 5000));
+    }
+  }
+  throw lastError || new Error('stop_order_workflow_failed');
+}
+
 function roundPriceByMagnitude(value, fallbackDigits = 2) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric) || numeric <= 0) return '';
@@ -5618,6 +5676,8 @@ function isAgent001ForceOrderRequested(rawText = '') {
     compactCn.includes('直接下单') ||
     compactCn.includes('必须下单') ||
     compactCn.includes('立即执行下单') ||
+    compactCn.includes('市价下单') ||
+    compactCn.includes('限价下单') ||
     /\b(force\s+order|force\s+place\s+order|place\s+order\s+now|execute\s+order\s+now|order\s+now)\b/i.test(lowered)
   );
 }
@@ -5631,13 +5691,81 @@ function detectAgent001ForcedOrderSide(rawText = '') {
   return '';
 }
 
+function extractAgent001NumberFromPatterns(rawText = '', patterns = []) {
+  const text = String(rawText || '');
+  for (const pattern of patterns) {
+    const matched = text.match(pattern);
+    if (!matched) continue;
+    const value = Number(matched[1]);
+    if (Number.isFinite(value) && value > 0) return value;
+  }
+  return NaN;
+}
+
+function parseAgent001OrderDirectives(rawText = '') {
+  const text = String(rawText || '').trim();
+  const compactCn = text.replace(/\s+/g, '');
+  const hasOrderKeyword =
+    /(下单|挂单|买入|卖出|做多|做空|开多|开空|建仓|平仓|order|place|buy|sell|long|short|market|limit)/i.test(text);
+  const explicitMarket = /(市价|market|ioc|立即成交|马上成交)/i.test(text);
+  const explicitLimit = /(限价|limit|挂单|post[\s-]*only|alo)/i.test(text);
+  const orderType = explicitLimit ? 'limit' : explicitMarket ? 'market' : '';
+  const tifMatch = text.match(/\btif\b\s*[:=]?\s*(gtc|ioc|alo)\b/i);
+  const tif = tifMatch ? String(tifMatch[1] || '').trim() : '';
+  const size = extractAgent001NumberFromPatterns(text, [
+    /(?:\bsize\b|\bqty\b|\bquantity\b|数量|仓位|下单量)\s*[:=]?\s*(\d+(?:\.\d+)?)/i,
+    /(?:买入|卖出|buy|sell)\s*(\d+(?:\.\d+)?)(?:\s*(?:btc|eth|usdt))?/i
+  ]);
+  const limitPrice = extractAgent001NumberFromPatterns(text, [
+    /(?:限价|价格|价位|price)\s*[:=]?\s*(\d+(?:\.\d+)?)/i,
+    /(?:at|@)\s*(\d{3,}(?:\.\d+)?)/i
+  ]);
+  const takeProfitPct = extractAgent001NumberFromPatterns(text, [
+    /(?:止盈|take\s*profit|tp)\s*[:=]?\s*(\d+(?:\.\d+)?)\s*%/i
+  ]);
+  const stopLossPct = extractAgent001NumberFromPatterns(text, [
+    /(?:止损|stop\s*loss|sl)\s*[:=]?\s*(\d+(?:\.\d+)?)\s*%/i
+  ]);
+  const takeProfit = extractAgent001NumberFromPatterns(text, [
+    /(?:止盈|take\s*profit|tp)\s*[:=]?\s*(\d+(?:\.\d+)?)(?!\s*%)/i
+  ]);
+  const stopLoss = extractAgent001NumberFromPatterns(text, [
+    /(?:止损|stop\s*loss|sl)\s*[:=]?\s*(\d+(?:\.\d+)?)(?!\s*%)/i
+  ]);
+  const wantsStopOrder =
+    compactCn.includes('止盈止损') ||
+    compactCn.includes('止盈') ||
+    compactCn.includes('止损') ||
+    /\b(tp|sl|take\s*profit|stop\s*loss)\b/i.test(text);
+  const explicitOrder =
+    hasOrderKeyword &&
+    (explicitMarket || explicitLimit || Number.isFinite(limitPrice) || Number.isFinite(size) || detectAgent001ForcedOrderSide(text) !== '');
+  const forceExecute = isAgent001ForceOrderRequested(text) || (hasOrderKeyword && (explicitMarket || explicitLimit || wantsStopOrder));
+  return {
+    explicitOrder,
+    forceExecute,
+    side: detectAgent001ForcedOrderSide(text),
+    orderType,
+    tif,
+    size,
+    limitPrice,
+    takeProfit,
+    stopLoss,
+    takeProfitPct,
+    stopLossPct,
+    wantsStopOrder
+  };
+}
+
 function coerceAgent001ForcedTradePlan({
   rawText = '',
   tradePlan = null,
   technical = null,
-  info = null
+  info = null,
+  directives = null
 } = {}) {
   const plan = tradePlan && typeof tradePlan === 'object' ? { ...tradePlan } : {};
+  const parsed = directives && typeof directives === 'object' ? directives : parseAgent001OrderDirectives(rawText);
   const technicalResult =
     technical?.taskResult?.result && typeof technical.taskResult.result === 'object' && !Array.isArray(technical.taskResult.result)
       ? technical.taskResult.result
@@ -5665,39 +5793,96 @@ function coerceAgent001ForcedTradePlan({
     String(plan.symbol || technicalAnalysis?.symbol || extractTradingSymbolFromText(rawText) || 'BTCUSDT')
       .trim()
       .toUpperCase() || 'BTCUSDT';
-  const sideByText = detectAgent001ForcedOrderSide(rawText);
+  const sideByText = String(parsed.side || '').trim().toLowerCase();
   const sentimentScore = Number(plan.sentimentScore ?? infoPayload?.sentimentScore ?? NaN);
   const side =
     sideByText ||
     (['buy', 'sell'].includes(String(plan.side || '').trim().toLowerCase()) ? String(plan.side || '').trim().toLowerCase() : '') ||
     (Number.isFinite(sentimentScore) && sentimentScore < 0 ? 'sell' : 'buy');
 
-  const preferLimit = /(限价|挂单|limit)/i.test(rawText);
-  const preferMarket = /(市价|market|立即成交|马上成交|ioc)/i.test(rawText);
-  const orderType = preferLimit ? 'limit' : preferMarket ? 'market' : 'market';
-  const tif = orderType === 'market' ? 'Ioc' : String(plan.tif || 'Gtc').trim() || 'Gtc';
+  const orderTypeByDirective = String(parsed.orderType || '').trim().toLowerCase();
+  const existingOrderType = String(plan.orderType || '').trim().toLowerCase();
+  const orderType =
+    orderTypeByDirective === 'limit' || orderTypeByDirective === 'market'
+      ? orderTypeByDirective
+      : existingOrderType === 'limit' || existingOrderType === 'market'
+        ? existingOrderType
+        : 'market';
+  const tifByDirective = String(parsed.tif || '').trim();
+  const tif = tifByDirective || (orderType === 'market' ? 'Ioc' : String(plan.tif || 'Gtc').trim() || 'Gtc');
 
   const quotePrice = Number(technicalQuote?.priceUsd ?? NaN);
+  const directiveLimitPrice = Number(parsed.limitPrice ?? NaN);
   const currentEntry = Number(plan.entryPrice ?? NaN);
-  let entryPrice = Number.isFinite(currentEntry) && currentEntry > 0 ? currentEntry : NaN;
+  let entryPrice = Number.isFinite(directiveLimitPrice) && directiveLimitPrice > 0
+    ? directiveLimitPrice
+    : Number.isFinite(currentEntry) && currentEntry > 0
+      ? currentEntry
+      : NaN;
   if ((!Number.isFinite(entryPrice) || entryPrice <= 0) && Number.isFinite(quotePrice) && quotePrice > 0) {
     entryPrice = side === 'sell' ? quotePrice * 0.9992 : quotePrice * 1.0008;
   }
 
+  const directiveSize = Number(parsed.size ?? NaN);
   const currentSize = Number(plan.size ?? NaN);
-  const size = Number.isFinite(currentSize) && currentSize > 0 ? Number(currentSize.toFixed(6)) : 0.001;
+  const size = Number.isFinite(directiveSize) && directiveSize > 0
+    ? Number(directiveSize.toFixed(6))
+    : Number.isFinite(currentSize) && currentSize > 0
+      ? Number(currentSize.toFixed(6))
+      : 0.001;
+  const basePriceForProtect = Number.isFinite(entryPrice) && entryPrice > 0 ? entryPrice : quotePrice;
+  const explicitTakeProfit = Number(parsed.takeProfit ?? NaN);
+  const explicitStopLoss = Number(parsed.stopLoss ?? NaN);
+  const explicitTakeProfitPct = Number(parsed.takeProfitPct ?? NaN);
+  const explicitStopLossPct = Number(parsed.stopLossPct ?? NaN);
+  let takePrice = Number(plan.takePrice ?? NaN);
+  let stopPrice = Number(plan.stopPrice ?? NaN);
+  if (Number.isFinite(explicitTakeProfit) && explicitTakeProfit > 0) {
+    takePrice = explicitTakeProfit;
+  } else if (Number.isFinite(explicitTakeProfitPct) && explicitTakeProfitPct > 0 && Number.isFinite(basePriceForProtect) && basePriceForProtect > 0) {
+    takePrice = side === 'sell' ? basePriceForProtect * (1 - explicitTakeProfitPct / 100) : basePriceForProtect * (1 + explicitTakeProfitPct / 100);
+  }
+  if (Number.isFinite(explicitStopLoss) && explicitStopLoss > 0) {
+    stopPrice = explicitStopLoss;
+  } else if (Number.isFinite(explicitStopLossPct) && explicitStopLossPct > 0 && Number.isFinite(basePriceForProtect) && basePriceForProtect > 0) {
+    stopPrice = side === 'sell' ? basePriceForProtect * (1 + explicitStopLossPct / 100) : basePriceForProtect * (1 - explicitStopLossPct / 100);
+  }
+  if (parsed.wantsStopOrder && Number.isFinite(basePriceForProtect) && basePriceForProtect > 0) {
+    if (!Number.isFinite(takePrice) || takePrice <= 0) {
+      takePrice = side === 'sell' ? basePriceForProtect * 0.97 : basePriceForProtect * 1.03;
+    }
+    if (!Number.isFinite(stopPrice) || stopPrice <= 0) {
+      stopPrice = side === 'sell' ? basePriceForProtect * 1.015 : basePriceForProtect * 0.985;
+    }
+  }
+
   const canPlaceOrder =
     ['buy', 'sell'].includes(side) &&
     Number.isFinite(size) &&
     size > 0 &&
     (orderType === 'market' || (Number.isFinite(entryPrice) && entryPrice > 0));
+  const stopOrderEnabled = Number.isFinite(takePrice) && takePrice > 0 && Number.isFinite(stopPrice) && stopPrice > 0;
 
-  const forceReason = '用户明确要求强制下单，已绕过策略阈值并按当前可用参数执行。';
-  const forceParamLine =
+  let forceReason = '检测到明确下单参数，已按指令覆盖策略结果并执行。';
+  if (!['buy', 'sell'].includes(side)) forceReason = '缺少买卖方向（buy/sell 或 买入/卖出）。';
+  else if (!Number.isFinite(size) || size <= 0) forceReason = '下单数量无效（size/qty/数量 必须 > 0）。';
+  else if (orderType === 'limit' && (!Number.isFinite(entryPrice) || entryPrice <= 0)) forceReason = '限价下单缺少可用价格（请提供 price/限价）。';
+  else if (parsed.forceExecute) forceReason = '用户明确要求强制下单，已绕过策略阈值并按当前可用参数执行。';
+
+  const orderParamLine =
     orderType === 'limit' && Number.isFinite(entryPrice) && entryPrice > 0
-      ? `强制单参数: ${symbol} ${side} ${orderType} size=${size} price=${roundPriceByMagnitude(entryPrice)}`
-      : `强制单参数: ${symbol} ${side} ${orderType} size=${size}`;
-  const suffixLines = ['', '强制下单覆盖: 已收到强制执行指令，跳过策略阈值检查。', forceParamLine];
+      ? `下单指令参数: ${symbol} ${side} ${orderType} size=${size} price=${roundPriceByMagnitude(entryPrice)}`
+      : `下单指令参数: ${symbol} ${side} ${orderType} size=${size}`;
+  const stopOrderLine =
+    stopOrderEnabled
+      ? `止盈止损参数: TP=${roundPriceByMagnitude(takePrice)} SL=${roundPriceByMagnitude(stopPrice)}`
+      : '';
+  const suffixLines = [
+    '',
+    parsed.forceExecute ? '强制下单覆盖: 已收到强制执行指令，跳过策略阈值检查。' : '下单参数覆盖: 已按你的订单指令覆盖默认策略参数。',
+    orderParamLine
+  ];
+  if (stopOrderLine) suffixLines.push(stopOrderLine);
 
   return {
     ...plan,
@@ -5710,9 +5895,13 @@ function coerceAgent001ForcedTradePlan({
     tif,
     entryPrice: orderType === 'limit' && Number.isFinite(entryPrice) && entryPrice > 0 ? Number(entryPrice.toFixed(8)) : null,
     size,
+    takePrice: stopOrderEnabled ? Number(takePrice.toFixed(8)) : null,
+    stopPrice: stopOrderEnabled ? Number(stopPrice.toFixed(8)) : null,
     canPlaceOrder,
-    forceOrder: true,
-    forceOrderReason: forceReason
+    forceOrder: parsed.forceExecute,
+    forceOrderReason: forceReason,
+    orderDirectiveApplied: true,
+    stopOrderEnabled
   };
 }
 
@@ -6409,10 +6598,13 @@ async function handleRouterRuntimeTextMessage({ text = '', context = null } = {}
       info,
       returnObject: true
     });
-    const forceOrderRequested = isAgent001ForceOrderRequested(rawText);
+    const orderDirectives = parseAgent001OrderDirectives(rawText);
+    const forceOrderRequested = isAgent001ForceOrderRequested(rawText) || orderDirectives.forceExecute;
+    const explicitOrderRequested = orderDirectives.explicitOrder;
+    const shouldCoercePlan = forceOrderRequested || explicitOrderRequested;
     const effectiveTradePlan =
-      forceOrderRequested && !tradePlan?.canPlaceOrder
-        ? coerceAgent001ForcedTradePlan({ rawText, tradePlan, technical, info })
+      shouldCoercePlan
+        ? coerceAgent001ForcedTradePlan({ rawText, tradePlan, technical, info, directives: orderDirectives })
         : tradePlan;
     const lines = [
       String(effectiveTradePlan?.text || '').trim() || '交易计划生成失败。',
@@ -6429,6 +6621,9 @@ async function handleRouterRuntimeTextMessage({ text = '', context = null } = {}
     ];
 
     if (!effectiveTradePlan?.canPlaceOrder) {
+      if (String(effectiveTradePlan?.forceOrderReason || '').trim()) {
+        lines.push(`执行阻断: ${String(effectiveTradePlan.forceOrderReason).trim()}`);
+      }
       lines.push('执行结果: 不满足自动下单条件，本轮不下单。');
       const tradeReply = lines.join('\n');
       await maybeSendAgent001TradePlanDm({
@@ -6465,6 +6660,70 @@ async function handleRouterRuntimeTextMessage({ text = '', context = null } = {}
       lines.push(`x402 requestId: ${String(payment?.requestId || orderResult?.requestId || '').trim() || '-'}`);
       lines.push(`x402 txHash: ${String(payment?.txHash || orderResult?.txHash || '').trim() || '-'}`);
       lines.push(`receipt: ${String(receiptRef?.endpoint || '').trim() || '-'}`);
+      const takePrice = Number(effectiveTradePlan?.takePrice ?? NaN);
+      const stopPrice = Number(effectiveTradePlan?.stopPrice ?? NaN);
+      const stopOrderEnabled =
+        Number.isFinite(takePrice) &&
+        takePrice > 0 &&
+        Number.isFinite(stopPrice) &&
+        stopPrice > 0 &&
+        (effectiveTradePlan?.stopOrderEnabled === true || orderDirectives.wantsStopOrder === true);
+      if (stopOrderEnabled) {
+        try {
+          const stopOrder = await runAgent001StopOrderWorkflow({
+            symbol: effectiveTradePlan.symbol || 'BTCUSDT',
+            takeProfit: takePrice,
+            stopLoss: stopPrice,
+            quantity: Number(effectiveTradePlan?.size ?? NaN),
+            payer,
+            sourceAgentId: 'router-agent',
+            targetAgentId: 'risk-agent',
+            traceId: createTraceId('agent001_trade_stop')
+          });
+          const stopRequestId = String(stopOrder?.requestId || '').trim();
+          const stopTxHash = String(stopOrder?.txHash || '').trim();
+          if (stopRequestId && stopTxHash) {
+            upsertAgent001ResultRecord({
+              requestId: stopRequestId,
+              capability: 'reactive-stop-orders',
+              stage: 'dispatch',
+              status: 'done',
+              toAgentId: 'risk-agent',
+              payer,
+              input: {
+                symbol: effectiveTradePlan.symbol || 'BTCUSDT',
+                takeProfit: takePrice,
+                stopLoss: stopPrice,
+                quantity: Number(effectiveTradePlan?.size ?? NaN)
+              },
+              payment: {
+                requestId: stopRequestId,
+                txHash: stopTxHash
+              },
+              receiptRef: {
+                requestId: stopRequestId,
+                txHash: stopTxHash,
+                endpoint: `/api/receipt/${stopRequestId}`
+              },
+              result: {
+                summary: `Reactive TP/SL configured: ${effectiveTradePlan.symbol || 'BTCUSDT'} TP ${takePrice} SL ${stopPrice}`,
+                workflowTraceId: String(stopOrder?.traceId || '').trim(),
+                workflowState: String(stopOrder?.state || stopOrder?.workflow?.state || '').trim()
+              },
+              source: 'agent001_trade'
+            });
+          }
+          lines.push('');
+          lines.push('止盈止损: 已触发 TP/SL 工作流。');
+          lines.push(`tp/sl x402: requestId=${stopRequestId || '-'} txHash=${stopTxHash || '-'}`);
+          if (stopRequestId) {
+            lines.push(`tp/sl pull: /api/agent001/results/${stopRequestId}`);
+          }
+        } catch (stopError) {
+          lines.push('');
+          lines.push(`止盈止损设置失败: ${String(stopError?.message || 'unknown').trim()}`);
+        }
+      }
       const tradeReply = lines.join('\n');
       await maybeSendAgent001TradePlanDm({
         context,
@@ -7975,7 +8234,9 @@ function isTransientTransportError(reason = '') {
     text.includes('econnreset') ||
     text.includes('timeout') ||
     text.includes('socket hang up') ||
-    text.includes('network')
+    text.includes('network') ||
+    text.includes('tls') ||
+    text.includes('secure tls connection')
   );
 }
 
