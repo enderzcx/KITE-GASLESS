@@ -116,6 +116,8 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
   - `AGENT001_BIND_TIMEOUT_MS` default raised from `45s` to `210s` to avoid premature prebind timeout under queued session userOps.
 - Planning baseline updated for technical analysis reliability:
   - target stack is now `pandas-ta-classic + Hyperliquid/CCXT` (OpenAlice removed from primary path).
+- Planning baseline updated for message-side reliability:
+  - provider route prefers `opennews-mcp`, falls back to `opentwitter-mcp`, and uses `clawfeed` for async snapshot/backfill.
 
 ### Fixed
 - AGENT001 paid-but-no-DM gap:
