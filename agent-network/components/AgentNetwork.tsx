@@ -107,7 +107,8 @@ interface NetworkEdgeData {
   curvature?: number;
   leftHint?: string;
   rightHint?: string;
-  hintOffsetY?: number;
+  leftHintOffsetY?: number;
+  rightHintOffsetY?: number;
 }
 
 const COLORS: Record<EdgeChannel, string> = {
@@ -186,7 +187,8 @@ export const GENERAL_NETWORK_EDGES: Edge<NetworkEdgeData>[] = [
       curvature: 0.18,
       leftHint: "Other Agent -> Agent001: quote/result DM",
       rightHint: "Agent001 -> Other Agent: task/quote DM",
-      hintOffsetY: -28,
+      leftHintOffsetY: 22,
+      rightHintOffsetY: -24,
     },
   },
   { id: "pay-to-x402-service", type: "glow", source: "agent001", target: "x402-service", sourceHandle: "s-bottom", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "③ x402 pay + proof (service)", channel: "x402", labelOffsetY: -6, curvature: 0.24 } },
@@ -374,7 +376,7 @@ function GlowEdge({
                   left: 0,
                   top: 0,
                   whiteSpace: "nowrap",
-                  transform: `translate(-50%, -50%) translate(${x - 170}px, ${y + (data.hintOffsetY ?? -24)}px)`,
+                  transform: `translate(-50%, -50%) translate(${x - 170}px, ${y + (data.leftHintOffsetY ?? 18)}px)`,
                 }}
               >
                 {data.leftHint}
@@ -388,7 +390,7 @@ function GlowEdge({
                   left: 0,
                   top: 0,
                   whiteSpace: "nowrap",
-                  transform: `translate(-50%, -50%) translate(${x + 170}px, ${y + (data.hintOffsetY ?? -24)}px)`,
+                  transform: `translate(-50%, -50%) translate(${x + 170}px, ${y + (data.rightHintOffsetY ?? -24)}px)`,
                 }}
               >
                 {data.rightHint}
