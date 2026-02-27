@@ -4639,12 +4639,31 @@ async function classifyAgent001IntentByLlm(text = '') {
 
 function detectAgent001IntentOverrides(text = '') {
   const rawText = String(text || '').trim();
+  const compactCn = rawText.replace(/\s+/g, '');
+  const lowered = rawText.toLowerCase();
+  const infoOnlyByLiteral =
+    compactCn.includes('仅消息面') ||
+    compactCn.includes('只要消息面') ||
+    compactCn.includes('只看消息面') ||
+    (compactCn.includes('消息面') &&
+      (compactCn.includes('不要技术面') || compactCn.includes('不需要技术面') || compactCn.includes('别给技术面'))) ||
+    /\bonly\s+(info|news|sentiment)\b|\bnews\s+only\b|\bsentiment\s+only\b/i.test(lowered);
+  const technicalOnlyByLiteral =
+    compactCn.includes('仅技术面') ||
+    compactCn.includes('只要技术面') ||
+    compactCn.includes('只看技术面') ||
+    (compactCn.includes('技术面') &&
+      (compactCn.includes('不要消息面') || compactCn.includes('不需要消息面') || compactCn.includes('别给消息面'))) ||
+    /\bonly\s+technical\b|\btechnical\s+only\b/i.test(lowered);
+
   return {
     infoOnly:
+      infoOnlyByLiteral ||
       /(仅消息面|只要消息面|只看消息面|不要技术面|不需要技术面|别给技术面|only\s+(info|news|sentiment)|news\s+only|sentiment\s+only)/i.test(
         rawText
       ),
     technicalOnly:
+      technicalOnlyByLiteral ||
       /(仅技术面|只要技术面|只看技术面|不要消息面|不需要消息面|别给消息面|only\s+technical|technical\s+only)/i.test(
         rawText
       ),
@@ -4662,7 +4681,7 @@ function classifyAgent001IntentFallback(text = '') {
   const hasTechKeyword = /(技术|technical|risk|指标|rsi|macd|ema|atr|布林|均线|支撑|阻力|趋势)/i.test(rawText);
   const hasBtcSymbol = /\bBTCUSD[T]?\b|\bBTC\b/i.test(rawText);
   const hasHorizon = /(\d{1,3})\s*(m|min|minute|minutes|h|hr|hour|hours|分钟|分|小时)/i.test(rawText);
-  const hasInfo = /(消息|news|sentiment|舆情|资讯|headline|digest|x-reader|http:\/\/|https:\/\/)/i.test(rawText);
+  const hasInfo = /(消息|news|sentiment|舆情|资讯|情绪|headline|digest|x-reader|http:\/\/|https:\/\/)/i.test(rawText);
   const hasTech = hasTechKeyword || (hasBtcSymbol && hasHorizon && !hasInfo);
   const askHelp = /(help|功能|怎么用|命令|示例)/i.test(rawText);
   if (!rawText || askHelp) {
@@ -5677,7 +5696,15 @@ async function handleRouterRuntimeTextMessage({ text = '', context = null } = {}
   }
 
   const llmIntent = await classifyAgent001IntentByLlm(rawText);
-  const intent = resolveAgent001Intent(rawText, llmIntent);
+  const hardOverrides = detectAgent001IntentOverrides(rawText);
+  let intent = resolveAgent001Intent(rawText, llmIntent);
+  if (hardOverrides.infoOnly && !hardOverrides.technicalOnly) {
+    intent.intent = 'info';
+    if (!String(intent.topic || '').trim()) intent.topic = rawText;
+  }
+  if (hardOverrides.technicalOnly && !hardOverrides.infoOnly) {
+    intent.intent = 'technical';
+  }
   if (intent.intent === 'help') {
     return buildAgent001HelpText();
   }
