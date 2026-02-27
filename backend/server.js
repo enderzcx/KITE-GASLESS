@@ -5086,10 +5086,65 @@ function buildAgent001DispatchSummary(results = {}) {
   }
   if (info?.ok && info?.taskResult?.result?.summary) {
     lines.push(`消息面: ${String(info.taskResult.result.summary).trim()}`);
+    const infoDetailLines = buildAgent001InfoDetailLines(info?.taskResult?.result || {});
+    if (infoDetailLines.length > 0) {
+      lines.push(...infoDetailLines);
+    }
   } else if (info) {
     lines.push(`消息面失败: ${String(info.reason || info.error || 'unknown').trim()}`);
   }
   return lines.join('\n').trim();
+}
+
+function clipAgent001Line(text = '', maxLen = 140) {
+  const raw = sanitizePlainText(String(text || '').trim());
+  if (!raw) return '';
+  if (raw.length <= maxLen) return raw;
+  return `${raw.slice(0, maxLen - 1)}…`;
+}
+
+function extractAgent001TopHandles(keyFactors = [], limit = 3) {
+  const rows = Array.isArray(keyFactors) ? keyFactors : [];
+  const handles = [];
+  for (const item of rows) {
+    const text = String(item || '').trim();
+    const matched = text.match(/x:@([A-Za-z0-9_]+)/);
+    if (!matched) continue;
+    const handle = `@${String(matched[1] || '').trim()}`;
+    if (!handle || handles.includes(handle)) continue;
+    handles.push(handle);
+    if (handles.length >= limit) break;
+  }
+  return handles;
+}
+
+function buildAgent001InfoDetailLines(infoResult = {}) {
+  const payload =
+    infoResult?.info && typeof infoResult.info === 'object' && !Array.isArray(infoResult.info)
+      ? infoResult.info
+      : infoResult;
+  const headlines = normalizeStringArray(payload?.headlines || infoResult?.headlines || [], 3)
+    .map((item) => clipAgent001Line(item, 120))
+    .filter(Boolean);
+  const keyFactors = normalizeStringArray(payload?.keyFactors || infoResult?.keyFactors || [], 20);
+  const handles = extractAgent001TopHandles(keyFactors, 3);
+  const nonHandleFactors = keyFactors
+    .filter((item) => !/^x:@/i.test(String(item || '').trim()))
+    .slice(0, 3)
+    .map((item) => clipAgent001Line(item, 80))
+    .filter(Boolean);
+
+  const lines = [];
+  if (headlines.length > 0) {
+    lines.push(`消息样本: ${headlines.map((item, index) => `${index + 1}) ${item}`).join(' | ')}`);
+  }
+  if (handles.length > 0) {
+    lines.push(`重点账号: ${handles.join(', ')}`);
+  }
+  if (nonHandleFactors.length > 0) {
+    lines.push(`关键因子: ${nonHandleFactors.join(' | ')}`);
+  }
+  return lines;
 }
 
 function shouldUseAgent001LocalFallback(result = null) {
