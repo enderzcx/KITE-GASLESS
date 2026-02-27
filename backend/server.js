@@ -103,9 +103,10 @@ const OPENALICE_TIMEOUT_MS = Math.max(
   Math.min(Number(process.env.OPENALICE_TIMEOUT_MS || 30_000), 120_000)
 );
 const OPENALICE_RETRY = Number(process.env.OPENALICE_RETRY || 1);
-const OPENALICE_STRICT_REQUIRED = !/^(0|false|no|off)$/i.test(
-  String(process.env.OPENALICE_STRICT_REQUIRED || '1').trim()
-);
+const OPENALICE_ENABLED = /^(1|true|yes|on)$/i.test(String(process.env.OPENALICE_ENABLED || '0').trim());
+const OPENALICE_STRICT_REQUIRED =
+  OPENALICE_ENABLED &&
+  !/^(0|false|no|off)$/i.test(String(process.env.OPENALICE_STRICT_REQUIRED || '0').trim());
 const HYPERLIQUID_TESTNET_ENABLED = /^(1|true|yes|on)$/i.test(
   String(process.env.HYPERLIQUID_TESTNET_ENABLED || '0').trim()
 );
@@ -124,7 +125,7 @@ const HYPERLIQUID_TESTNET_MARKET_SLIPPAGE_BPS = Math.max(
   1,
   Math.min(Number(process.env.HYPERLIQUID_TESTNET_MARKET_SLIPPAGE_BPS || 30), 1000)
 );
-const ANALYSIS_PROVIDER = 'openalice';
+const ANALYSIS_PROVIDER = 'market-data';
 const ERC8004_IDENTITY_REGISTRY = process.env.ERC8004_IDENTITY_REGISTRY || '';
 const ERC8004_AGENT_ID_RAW = process.env.ERC8004_AGENT_ID || '';
 const ERC8004_AGENT_ID = Number.isFinite(Number(ERC8004_AGENT_ID_RAW))
@@ -224,16 +225,77 @@ const openclawAdapter = createOpenClawAdapter({
   systemPrompt: OPENCLAW_SYSTEM_PROMPT
 });
 
-const openAliceAdapter = createOpenAliceAdapter({
-  baseUrl: OPENALICE_BASE_URL,
-  apiKey: OPENALICE_API_KEY,
-  infoBaseUrl: OPENALICE_INFO_BASE_URL,
-  infoApiKey: OPENALICE_INFO_API_KEY,
-  technicalBaseUrl: OPENALICE_TECHNICAL_BASE_URL,
-  technicalApiKey: OPENALICE_TECHNICAL_API_KEY,
-  timeoutMs: OPENALICE_TIMEOUT_MS,
-  retry: OPENALICE_RETRY
-});
+function createDisabledOpenAliceAdapter() {
+  const disabledReason = 'openalice_disabled_by_config';
+  return {
+    info() {
+      return {
+        mode: 'disabled',
+        hasRemote: false,
+        reason: disabledReason
+      };
+    },
+    async health() {
+      return {
+        ok: false,
+        connected: false,
+        reason: disabledReason,
+        checkedAt: new Date().toISOString(),
+        roles: {
+          message: {
+            role: 'message',
+            ok: false,
+            connected: false,
+            reason: disabledReason,
+            checkedAt: new Date().toISOString()
+          },
+          technical: {
+            role: 'technical',
+            ok: false,
+            connected: false,
+            reason: disabledReason,
+            checkedAt: new Date().toISOString()
+          }
+        }
+      };
+    },
+    async analyzeInfo() {
+      return {
+        ok: false,
+        error: disabledReason,
+        reason: 'OpenAlice disabled'
+      };
+    },
+    async analyzeTechnical() {
+      return {
+        ok: false,
+        error: disabledReason,
+        reason: 'OpenAlice disabled'
+      };
+    },
+    async chatMessage() {
+      return {
+        ok: false,
+        error: disabledReason,
+        reason: 'OpenAlice disabled',
+        text: ''
+      };
+    }
+  };
+}
+
+const openAliceAdapter = OPENALICE_ENABLED
+  ? createOpenAliceAdapter({
+      baseUrl: OPENALICE_BASE_URL,
+      apiKey: OPENALICE_API_KEY,
+      infoBaseUrl: OPENALICE_INFO_BASE_URL,
+      infoApiKey: OPENALICE_INFO_API_KEY,
+      technicalBaseUrl: OPENALICE_TECHNICAL_BASE_URL,
+      technicalApiKey: OPENALICE_TECHNICAL_API_KEY,
+      timeoutMs: OPENALICE_TIMEOUT_MS,
+      retry: OPENALICE_RETRY
+    })
+  : createDisabledOpenAliceAdapter();
 
 const hyperliquidAdapter = createHyperliquidAdapter({
   enabled: HYPERLIQUID_TESTNET_ENABLED,
@@ -1992,26 +2054,28 @@ function normalizeXReaderParams(input = {}) {
     }
     normalizedUrl = parsed.toString();
     const host = String(parsed.hostname || '').replace(/^www\./i, '').trim();
-    if (OPENALICE_STRICT_REQUIRED) {
-      topic = host ? `market sentiment for ${host}` : normalizedUrl;
-      inputType = 'topic';
-    } else {
-      topic = normalizedUrl;
-      inputType = 'url';
-    }
+    topic = host ? `market sentiment for ${host}` : normalizedUrl;
+    inputType = 'url';
   } catch {
     normalizedUrl = '';
     topic = rawInput;
     inputType = 'topic';
   }
 
-  const requestedMode = String(input.mode || input.source || 'openalice').trim().toLowerCase();
-  const rawMode =
-    requestedMode === 'jina' || requestedMode === 'xreader' || requestedMode === 'legacy' || requestedMode === 'news'
-      ? 'openalice'
-      : requestedMode;
-  if (!['auto', 'openalice'].includes(rawMode)) {
-    throw new Error('info-analysis task mode must be one of auto/openalice.');
+  const requestedMode = String(input.mode || input.source || 'auto').trim().toLowerCase();
+  const modeAliases = {
+    market: 'market-data',
+    marketdata: 'market-data',
+    legacy: 'market-data',
+    fallback: 'market-data',
+    news: 'market-data',
+    xreader: 'market-data',
+    jina: 'market-data',
+    openalice: 'market-data'
+  };
+  const rawMode = modeAliases[requestedMode] || requestedMode;
+  if (!['auto', 'market-data'].includes(rawMode)) {
+    throw new Error('info-analysis task mode must be one of auto/market-data.');
   }
   const maxCharsRaw = Number(input.maxChars ?? input.maxLength ?? X_READER_MAX_CHARS_DEFAULT);
   const maxChars = Number.isFinite(maxCharsRaw)
@@ -2166,7 +2230,7 @@ function normalizeInfoAnalysisResult(raw = {}, task = {}) {
   const confidence = clampNumber(source.confidence, 0, 1, 0.5);
   const sentimentScore = clampNumber(source.sentimentScore ?? source.sentiment ?? 0, -1, 1, 0);
   return {
-    provider: String(source.provider || (ANALYSIS_PROVIDER === 'openalice' ? 'openalice' : 'legacy')).trim() || 'legacy',
+    provider: String(source.provider || ANALYSIS_PROVIDER).trim() || ANALYSIS_PROVIDER,
     traceId: String(source.traceId || task.traceId || '').trim(),
     topic,
     sentimentScore: Number(sentimentScore.toFixed(4)),
@@ -2207,9 +2271,9 @@ function normalizeTechnicalAnalysisResult(raw = {}, task = {}) {
   const quotePriceRaw = Number(quoteSource.priceUsd ?? source.priceUsd ?? source.price ?? NaN);
   const quotePair = String(quoteSource.pair || symbol).trim().toUpperCase() || symbol;
   const quoteProvider =
-    String(quoteSource.provider || source.quoteProvider || source.provider || (ANALYSIS_PROVIDER === 'openalice' ? 'openalice' : 'legacy'))
+    String(quoteSource.provider || source.quoteProvider || source.provider || ANALYSIS_PROVIDER)
       .trim()
-      .toLowerCase() || 'legacy';
+      .toLowerCase() || ANALYSIS_PROVIDER;
   const normalizedAsOf = normalizeFreshIsoTimestamp(
     source.asOf || source.timestamp || source.fetchedAt || '',
     quoteSource.fetchedAt || ''
@@ -2231,7 +2295,7 @@ function normalizeTechnicalAnalysisResult(raw = {}, task = {}) {
       : null;
 
   return {
-    provider: String(source.provider || (ANALYSIS_PROVIDER === 'openalice' ? 'openalice' : 'legacy')).trim() || 'legacy',
+    provider: String(source.provider || ANALYSIS_PROVIDER).trim() || ANALYSIS_PROVIDER,
     traceId: String(source.traceId || task.traceId || '').trim(),
     symbol,
     timeframe,
@@ -2264,81 +2328,9 @@ function normalizeTechnicalAnalysisResult(raw = {}, task = {}) {
   };
 }
 
-function isStaleTimestamp(value = '', maxAgeMs = 1000 * 60 * 60 * 24 * 7) {
-  const raw = String(value || '').trim();
-  if (!raw) return false;
-  const ts = Date.parse(raw);
-  if (!Number.isFinite(ts)) return false;
-  return Date.now() - ts > maxAgeMs;
-}
-
-function isWeakInfoAnalysis(info = {}) {
-  const source = info && typeof info === 'object' && !Array.isArray(info) ? info : {};
-  const summary = String(source.summary || '').trim().toLowerCase();
-  const weakMarkers = [
-    'could not retrieve information',
-    'browser control service is unavailable',
-    'unable to fetch',
-    'cannot access',
-    'failed to fetch'
-  ];
-  const hasWeakSummary = weakMarkers.some((item) => summary.includes(item));
-  const confidence = Number(source.confidence ?? NaN);
-  const headlines = Array.isArray(source.headlines) ? source.headlines.filter(Boolean) : [];
-  const keyFactors = Array.isArray(source.keyFactors) ? source.keyFactors.filter(Boolean) : [];
-  const summaryLen = summary.length;
-  const lowSignal = confidence <= 0.35 && headlines.length === 0 && keyFactors.length === 0 && summaryLen < 80;
-  const staleAsOf = isStaleTimestamp(source.asOf);
-  return Boolean(hasWeakSummary || lowSignal || staleAsOf);
-}
-
-function isWeakTechnicalAnalysis(technical = {}) {
-  const source = technical && typeof technical === 'object' && !Array.isArray(technical) ? technical : {};
-  const summary = String(source.summary || '').trim().toLowerCase();
-  const weakSummaryMarkers = [
-    'unable to fetch real-time market data',
-    'could not be fetched',
-    'tool limitations',
-    'neutral assumptions',
-    'cannot be performed'
-  ];
-  const hasWeakSummary = weakSummaryMarkers.some((item) => summary.includes(item));
-  const hasToolErrorSummary = summary.includes('tool_error');
-
-  const indicators = source.indicators && typeof source.indicators === 'object' && !Array.isArray(source.indicators) ? source.indicators : {};
-  const numericIndicators = ['rsi', 'macd', 'emaFast', 'emaSlow', 'atr']
-    .map((key) => Number(indicators[key]))
-    .filter((value) => Number.isFinite(value));
-  const hasAnyIndicatorSignal = numericIndicators.some((value) => Math.abs(value) > 0.000001);
-
-  const score = Number(source.riskScore ?? NaN);
-  const confidence = Number(source.confidence ?? NaN);
-  const scoreLooksPlaceholder = Number.isFinite(score) && Math.round(score) === 50;
-  const confidenceLooksPlaceholder = Number.isFinite(confidence) && confidence <= 0.55;
-
-  const quote = source.quote && typeof source.quote === 'object' && !Array.isArray(source.quote) ? source.quote : {};
-  const hasQuote = Number.isFinite(Number(quote.priceUsd)) && Number(quote.priceUsd) > 0;
-
-  const staleAsOf = isStaleTimestamp(source.asOf);
-  const staleQuoteFetchedAt = isStaleTimestamp(quote.fetchedAt);
-
-  if (hasWeakSummary) return true;
-  if (hasToolErrorSummary && (!hasQuote || !hasAnyIndicatorSignal)) return true;
-  if (staleAsOf || staleQuoteFetchedAt) return true;
-  if (!hasQuote && scoreLooksPlaceholder && confidenceLooksPlaceholder) return true;
-  if (!hasQuote && !hasAnyIndicatorSignal && staleAsOf) return true;
-  return false;
-}
-
-function buildOpenAliceRequiredError(code = 'openalice_required', reason = '') {
-  const error = new Error(String(reason || code || 'openalice_required').trim());
-  error.code = String(code || 'openalice_required').trim().toLowerCase();
-  return error;
-}
-
 function resolveAnalysisErrorStatus(error = null, fallback = 500) {
   const code = String(error?.code || '').trim().toLowerCase();
-  if (code.startsWith('openalice_required')) return 502;
+  if (code.startsWith('service_unavailable') || code.startsWith('provider_unavailable')) return 502;
   if (code.startsWith('invalid_')) return 400;
   const message = String(error?.message || '').trim().toLowerCase();
   if (message.includes('invalid_') || message.includes('invalid ')) return 400;
@@ -2347,106 +2339,10 @@ function resolveAnalysisErrorStatus(error = null, fallback = 500) {
 
 async function runInfoAnalysis(params = {}) {
   const task = normalizeXReaderParams(params);
-  const resolvedTopic = String(params?.topic || task.topic || task.url).trim();
-  const urlAsTopic = /^https?:\/\//i.test(resolvedTopic);
-  let urlTopicFallback = 'crypto market sentiment today';
-  if (task.url) {
-    try {
-      const host = new URL(task.url).hostname.replace(/^www\./i, '').trim();
-      if (host) urlTopicFallback = `market sentiment for ${host}`;
-    } catch {}
-  }
-  const topicRetryTopic = urlAsTopic ? urlTopicFallback : resolvedTopic;
-  const infoPayload = {
-    url: task.url,
-    topic: resolvedTopic,
-    inputType: task.inputType,
-    mode: task.mode,
-    maxChars: task.maxChars,
+  return runMarketInfoAnalysis({
+    ...task,
     traceId: String(params?.traceId || '').trim()
-  };
-  const topicRetryPayload = {
-    ...infoPayload,
-    url: '',
-    topic: topicRetryTopic || resolvedTopic || task.url || 'crypto market sentiment today',
-    inputType: 'topic'
-  };
-  const primaryInfoPayload = task.inputType === 'url' ? topicRetryPayload : infoPayload;
-  let fallbackReason = 'openalice_info_failed';
-  let remote = await openAliceAdapter.analyzeInfo(primaryInfoPayload);
-  if (remote?.ok) {
-    let normalized = normalizeInfoAnalysisResult(remote.data || {}, {
-      ...task,
-      traceId: String(params?.traceId || '').trim()
-    });
-    if (isWeakInfoAnalysis(normalized)) {
-      await waitMs(1200);
-      remote = await openAliceAdapter.analyzeInfo(primaryInfoPayload);
-      if (remote?.ok) {
-        normalized = normalizeInfoAnalysisResult(remote.data || {}, {
-          ...task,
-          traceId: String(params?.traceId || '').trim()
-        });
-      }
-      if (isWeakInfoAnalysis(normalized) && task.inputType === 'url') {
-        await waitMs(900);
-        remote = await openAliceAdapter.analyzeInfo(topicRetryPayload);
-        if (remote?.ok) {
-          normalized = normalizeInfoAnalysisResult(remote.data || {}, {
-            ...task,
-            traceId: String(params?.traceId || '').trim(),
-            inputType: 'topic',
-            url: '',
-            topic: resolvedTopic || task.url
-          });
-        }
-      }
-      if (isWeakInfoAnalysis(normalized)) {
-        fallbackReason = 'openalice returned low-signal info output';
-      } else {
-        return normalized;
-      }
-    } else {
-      return normalized;
-    }
-  } else {
-    fallbackReason = String(remote?.reason || remote?.error || fallbackReason).trim();
-    if (task.inputType === 'url') {
-      await waitMs(900);
-      const topicRemote = await openAliceAdapter.analyzeInfo(topicRetryPayload);
-      if (topicRemote?.ok) {
-        const normalized = normalizeInfoAnalysisResult(topicRemote.data || {}, {
-          ...task,
-          traceId: String(params?.traceId || '').trim(),
-          inputType: 'topic',
-          url: '',
-          topic: resolvedTopic || task.url
-        });
-        if (!isWeakInfoAnalysis(normalized)) {
-          return normalized;
-        }
-      }
-    }
-  }
-  if (OPENALICE_STRICT_REQUIRED) {
-    throw buildOpenAliceRequiredError(
-      'openalice_required_info_unavailable',
-      `OpenAlice info analysis unavailable: ${fallbackReason || 'unknown_reason'}`
-    );
-  }
-  return normalizeInfoAnalysisResult(
-    {
-      provider: 'openalice-fallback',
-      topic: task.topic || task.url,
-      sentimentScore: 0,
-      confidence: 0.25,
-      headlines: [`OpenAlice unavailable`],
-      keyFactors: [fallbackReason.slice(0, 180)],
-      summary: `OpenAlice temporary unavailable, fallback summary for ${task.topic || task.url}`,
-      asOf: new Date().toISOString()
-    },
-    task
-  );
+  });
 }
 
 async function fetchXReaderDigest(params = {}) {
@@ -2459,8 +2355,8 @@ async function fetchXReaderDigest(params = {}) {
   const factor = Array.isArray(info.keyFactors) && info.keyFactors.length > 0 ? info.keyFactors[0] : '';
   const excerpt = String(info.summary || factor || headline || '').trim().slice(0, task.maxChars);
   return {
-    provider: info.provider || 'openalice',
-    backend: 'openalice',
+    provider: info.provider || 'market-data',
+    backend: 'market-data',
     url: task.url,
     topic: task.topic,
     inputType: task.inputType,
@@ -2471,7 +2367,7 @@ async function fetchXReaderDigest(params = {}) {
     mode: task.mode,
     maxChars: task.maxChars,
     sourceRequested: task.mode,
-    attemptedProviders: ['openalice'],
+    attemptedProviders: [String(info.provider || 'market-data').trim().toLowerCase()],
     analysis: info
   };
 }
@@ -2535,6 +2431,404 @@ async function fetchBtcPriceQuote(params = {}) {
   throw new Error(`price_source_unavailable (${failures.join(', ') || 'no provider'})`);
 }
 
+async function fetchBinanceTicker24h(pair = 'BTCUSDT') {
+  const body = await fetchJsonWithTimeout(`https://api.binance.com/api/v3/ticker/24hr?symbol=${pair}`, 8000);
+  const lastPrice = Number(body?.lastPrice);
+  const changePct = Number(body?.priceChangePercent);
+  if (!Number.isFinite(lastPrice) || lastPrice <= 0) throw new Error('invalid lastPrice');
+  return {
+    provider: 'binance',
+    pair,
+    lastPrice,
+    changePct: Number.isFinite(changePct) ? changePct : null,
+    highPrice: Number(body?.highPrice),
+    lowPrice: Number(body?.lowPrice),
+    volume: Number(body?.volume),
+    quoteVolume: Number(body?.quoteVolume)
+  };
+}
+
+async function fetchCoinGeckoBtcSnapshot() {
+  const body = await fetchJsonWithTimeout(
+    'https://api.coingecko.com/api/v3/coins/bitcoin?localization=false&tickers=false&community_data=false&developer_data=false&sparkline=false',
+    8000
+  );
+  const market = body?.market_data && typeof body.market_data === 'object' ? body.market_data : {};
+  const currentUsd = Number(market?.current_price?.usd);
+  const change24h = Number(market?.price_change_percentage_24h);
+  if (!Number.isFinite(currentUsd) || currentUsd <= 0) throw new Error('invalid coingecko current_price.usd');
+  return {
+    provider: 'coingecko',
+    currentUsd,
+    change24h: Number.isFinite(change24h) ? change24h : null,
+    marketCapUsd: Number(market?.market_cap?.usd),
+    totalVolumeUsd: Number(market?.total_volume?.usd),
+    updatedAt: String(body?.last_updated || '').trim()
+  };
+}
+
+async function fetchFearGreedIndex() {
+  const body = await fetchJsonWithTimeout('https://api.alternative.me/fng/?limit=1', 8000);
+  const row = Array.isArray(body?.data) ? body.data[0] || {} : {};
+  const value = Number(row?.value);
+  if (!Number.isFinite(value)) throw new Error('invalid fear_and_greed value');
+  return {
+    provider: 'alternative-me',
+    value: Math.max(0, Math.min(100, value)),
+    classification: String(row?.value_classification || '').trim() || 'Unknown',
+    timestamp: String(row?.timestamp || '').trim()
+  };
+}
+
+function averageNumbers(values = []) {
+  const items = values.filter((item) => Number.isFinite(Number(item)));
+  if (items.length === 0) return NaN;
+  return items.reduce((sum, item) => sum + Number(item), 0) / items.length;
+}
+
+function computeEma(values = [], period = 14) {
+  const list = values.map((item) => Number(item)).filter((item) => Number.isFinite(item));
+  if (list.length < period || period < 2) return NaN;
+  const k = 2 / (period + 1);
+  let ema = list.slice(0, period).reduce((sum, item) => sum + item, 0) / period;
+  for (let i = period; i < list.length; i += 1) {
+    ema = list[i] * k + ema * (1 - k);
+  }
+  return ema;
+}
+
+function computeRsi(values = [], period = 14) {
+  const list = values.map((item) => Number(item)).filter((item) => Number.isFinite(item));
+  if (list.length <= period) return NaN;
+  let gain = 0;
+  let loss = 0;
+  for (let i = 1; i <= period; i += 1) {
+    const delta = list[i] - list[i - 1];
+    if (delta >= 0) gain += delta;
+    else loss += Math.abs(delta);
+  }
+  let avgGain = gain / period;
+  let avgLoss = loss / period;
+  for (let i = period + 1; i < list.length; i += 1) {
+    const delta = list[i] - list[i - 1];
+    const up = delta > 0 ? delta : 0;
+    const down = delta < 0 ? Math.abs(delta) : 0;
+    avgGain = (avgGain * (period - 1) + up) / period;
+    avgLoss = (avgLoss * (period - 1) + down) / period;
+  }
+  if (avgLoss <= 0) return 100;
+  const rs = avgGain / avgLoss;
+  return 100 - 100 / (1 + rs);
+}
+
+function computeMacd(values = [], fast = 12, slow = 26) {
+  const fastEma = computeEma(values, fast);
+  const slowEma = computeEma(values, slow);
+  if (!Number.isFinite(fastEma) || !Number.isFinite(slowEma)) return NaN;
+  return fastEma - slowEma;
+}
+
+function computeAtr(highs = [], lows = [], closes = [], period = 14) {
+  const h = highs.map((item) => Number(item));
+  const l = lows.map((item) => Number(item));
+  const c = closes.map((item) => Number(item));
+  const len = Math.min(h.length, l.length, c.length);
+  if (len <= period) return NaN;
+  const trs = [];
+  for (let i = 1; i < len; i += 1) {
+    const high = h[i];
+    const low = l[i];
+    const prevClose = c[i - 1];
+    if (!Number.isFinite(high) || !Number.isFinite(low) || !Number.isFinite(prevClose)) continue;
+    const tr = Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose));
+    trs.push(tr);
+  }
+  if (trs.length < period) return NaN;
+  let atr = trs.slice(0, period).reduce((sum, item) => sum + item, 0) / period;
+  for (let i = period; i < trs.length; i += 1) {
+    atr = (atr * (period - 1) + trs[i]) / period;
+  }
+  return atr;
+}
+
+async function fetchBinanceKlines(pair = 'BTCUSDT', interval = '1m', limit = 180) {
+  const safeLimit = Math.max(30, Math.min(Number(limit || 180), 500));
+  const body = await fetchJsonWithTimeout(
+    `https://api.binance.com/api/v3/klines?symbol=${pair}&interval=${interval}&limit=${safeLimit}`,
+    8000
+  );
+  if (!Array.isArray(body) || body.length === 0) throw new Error('empty klines');
+  return body
+    .map((row) => ({
+      openTime: Number(row?.[0]),
+      open: Number(row?.[1]),
+      high: Number(row?.[2]),
+      low: Number(row?.[3]),
+      close: Number(row?.[4]),
+      closeTime: Number(row?.[6])
+    }))
+    .filter(
+      (item) =>
+        Number.isFinite(item.openTime) &&
+        Number.isFinite(item.closeTime) &&
+        Number.isFinite(item.high) &&
+        Number.isFinite(item.low) &&
+        Number.isFinite(item.close) &&
+        item.close > 0
+    );
+}
+
+async function runMarketInfoAnalysis(params = {}) {
+  const task = normalizeXReaderParams(params);
+  const topic = String(params?.topic || task.topic || task.url || 'BTC market sentiment').trim();
+  const traceId = String(params?.traceId || '').trim();
+  const failures = [];
+
+  const [binanceRes, geckoRes, fearGreedRes] = await Promise.allSettled([
+    fetchBinanceTicker24h('BTCUSDT'),
+    fetchCoinGeckoBtcSnapshot(),
+    fetchFearGreedIndex()
+  ]);
+
+  const headlines = [];
+  const keyFactors = [];
+  const sentimentParts = [];
+
+  if (binanceRes.status === 'fulfilled') {
+    const changePct = Number(binanceRes.value.changePct);
+    const lastPrice = Number(binanceRes.value.lastPrice);
+    if (Number.isFinite(changePct)) {
+      headlines.push(`Binance BTC 24h ${changePct >= 0 ? '+' : ''}${changePct.toFixed(2)}%`);
+      keyFactors.push(`Binance last ${lastPrice.toFixed(2)} USD`);
+      sentimentParts.push(clampNumber(changePct / 10, -1, 1, 0));
+    }
+  } else {
+    failures.push(`binance:${String(binanceRes.reason?.message || binanceRes.reason || 'failed').trim()}`);
+  }
+
+  if (geckoRes.status === 'fulfilled') {
+    const change24h = Number(geckoRes.value.change24h);
+    const currentUsd = Number(geckoRes.value.currentUsd);
+    if (Number.isFinite(change24h)) {
+      headlines.push(`CoinGecko BTC 24h ${change24h >= 0 ? '+' : ''}${change24h.toFixed(2)}%`);
+      keyFactors.push(`CoinGecko spot ${currentUsd.toFixed(2)} USD`);
+      sentimentParts.push(clampNumber(change24h / 10, -1, 1, 0));
+    }
+  } else {
+    failures.push(`coingecko:${String(geckoRes.reason?.message || geckoRes.reason || 'failed').trim()}`);
+  }
+
+  if (fearGreedRes.status === 'fulfilled') {
+    const value = Number(fearGreedRes.value.value);
+    const classification = String(fearGreedRes.value.classification || '').trim();
+    if (Number.isFinite(value)) {
+      headlines.push(`Fear&Greed ${Math.round(value)} (${classification || 'n/a'})`);
+      keyFactors.push(`Sentiment index=${Math.round(value)} /100`);
+      sentimentParts.push(clampNumber((value - 50) / 50, -1, 1, 0));
+    }
+  } else {
+    failures.push(`feargreed:${String(fearGreedRes.reason?.message || fearGreedRes.reason || 'failed').trim()}`);
+  }
+
+  if (headlines.length === 0 && keyFactors.length === 0) {
+    throw new Error(`market_info_unavailable (${failures.join('; ') || 'no data source'})`);
+  }
+
+  const sentimentScore = Number.isFinite(averageNumbers(sentimentParts))
+    ? averageNumbers(sentimentParts)
+    : 0;
+  const confidence = clampNumber(0.35 + headlines.length * 0.12 + keyFactors.length * 0.08, 0.35, 0.92, 0.5);
+  const summary = `${topic}: sentiment ${sentimentScore >= 0 ? '偏多' : '偏空'} (${sentimentScore.toFixed(2)}), confidence ${confidence.toFixed(2)}; data=binance/coingecko/feargreed`;
+
+  return normalizeInfoAnalysisResult(
+    {
+      provider: 'market-data',
+      traceId,
+      topic,
+      sentimentScore,
+      confidence,
+      headlines,
+      keyFactors,
+      summary,
+      asOf: new Date().toISOString()
+    },
+    {
+      ...task,
+      traceId
+    }
+  );
+}
+
+function buildFallbackTechnicalFromQuote(task = {}, quote = null, reason = '') {
+  const safeQuote =
+    quote && Number.isFinite(Number(quote?.priceUsd)) && Number(quote.priceUsd) > 0
+      ? quote
+      : {
+          provider: 'fallback',
+          pair: String(task.symbol || 'BTCUSDT').trim().toUpperCase(),
+          priceUsd: 0,
+          fetchedAt: new Date().toISOString(),
+          sourceRequested: String(task.sourceRequested || task.source || 'auto').trim().toLowerCase() || 'auto',
+          attemptedProviders: []
+        };
+  const horizonPoints = Math.max(3, Math.min(Number(task.horizonMin || 60), 60));
+  const series = buildDemoPriceSeries(horizonPoints).series;
+  const prices = series.map((item) => Number(item.priceUsd)).filter((item) => Number.isFinite(item) && item > 0);
+  const baselinePrice =
+    prices.length > 0 ? averageNumbers(prices) : Number.isFinite(Number(safeQuote.priceUsd)) ? Number(safeQuote.priceUsd) : 0;
+  const minPrice = prices.length > 0 ? Math.min(...prices) : baselinePrice;
+  const maxPrice = prices.length > 0 ? Math.max(...prices) : baselinePrice;
+  const rangePct = baselinePrice > 0 ? ((maxPrice - minPrice) / baselinePrice) * 100 : 0;
+  const deviationPct = baselinePrice > 0 ? (Math.abs(Number(safeQuote.priceUsd) - baselinePrice) / baselinePrice) * 100 : 0;
+  const rawScore = 24 + rangePct * 11 + deviationPct * 8;
+  const bounded = Math.max(5, Math.min(95, Math.round(rawScore)));
+  const level = toRiskLevel(bounded);
+  const technical = normalizeTechnicalAnalysisResult(
+    {
+      provider: 'market-data-fallback',
+      symbol: task.symbol,
+      timeframe: `${task.horizonMin}m`,
+      confidence: clampNumber(1 - Math.min(0.85, rangePct / 22), 0.1, 0.9, 0.5),
+      summary: buildRiskScoreSummary(bounded, level, task.symbol, safeQuote),
+      riskScore: bounded,
+      signals: {
+        trend: deviationPct >= 1.8 ? 'directional' : 'sideways',
+        momentum: deviationPct >= 1.2 ? 'active' : 'neutral',
+        volatility: rangePct >= 1.8 ? 'elevated' : 'normal',
+        bias: level === 'high' || level === 'elevated' ? 'defensive' : 'balanced'
+      },
+      indicators: {
+        rsi: null,
+        macd: null,
+        emaFast: null,
+        emaSlow: null,
+        atr: Number(rangePct.toFixed(6))
+      },
+      riskBand: {
+        stopLossPct: Number(Math.max(0.8, Math.min(3.5, 1.1 + rangePct / 3)).toFixed(4)),
+        takeProfitPct: Number(Math.max(1.2, Math.min(8, 2 + rangePct * 1.8)).toFixed(4))
+      },
+      quote: safeQuote,
+      asOf: safeQuote.fetchedAt
+    },
+    task
+  );
+  technical.rangePct = Number(rangePct.toFixed(4));
+  technical.deviationPct = Number(deviationPct.toFixed(4));
+  technical.sampleSize = prices.length;
+  if (reason) {
+    technical.summary = `${technical.summary} (fallback reason: ${String(reason).slice(0, 180)})`;
+    technical.fallbackReason = String(reason).slice(0, 280);
+  }
+  return technical;
+}
+
+async function runMarketTechnicalAnalysis(task = {}, input = {}) {
+  const traceId = String(input?.traceId || '').trim();
+  const quote = await fetchBtcPriceQuote({
+    pair: task.symbol,
+    source: task.sourceRequested
+  });
+  const klines = await fetchBinanceKlines(task.symbol, '1m', Math.max(90, Number(task.horizonMin || 60) * 3));
+  if (klines.length < 30) throw new Error('market_data_technical_klines_insufficient');
+
+  const closes = klines.map((item) => Number(item.close)).filter((item) => Number.isFinite(item) && item > 0);
+  const highs = klines.map((item) => Number(item.high)).filter((item) => Number.isFinite(item) && item > 0);
+  const lows = klines.map((item) => Number(item.low)).filter((item) => Number.isFinite(item) && item > 0);
+  if (closes.length < 30 || highs.length < 30 || lows.length < 30) {
+    throw new Error('market_data_technical_series_invalid');
+  }
+
+  const rsi = computeRsi(closes, 14);
+  const macd = computeMacd(closes, 12, 26);
+  const emaFast = computeEma(closes, 12);
+  const emaSlow = computeEma(closes, 26);
+  const atr = computeAtr(highs, lows, closes, 14);
+  const spot = Number.isFinite(Number(quote.priceUsd)) && Number(quote.priceUsd) > 0 ? Number(quote.priceUsd) : closes[closes.length - 1];
+
+  const lookback = Math.max(20, Math.min(Number(task.horizonMin || 60), closes.length));
+  const window = closes.slice(-lookback);
+  const avgPrice = averageNumbers(window);
+  const minPrice = window.length > 0 ? Math.min(...window) : spot;
+  const maxPrice = window.length > 0 ? Math.max(...window) : spot;
+  const rangePct = avgPrice > 0 ? ((maxPrice - minPrice) / avgPrice) * 100 : 0;
+  const deviationPct = avgPrice > 0 ? (Math.abs(spot - avgPrice) / avgPrice) * 100 : 0;
+  const volatilityPct = spot > 0 && Number.isFinite(atr) ? (atr / spot) * 100 : rangePct / 2;
+
+  const trend =
+    Number.isFinite(emaFast) && Number.isFinite(emaSlow)
+      ? emaFast > emaSlow * 1.0005
+        ? 'uptrend'
+        : emaFast < emaSlow * 0.9995
+          ? 'downtrend'
+          : 'sideways'
+      : 'sideways';
+  const momentum =
+    Number.isFinite(rsi) ? (rsi >= 60 ? 'bullish' : rsi <= 40 ? 'bearish' : 'neutral') : 'neutral';
+  const volatility =
+    volatilityPct >= 1.5 ? 'elevated' : volatilityPct <= 0.6 ? 'compressed' : 'normal';
+  const bias =
+    trend === 'uptrend' && momentum !== 'bearish'
+      ? 'bullish'
+      : trend === 'downtrend' && momentum !== 'bullish'
+        ? 'bearish'
+        : 'neutral';
+  const confidence = clampNumber(
+    0.45 +
+      (Number.isFinite(rsi) ? 0.12 : 0) +
+      (Number.isFinite(macd) ? 0.12 : 0) +
+      (Number.isFinite(emaFast) && Number.isFinite(emaSlow) ? 0.14 : 0) +
+      (Number.isFinite(atr) ? 0.09 : 0),
+    0.35,
+    0.92,
+    0.55
+  );
+  const rawScore =
+    20 +
+    rangePct * 9 +
+    deviationPct * 6 +
+    (Number.isFinite(rsi) ? Math.abs(rsi - 50) * 0.45 : 8) +
+    (Number.isFinite(macd) && spot > 0 ? Math.min(8, Math.abs((macd / spot) * 10000)) : 0);
+  const riskScore = Math.max(5, Math.min(95, Math.round(rawScore)));
+  const level = toRiskLevel(riskScore);
+
+  const technical = normalizeTechnicalAnalysisResult(
+    {
+      provider: 'market-data',
+      traceId,
+      symbol: task.symbol,
+      timeframe: `${task.horizonMin}m`,
+      indicators: {
+        rsi: Number.isFinite(rsi) ? Number(rsi.toFixed(4)) : null,
+        macd: Number.isFinite(macd) ? Number(macd.toFixed(8)) : null,
+        emaFast: Number.isFinite(emaFast) ? Number(emaFast.toFixed(6)) : null,
+        emaSlow: Number.isFinite(emaSlow) ? Number(emaSlow.toFixed(6)) : null,
+        atr: Number.isFinite(atr) ? Number(atr.toFixed(6)) : null
+      },
+      signals: {
+        trend,
+        momentum,
+        volatility,
+        bias
+      },
+      confidence,
+      riskBand: {
+        stopLossPct: Number(Math.max(0.5, Math.min(4.5, volatilityPct * 1.8)).toFixed(4)),
+        takeProfitPct: Number(Math.max(1.2, Math.min(10, volatilityPct * 3.1)).toFixed(4))
+      },
+      riskScore,
+      summary: `${task.symbol} technical risk ${riskScore}/100 (${level}), trend=${trend}, momentum=${momentum}, volatility=${volatility}`,
+      asOf: new Date().toISOString(),
+      quote
+    },
+    task
+  );
+  technical.rangePct = Number(rangePct.toFixed(4));
+  technical.deviationPct = Number(deviationPct.toFixed(4));
+  technical.sampleSize = window.length;
+  return technical;
+}
+
 function toRiskLevel(score = 50) {
   if (score >= 80) return 'high';
   if (score >= 60) return 'elevated';
@@ -2549,134 +2843,25 @@ function buildRiskScoreSummary(score, level, symbol, quote) {
 async function runRiskScoreAnalysis(input = {}) {
   const task = normalizeRiskScoreParams(input);
   let technical = null;
-  let openAliceFallbackReason = '';
-  let openAliceFallbackLabel = '';
-
-  if (ANALYSIS_PROVIDER === 'openalice') {
-    const technicalAttempts = Math.max(
-      1,
-      Math.min(Number(process.env.OPENALICE_TECHNICAL_ATTEMPTS || 4), 4)
-    );
-    const technicalReasons = [];
-    for (let attempt = 1; attempt <= technicalAttempts; attempt += 1) {
-      const remote = await openAliceAdapter.analyzeTechnical({
-        symbol: task.symbol,
-        source: task.sourceRequested,
-        timeframe: `${task.horizonMin}m`,
-        horizonMin: task.horizonMin,
-        traceId: String(input?.traceId || '').trim()
-      });
-      if (remote?.ok) {
-        const candidate = normalizeTechnicalAnalysisResult(remote.data || {}, {
-          ...task,
-          traceId: String(input?.traceId || '').trim()
-        });
-        if (!isWeakTechnicalAnalysis(candidate)) {
-          technical = candidate;
-          break;
-        }
-        openAliceFallbackLabel = 'low-signal response';
-        technicalReasons.push('openalice returned low-signal technical output');
-      } else {
-        openAliceFallbackLabel = 'unavailable';
-        technicalReasons.push(String(remote?.reason || remote?.error || 'openalice_technical_failed').trim());
-      }
-      if (attempt < technicalAttempts) {
-        await waitMs(1200 * attempt);
-      }
-    }
-    if (!technical) {
-      openAliceFallbackReason = technicalReasons.filter(Boolean).join('; ');
-    }
-  }
-
-  if (!technical) {
-    if (OPENALICE_STRICT_REQUIRED) {
-      throw buildOpenAliceRequiredError(
-        'openalice_required_technical_unavailable',
-        `OpenAlice technical analysis unavailable: ${openAliceFallbackReason || openAliceFallbackLabel || 'unknown_reason'}`
-      );
-    }
+  let fallbackReason = '';
+  try {
+    technical = await runMarketTechnicalAnalysis(task, input);
+  } catch (error) {
+    fallbackReason = String(error?.message || 'market_data_technical_unavailable').trim();
     const quote = await fetchBtcPriceQuote({
       pair: task.symbol,
       source: task.sourceRequested
     });
-    const horizonPoints = Math.max(3, Math.min(task.horizonMin, 60));
-    const series = buildDemoPriceSeries(horizonPoints).series;
-    const prices = series.map((item) => Number(item.priceUsd)).filter((item) => Number.isFinite(item) && item > 0);
-    const avgPrice = prices.length > 0 ? prices.reduce((sum, value) => sum + value, 0) / prices.length : Number(quote.priceUsd);
-    const minPrice = prices.length > 0 ? Math.min(...prices) : Number(quote.priceUsd);
-    const maxPrice = prices.length > 0 ? Math.max(...prices) : Number(quote.priceUsd);
-    const rangePct = avgPrice > 0 ? ((maxPrice - minPrice) / avgPrice) * 100 : 0;
-    const deviationPct = avgPrice > 0 ? (Math.abs(Number(quote.priceUsd) - avgPrice) / avgPrice) * 100 : 0;
-    const rawScore = 22 + rangePct * 11 + deviationPct * 8;
-    const bounded = Math.max(5, Math.min(95, Math.round(rawScore)));
-    const level = toRiskLevel(bounded);
-    technical = normalizeTechnicalAnalysisResult(
-      {
-        provider: quote.provider,
-        symbol: task.symbol,
-        timeframe: `${task.horizonMin}m`,
-        confidence: clampNumber(1 - Math.min(0.85, rangePct / 22), 0.1, 0.95, 0.55),
-        summary: buildRiskScoreSummary(bounded, level, task.symbol, quote),
-        riskScore: bounded,
-        signals: {
-          trend: deviationPct >= 1.8 ? 'directional' : 'sideways',
-          momentum: deviationPct >= 1.2 ? 'active' : 'neutral',
-          volatility: rangePct >= 1.8 ? 'elevated' : 'normal',
-          bias: level === 'high' || level === 'elevated' ? 'defensive' : 'balanced'
-        },
-        indicators: {
-          rsi: null,
-          macd: null,
-          emaFast: null,
-          emaSlow: null,
-          atr: Number(rangePct.toFixed(6))
-        },
-        riskBand: {
-          stopLossPct: Number(Math.max(0.8, Math.min(3.5, 1.1 + rangePct / 3)).toFixed(4)),
-          takeProfitPct: Number(Math.max(1.2, Math.min(8, 2 + rangePct * 1.8)).toFixed(4))
-        },
-        quote,
-        asOf: quote.fetchedAt
-      },
-      task
-    );
-    technical.rangePct = Number(rangePct.toFixed(4));
-    technical.deviationPct = Number(deviationPct.toFixed(4));
-    technical.sampleSize = prices.length;
-    if (openAliceFallbackReason) {
-      technical.provider = 'openalice-fallback';
-      technical.summary = `${technical.summary} (fallback due to OpenAlice ${openAliceFallbackLabel || 'unavailable'})`;
-      technical.fallbackReason = openAliceFallbackReason;
-    }
-  }
-
-  if (
-    OPENALICE_STRICT_REQUIRED &&
-    (!technical?.quote || !Number.isFinite(Number(technical?.quote?.priceUsd)) || Number(technical?.quote?.priceUsd) <= 0)
-  ) {
-    throw buildOpenAliceRequiredError(
-      'openalice_required_technical_quote_missing',
-      'OpenAlice technical response missing usable quote.priceUsd'
-    );
+    technical = buildFallbackTechnicalFromQuote(task, quote, fallbackReason);
   }
 
   const quote =
     technical?.quote && Number.isFinite(Number(technical.quote.priceUsd)) && Number(technical.quote.priceUsd) > 0
       ? technical.quote
-      : OPENALICE_STRICT_REQUIRED
-        ? null
-        : await fetchBtcPriceQuote({
-            pair: task.symbol,
-            source: task.sourceRequested
-          });
-  if (OPENALICE_STRICT_REQUIRED && !quote) {
-    throw buildOpenAliceRequiredError(
-      'openalice_required_technical_quote_missing',
-      'OpenAlice technical response missing quote'
-    );
-  }
+      : await fetchBtcPriceQuote({
+          pair: task.symbol,
+          source: task.sourceRequested
+        });
   const scoreRaw = Number(technical?.riskScore ?? NaN);
   const bounded = Number.isFinite(scoreRaw)
     ? Math.max(5, Math.min(95, Math.round(scoreRaw)))
@@ -2704,7 +2889,10 @@ async function runRiskScoreAnalysis(input = {}) {
       provider: String(quote?.provider || technical?.provider || 'legacy').trim().toLowerCase()
     },
     quote,
-    technical
+    technical: {
+      ...technical,
+      ...(fallbackReason && !technical?.fallbackReason ? { fallbackReason } : {})
+    }
   };
 }
 
@@ -2818,7 +3006,7 @@ function sanitizeServiceRecord(input = {}, existing = null) {
     String(input.description || existing?.description || '').trim() ||
     (isInfo
       ? action === 'info-analysis-feed'
-        ? 'Pay-per-call message-side info analysis via OpenAlice + x402.'
+        ? 'Pay-per-call message-side info analysis via market-data + x402.'
         : 'Pay-per-call URL digest powered by x-reader + x402.'
       : isTechnical
         ? action === 'technical-analysis-feed'
@@ -2859,7 +3047,7 @@ function sanitizeServiceRecord(input = {}, existing = null) {
             : { symbol: 'BTCUSDT', horizonMin: 60, source: 'hyperliquid' }
           : isInfo
             ? action === 'info-analysis-feed'
-              ? { topic: 'BTC market sentiment today', mode: 'openalice', maxChars: X_READER_MAX_CHARS_DEFAULT }
+              ? { topic: 'BTC market sentiment today', mode: 'auto', maxChars: X_READER_MAX_CHARS_DEFAULT }
               : { url: 'https://x.com/Kite_AI', mode: 'auto', maxChars: X_READER_MAX_CHARS_DEFAULT }
             : isHyperliquidOrder
               ? { symbol: 'BTCUSDT', side: 'buy', orderType: 'limit', tif: 'Gtc', size: 0.001 }
@@ -3005,11 +3193,11 @@ function createDefaultServiceCatalog() {
     {
       id: 'svc_info_analysis',
       name: 'Message Info Analysis (A2A)',
-      description: 'Agent-to-agent message-side info analysis via OpenAlice + x402 payment.',
+      description: 'Agent-to-agent message-side info analysis via market-data + x402 payment.',
       action: 'info-analysis-feed',
       pair: '',
-      source: 'openalice',
-      sourceRequested: 'openalice',
+      source: 'auto',
+      sourceRequested: 'auto',
       resourceUrl: '',
       maxChars: X_READER_MAX_CHARS_DEFAULT,
       providerAgentId: 'message-agent',
@@ -3021,7 +3209,7 @@ function createDefaultServiceCatalog() {
       rateLimitPerMinute: 8,
       budgetPerDay: 0.05,
       allowlistPayers: [],
-      exampleInput: { topic: 'BTC market sentiment today', mode: 'openalice', maxChars: X_READER_MAX_CHARS_DEFAULT },
+      exampleInput: { topic: 'BTC market sentiment today', mode: 'auto', maxChars: X_READER_MAX_CHARS_DEFAULT },
       active: true,
       createdAt: now,
       updatedAt: now,
@@ -3904,12 +4092,14 @@ async function classifyAgent001IntentByLlm(text = '') {
     '',
     `User text: ${rawText}`
   ].join('\n');
-  const chat = await openAliceAdapter.chatMessage({
-    role: 'message',
-    message: prompt
+  const chat = await openclawAdapter.chat({
+    message: prompt,
+    sessionId: 'agent001_intent',
+    traceId: createTraceId('agent001_intent'),
+    agent: 'router-agent'
   });
   if (!chat?.ok) return null;
-  const parsed = parseJsonObjectFromText(chat.text || '');
+  const parsed = parseJsonObjectFromText(chat.reply || '');
   if (!parsed) return null;
   return {
     intent: String(parsed.intent || '').trim().toLowerCase() || '',
@@ -4473,7 +4663,7 @@ async function buildAgent001StrictPaymentPlan({
         input: {
           url: /^https?:\/\//i.test(resolvedTopic) ? resolvedTopic : '',
           topic: resolvedTopic,
-          mode: 'openalice',
+          mode: 'auto',
           maxChars: 900
         },
         bindRealX402: true,
@@ -4793,12 +4983,14 @@ async function maybePolishAgent001Reply(rawText = '', draft = '') {
     `用户原话: ${String(rawText || '').trim()}`,
     `执行结果: ${cleanDraft}`
   ].join('\n');
-  const chat = await openAliceAdapter.chatMessage({
-    role: 'message',
-    message: prompt
+  const chat = await openclawAdapter.chat({
+    message: prompt,
+    sessionId: 'agent001_polish',
+    traceId: createTraceId('agent001_polish'),
+    agent: 'router-agent'
   });
   if (!chat?.ok) return cleanDraft;
-  const text = String(chat.text || '').trim();
+  const text = String(chat.reply || '').trim();
   if (hasTechLine && hasInfoLine) {
     const hasTechLabel = /技术面[:：]/.test(text);
     const hasInfoLabel = /消息面[:：]/.test(text);
@@ -4931,11 +5123,13 @@ async function handleRouterRuntimeTextMessage({ text = '', context = null } = {}
     if (AGENT001_REQUIRE_X402) {
       return '当前已开启强制计费：除 help/status 外均需 x402 支付。请发送“分析 BTCUSDT 技术面 60m”或“分析 btc market sentiment today”。';
     }
-    const chat = await openAliceAdapter.chatMessage({
-      role: 'message',
-      message: `你是 AGENT001，请用简洁中文回复用户。\n用户消息: ${rawText}`
+    const chat = await openclawAdapter.chat({
+      message: `你是 AGENT001，请用简洁中文回复用户。\n用户消息: ${rawText}`,
+      sessionId: 'agent001_chat',
+      traceId: createTraceId('agent001_chat'),
+      agent: 'router-agent'
     });
-    if (chat?.ok && String(chat.text || '').trim()) return String(chat.text || '').trim();
+    if (chat?.ok && String(chat.reply || '').trim()) return String(chat.reply || '').trim();
     return `AGENT001 已收到。可直接说“分析 BTC 技术面 60m”或“分析 btc market sentiment today”。`;
   }
 
@@ -6461,7 +6655,7 @@ function buildA2ACapabilities() {
         id: 'info-analysis-feed',
         input: {
           topic: 'string (keyword/topic text) OR url',
-          mode: 'openalice/auto',
+          mode: 'auto/market-data',
           maxChars: 'number 200-8000'
         },
         price: X402_INFO_PRICE,
