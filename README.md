@@ -1,15 +1,16 @@
-﻿# KiteTrace Platform
+﻿# KiteClaw Agent Network (Prototype)
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 [![Version](https://img.shields.io/badge/version-v1.8.0-blue)](./CHANGELOG.md)
 
-KiteTrace Platform: an Agent Network + Service Market on Kite Testnet, where ERC8004 identity and x402 settlement produce verifiable A2A/A2API evidence.
+KiteClaw is an auditable Agent Network prototype on Kite Testnet.
+It focuses on one verifiable execution loop: identity -> XMTP coordination -> x402 settlement -> result -> decision, with exportable evidence.
 
 **About**:
-- Builds an agent-first closed loop: discover service -> invoke -> pay -> unlock -> verify.
-- Uses ERC8004 identity and direct on-chain confirmation (`requestId`, `txHash`, `block`, `status`, explorer link).
-- BTCUSD minute-level loop is a live demo scenario; platform supports broader agent services.
-- Product surface follows Agent Network information architecture: `/`, `/market`, `/trace/:requestId`, `/ops`.
+- Current stage: prototype (not a final generalized production platform).
+- Core value: auditable multi-agent collaboration, not chat-only agent demos.
+- Uses ERC8004 identity and x402 on-chain confirmation (`requestId`, `txHash`, `block`, `status`, explorer link).
+- Frontend focus: Agent Network flow visualization + audit export.
 
 Current Version: `v1.8.0`
 
@@ -84,6 +85,17 @@ Current Version: `v1.8.0`
   - `status`
   - `explorer link`
 - Graceful failures (insufficient funds, scope violation, expired/fake proof)
+
+## How XMTP Communication Is Audited
+
+XMTP payload is off-chain, so auditability is achieved by cross-linking transport evidence with on-chain settlement evidence.
+
+- Every task message and task-result keeps `traceId`, `requestId`, `taskId`, `fromAgentId`, `toAgentId`, `conversationId`, `messageId`, sender address, and timestamp.
+- Runtime events are queryable from `GET /api/xmtp/events` and stitched into request-level views (`/api/demo/trace/:traceId`, `/api/evidence/export`).
+- x402 payment proof (`requestId`, `txHash`, `block`, explorer, `verifiedAt`) is bound to the same request and returned in `payment` / `receiptRef` fields.
+- Receipt/Evidence export allows third parties to replay one execution path and verify that: DM coordination happened, payment was confirmed, and result unlock matched that payment proof.
+
+In short: XMTP provides collaborative context, x402 provides settlement truth, and `traceId/requestId` binds both into one auditable chain.
 
 ## Kite Testnet Contribution (ERC-8004 Registries)
 
@@ -661,5 +673,7 @@ All scripts target backend endpoints documented in `skills/kiteclaw-stop-orders/
 ## License
 
 MIT License. See `LICENSE`.
+
+
 
 
