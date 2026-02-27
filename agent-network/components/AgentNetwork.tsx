@@ -79,8 +79,11 @@ export interface AuditLogEntry {
   xmtpSnippet?: string;
   receiptRef?: string;
   messageServiceTxHash?: string;
+  messageServicePaidAt?: string;
   technicalServiceTxHash?: string;
+  technicalServicePaidAt?: string;
   apiGateTxHash?: string;
+  apiGatePaidAt?: string;
   decisionBasis?: string;
   payload: Record<string, unknown>;
 }
@@ -114,6 +117,14 @@ interface NetworkEdgeData {
   rightHintOffsetY?: number;
 }
 
+interface TxCandidate {
+  requestId: string;
+  action: string;
+  txHash: string;
+  paidAtIso: string;
+  paidAtMs: number;
+}
+
 const COLORS: Record<EdgeChannel, string> = {
   xmtp: "#38bdf8",
   x402: "#22c55e",
@@ -125,6 +136,7 @@ const COLORS: Record<EdgeChannel, string> = {
 const X402_PHASES: PaymentPhase[] = ["challenge", "pay+proof", "verify", "unlock"];
 const QUOTE_CAP = 0.00024;
 const EXECUTION_THRESHOLD = 0.62;
+const TX_STALE_MS = 60 * 60 * 1000;
 
 export const FLOW_STEPS: FlowStep[] = [
   { id: "erc8004_verify", index: 1, title: "Step 1 · ERC8004 Verification", description: "Agent001 verifies collaborator agents on-chain.", durationMs: 1300 },
@@ -221,6 +233,89 @@ function shortHash(v: string): string {
   if (!v) return "-";
   if (v.length < 18) return v;
   return `${v.slice(0, 10)}...${v.slice(-6)}`;
+}
+
+function parseTimestampMs(input: unknown): number {
+  if (typeof input === "number" && Number.isFinite(input) && input > 0) return input;
+  if (typeof input !== "string") return 0;
+  const raw = input.trim();
+  if (!raw) return 0;
+  if (/^\d+$/.test(raw)) {
+    const asNum = Number(raw);
+    return Number.isFinite(asNum) && asNum > 0 ? asNum : 0;
+  }
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function toIsoFromMs(ms: number): string {
+  return ms > 0 ? new Date(ms).toISOString() : "";
+}
+
+function buildTxCandidates(items: Array<Record<string, unknown>> = []): TxCandidate[] {
+  const byHash = new Map<string, TxCandidate>();
+  for (const item of items) {
+    const paymentProof = item?.paymentProof && typeof item.paymentProof === "object" ? (item.paymentProof as Record<string, unknown>) : null;
+    const txHash = String(item?.txHash || item?.paymentTxHash || paymentProof?.txHash || "").trim();
+    if (!/^0x[a-fA-F0-9]{64}$/.test(txHash)) continue;
+    const paidAtMs =
+      parseTimestampMs(item?.paidAt) ||
+      parseTimestampMs(item?.time) ||
+      parseTimestampMs(item?.updatedAt) ||
+      parseTimestampMs(item?.createdAt);
+    const normalized: TxCandidate = {
+      requestId: String(item?.requestId || "").trim(),
+      action: String(item?.action || "").trim().toLowerCase(),
+      txHash,
+      paidAtIso: toIsoFromMs(paidAtMs),
+      paidAtMs,
+    };
+    const key = txHash.toLowerCase();
+    const prev = byHash.get(key);
+    if (!prev || normalized.paidAtMs >= prev.paidAtMs) {
+      byHash.set(key, normalized);
+    }
+  }
+  return [...byHash.values()].sort((a, b) => b.paidAtMs - a.paidAtMs);
+}
+
+function pickNextTx(
+  items: TxCandidate[],
+  usedTxHashes: Set<string>,
+  matcher?: (candidate: TxCandidate) => boolean
+): TxCandidate | null {
+  for (const item of items) {
+    const key = item.txHash.toLowerCase();
+    if (usedTxHashes.has(key)) continue;
+    if (matcher && !matcher(item)) continue;
+    usedTxHashes.add(key);
+    return item;
+  }
+  return null;
+}
+
+function txExplorerUrl(txHash: string): string {
+  if (!/^0x[a-fA-F0-9]{64}$/.test(String(txHash || "").trim())) return "";
+  return `https://testnet.kitescan.ai/tx/${txHash}`;
+}
+
+function formatTxTime(iso = ""): string {
+  if (!iso) return "n/a";
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return "n/a";
+  return new Date(t).toLocaleString("en-US", { hour12: false });
+}
+
+function formatTxAge(iso = ""): string {
+  if (!iso) return "";
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return "";
+  const delta = Math.max(0, Date.now() - t);
+  const hours = Math.floor(delta / 3600000);
+  const mins = Math.floor((delta % 3600000) / 60000);
+  if (hours <= 0 && mins <= 0) return "just now";
+  if (hours <= 0) return `${mins}m ago`;
+  return `${hours}h ${mins}m ago`;
 }
 
 function randomHex(n = 64): string {
@@ -441,6 +536,7 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
   const playbackRef = useRef<PlaybackState>("idle");
   const quoteAcceptedRef = useRef<boolean | null>(null);
   const shouldOrderRef = useRef<boolean | null>(null);
+  const usedTxHashesRef = useRef<Set<string>>(new Set());
   const baseUrl = backendBaseUrl || process.env.NEXT_PUBLIC_BACKEND_URL || "http://127.0.0.1:3001";
 
   useEffect(() => {
@@ -486,6 +582,7 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
     setMessageScore(0);
     setTechnicalScore(0);
     setReceiptRef("");
+    usedTxHashesRef.current = new Set();
   }, [demoView, setEdges, setNodes]);
 
   const appendAudit = useCallback(
@@ -495,7 +592,15 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
         ...entry,
         id: `${now.getTime()}_${Math.random().toString(36).slice(2, 8)}`,
         tsISO: now.toISOString(),
-        tsLocal: now.toLocaleTimeString("en-US", { hour12: false }),
+        tsLocal: now.toLocaleString("en-US", {
+          hour12: false,
+          month: "2-digit",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+          fractionalSecondDigits: 3,
+        }),
       };
       setAudit((prev) => [...prev, row].slice(-auditMaxEntries));
     },
@@ -652,35 +757,81 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
             }, 550);
 
             let receipt = `receipt_${randomHex(10).slice(2)}`;
-            let serviceTxHashA = randomHex(64);
-            let serviceTxHashB = randomHex(64);
+            let serviceTxHashA = "";
+            let serviceTxHashB = "";
+            let servicePaidAtA = "";
+            let servicePaidAtB = "";
+            const usedTx = usedTxHashesRef.current;
             try {
-              const res = await fetchJSON<{ items?: Array<Record<string, unknown>> }>(`${baseUrl}/api/x402/mapping/latest`);
-              const first = Array.isArray(res?.items) && res.items.length > 0 ? res.items[0] : null;
-              const reqId = String(first?.requestId || "");
-              const tx = String(first?.txHash || first?.paymentTxHash || "");
-              if (reqId || tx) receipt = `${reqId || "req_unknown"}:${tx || "tx_unknown"}`;
-              if (tx) {
-                serviceTxHashA = tx;
-                serviceTxHashB = tx;
+              const res = await fetchJSON<{ items?: Array<Record<string, unknown>> }>(`${baseUrl}/api/x402/mapping/latest?limit=40`);
+              const candidates = buildTxCandidates(Array.isArray(res?.items) ? res.items : []);
+
+              if (demoView === "general") {
+                const generalCandidate =
+                  pickNextTx(candidates, usedTx, (c) => /info|technical|reader|risk|analysis|feed|service/i.test(c.action)) ||
+                  pickNextTx(candidates, usedTx);
+                if (generalCandidate) {
+                  serviceTxHashA = generalCandidate.txHash;
+                  servicePaidAtA = generalCandidate.paidAtIso;
+                  receipt = `${generalCandidate.requestId || "req_unknown"}:${generalCandidate.txHash}`;
+                }
+              } else {
+                const messageCandidate =
+                  pickNextTx(candidates, usedTx, (c) => /info|reader|message/i.test(c.action)) || pickNextTx(candidates, usedTx);
+                const technicalCandidate =
+                  pickNextTx(candidates, usedTx, (c) => /technical|risk/i.test(c.action)) ||
+                  pickNextTx(candidates, usedTx, (c) => !messageCandidate || c.txHash.toLowerCase() !== messageCandidate.txHash.toLowerCase()) ||
+                  null;
+
+                if (messageCandidate) {
+                  serviceTxHashA = messageCandidate.txHash;
+                  servicePaidAtA = messageCandidate.paidAtIso;
+                  receipt = `${messageCandidate.requestId || "req_unknown"}:${messageCandidate.txHash}`;
+                }
+                if (technicalCandidate) {
+                  serviceTxHashB = technicalCandidate.txHash;
+                  servicePaidAtB = technicalCandidate.paidAtIso;
+                }
               }
             } catch {
               // fallback
             }
             try {
-              const req = await fetchJSON<{ items?: Array<Record<string, unknown>> }>(`${baseUrl}/api/x402/requests?limit=10`);
-              const txHashes = Array.isArray(req?.items)
-                ? req.items
-                    .map((it) => String(it?.txHash || it?.paymentTxHash || ""))
-                    .filter((v) => /^0x[a-fA-F0-9]{64}$/.test(v))
-                : [];
-              if (txHashes[0]) serviceTxHashA = txHashes[0];
-              if (txHashes[1]) serviceTxHashB = txHashes[1];
-              else if (txHashes[0]) serviceTxHashB = txHashes[0];
+              const req = await fetchJSON<{ items?: Array<Record<string, unknown>> }>(`${baseUrl}/api/x402/requests?limit=30`);
+              const fallbackCandidates = buildTxCandidates(Array.isArray(req?.items) ? req.items : []);
+              if (!serviceTxHashA) {
+                const c = pickNextTx(fallbackCandidates, usedTx);
+                if (c) {
+                  serviceTxHashA = c.txHash;
+                  servicePaidAtA = c.paidAtIso;
+                  receipt = `${c.requestId || "req_unknown"}:${c.txHash}`;
+                }
+              }
+              if (demoView !== "general" && !serviceTxHashB) {
+                const c =
+                  pickNextTx(fallbackCandidates, usedTx, (candidate) => candidate.txHash.toLowerCase() !== serviceTxHashA.toLowerCase()) ||
+                  pickNextTx(fallbackCandidates, usedTx);
+                if (c) {
+                  serviceTxHashB = c.txHash;
+                  servicePaidAtB = c.paidAtIso;
+                }
+              }
             } catch {
               // fallback
             }
+            if (!serviceTxHashA) serviceTxHashA = randomHex(64);
+            if (demoView !== "general" && !serviceTxHashB) serviceTxHashB = randomHex(64);
+            if (demoView === "general") {
+              serviceTxHashB = "";
+              servicePaidAtB = "";
+            } else if (!serviceTxHashB) {
+              serviceTxHashB = serviceTxHashA;
+              servicePaidAtB = servicePaidAtA;
+            }
             setReceiptRef(receipt);
+            const staleA = servicePaidAtA ? Date.now() - Date.parse(servicePaidAtA) > TX_STALE_MS : false;
+            const staleB = servicePaidAtB ? Date.now() - Date.parse(servicePaidAtB) > TX_STALE_MS : false;
+            const staleNotes = [staleA ? "message tx is historical" : "", staleB ? "technical tx is historical" : ""].filter(Boolean);
             appendAudit({
               mode,
               stepId: step.id,
@@ -688,8 +839,23 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
               blockchainVerifiable: true,
               receiptRef: receipt,
               messageServiceTxHash: demoView === "general" ? serviceTxHashA : serviceTxHashA,
+              messageServicePaidAt: servicePaidAtA || undefined,
               technicalServiceTxHash: demoView === "general" ? undefined : serviceTxHashB,
-              payload: { phases: X402_PHASES, receipt, executed: true, messageServiceTxHash: serviceTxHashA, technicalServiceTxHash: demoView === "general" ? null : serviceTxHashB },
+              technicalServicePaidAt: demoView === "general" ? undefined : servicePaidAtB || undefined,
+              decisionBasis:
+                staleNotes.length > 0
+                  ? `x402 payment evidence loaded. ${staleNotes.join("; ")}.`
+                  : "x402 payment evidence loaded from latest on-chain records.",
+              payload: {
+                phases: X402_PHASES,
+                receipt,
+                executed: true,
+                messageServiceTxHash: serviceTxHashA,
+                messageServicePaidAt: servicePaidAtA || null,
+                technicalServiceTxHash: demoView === "general" ? null : serviceTxHashB,
+                technicalServicePaidAt: demoView === "general" ? null : servicePaidAtB || null,
+                stale: { message: staleA, technical: staleB },
+              },
             });
           }
         }
@@ -820,6 +986,7 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
             let orderRef = "";
             let apiGateReceipt = "";
             let apiGateTxHash = "";
+            let apiGatePaidAt = "";
             if (approved) {
               setX402Open(true);
               let p = 0;
@@ -835,16 +1002,6 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
               }, 480);
 
               apiGateReceipt = `api_receipt_${randomHex(8).slice(2)}`;
-              try {
-                const gate = await fetchJSON<{ items?: Array<Record<string, unknown>> }>(`${baseUrl}/api/x402/mapping/latest`);
-                const first = Array.isArray(gate?.items) && gate.items.length > 0 ? gate.items[0] : null;
-                const reqId = String(first?.requestId || "");
-                const tx = String(first?.txHash || first?.paymentTxHash || "");
-                if (reqId || tx) apiGateReceipt = `${reqId || "req_unknown"}:${tx || "tx_unknown"}`;
-                if (tx) apiGateTxHash = tx;
-              } catch {
-                // fallback
-              }
 
               orderRef = `order_${randomHex(8).slice(2)}`;
               try {
@@ -858,6 +1015,42 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
               } catch {
                 // fallback
               }
+
+              const usedTx = usedTxHashesRef.current;
+              if (orderRef) {
+                try {
+                  const exact = await fetchJSON<{ items?: Array<Record<string, unknown>> }>(
+                    `${baseUrl}/api/x402/requests?requestId=${encodeURIComponent(orderRef)}&limit=1`
+                  );
+                  const exactCandidates = buildTxCandidates(Array.isArray(exact?.items) ? exact.items : []);
+                  const exactMatch = exactCandidates[0] || null;
+                  if (exactMatch) {
+                    usedTx.add(exactMatch.txHash.toLowerCase());
+                    apiGateTxHash = exactMatch.txHash;
+                    apiGatePaidAt = exactMatch.paidAtIso;
+                    apiGateReceipt = `${exactMatch.requestId || orderRef}:${exactMatch.txHash}`;
+                  }
+                } catch {
+                  // fallback
+                }
+              }
+
+              if (!apiGateTxHash) {
+                try {
+                  const gate = await fetchJSON<{ items?: Array<Record<string, unknown>> }>(`${baseUrl}/api/x402/mapping/latest?limit=40`);
+                  const gateCandidates = buildTxCandidates(Array.isArray(gate?.items) ? gate.items : []);
+                  const gateMatch =
+                    pickNextTx(gateCandidates, usedTx, (c) => /btc-price|order|api|workflow|price-feed/i.test(c.action)) ||
+                    pickNextTx(gateCandidates, usedTx);
+                  if (gateMatch) {
+                    apiGateTxHash = gateMatch.txHash;
+                    apiGatePaidAt = gateMatch.paidAtIso;
+                    apiGateReceipt = `${gateMatch.requestId || "req_unknown"}:${gateMatch.txHash}`;
+                  }
+                } catch {
+                  // fallback
+                }
+              }
               if (apiGateReceipt) setReceiptRef(apiGateReceipt);
             }
             appendAudit({
@@ -867,8 +1060,20 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
               blockchainVerifiable: true,
               receiptRef: apiGateReceipt || receiptRef || orderRef || undefined,
               apiGateTxHash: apiGateTxHash || undefined,
+              apiGatePaidAt: apiGatePaidAt || undefined,
               decisionBasis: basis,
-              payload: { messageScore, technicalScore, combined, apiCalled: approved, apiGateReceipt, apiGateTxHash, orderRef, demoView },
+              payload: {
+                messageScore,
+                technicalScore,
+                combined,
+                apiCalled: approved,
+                apiGateReceipt,
+                apiGateTxHash,
+                apiGatePaidAt,
+                apiGateHistorical: apiGatePaidAt ? Date.now() - Date.parse(apiGatePaidAt) > TX_STALE_MS : false,
+                orderRef,
+                demoView,
+              },
             });
           }
         }
@@ -932,6 +1137,7 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
     setMessageScore(0);
     setTechnicalScore(0);
     setReceiptRef("");
+    usedTxHashesRef.current = new Set();
     setTimeout(() => {
       setPlayback("playing");
       void executeStep(0);
@@ -1139,17 +1345,50 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
                   ) : null}
                   {entry.messageServiceTxHash ? (
                     <p>
-                      <span className="text-slate-400">messageAgentTxHash:</span> <span className="font-mono">{shortHash(entry.messageServiceTxHash)}</span>
+                      <span className="text-slate-400">messageAgentTxHash:</span>{" "}
+                      <a
+                        href={txExplorerUrl(entry.messageServiceTxHash)}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="font-mono text-cyan-300 underline decoration-cyan-400/40 underline-offset-2"
+                      >
+                        {shortHash(entry.messageServiceTxHash)}
+                      </a>{" "}
+                      <span className="text-slate-400">
+                        ({formatTxTime(entry.messageServicePaidAt)} {formatTxAge(entry.messageServicePaidAt)})
+                      </span>
                     </p>
                   ) : null}
                   {entry.technicalServiceTxHash ? (
                     <p>
-                      <span className="text-slate-400">technicalAgentTxHash:</span> <span className="font-mono">{shortHash(entry.technicalServiceTxHash)}</span>
+                      <span className="text-slate-400">technicalAgentTxHash:</span>{" "}
+                      <a
+                        href={txExplorerUrl(entry.technicalServiceTxHash)}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="font-mono text-cyan-300 underline decoration-cyan-400/40 underline-offset-2"
+                      >
+                        {shortHash(entry.technicalServiceTxHash)}
+                      </a>{" "}
+                      <span className="text-slate-400">
+                        ({formatTxTime(entry.technicalServicePaidAt)} {formatTxAge(entry.technicalServicePaidAt)})
+                      </span>
                     </p>
                   ) : null}
                   {entry.apiGateTxHash ? (
                     <p>
-                      <span className="text-slate-400">apiGateTxHash:</span> <span className="font-mono">{shortHash(entry.apiGateTxHash)}</span>
+                      <span className="text-slate-400">apiGateTxHash:</span>{" "}
+                      <a
+                        href={txExplorerUrl(entry.apiGateTxHash)}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="font-mono text-orange-300 underline decoration-orange-400/40 underline-offset-2"
+                      >
+                        {shortHash(entry.apiGateTxHash)}
+                      </a>{" "}
+                      <span className="text-slate-400">
+                        ({formatTxTime(entry.apiGatePaidAt)} {formatTxAge(entry.apiGatePaidAt)})
+                      </span>
                     </p>
                   ) : null}
                   {entry.decisionBasis ? (
