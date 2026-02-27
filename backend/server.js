@@ -4637,11 +4637,33 @@ async function classifyAgent001IntentByLlm(text = '') {
   };
 }
 
+function detectAgent001IntentOverrides(text = '') {
+  const rawText = String(text || '').trim();
+  return {
+    infoOnly:
+      /(仅消息面|只要消息面|只看消息面|不要技术面|不需要技术面|别给技术面|only\s+(info|news|sentiment)|news\s+only|sentiment\s+only)/i.test(
+        rawText
+      ),
+    technicalOnly:
+      /(仅技术面|只要技术面|只看技术面|不要消息面|不需要消息面|别给消息面|only\s+technical|technical\s+only)/i.test(
+        rawText
+      ),
+    noTrade:
+      /(不要交易|不需要交易|不要交易计划|不需要交易计划|不要下单|不下单|no\s+trade|no\s+order|don'?t\s+trade|do\s+not\s+trade)/i.test(
+        rawText
+      )
+  };
+}
+
 function classifyAgent001IntentFallback(text = '') {
   const rawText = String(text || '').trim();
+  const overrides = detectAgent001IntentOverrides(rawText);
   const hasTrade = /(交易|下单|挂单|做多|做空|交易计划|order|place order|plan|entry|exit|strategy|trade)/i.test(rawText);
-  const hasTech = /(技术|technical|risk|指标|rsi|macd|ema|atr|btc)/i.test(rawText);
+  const hasTechKeyword = /(技术|technical|risk|指标|rsi|macd|ema|atr|布林|均线|支撑|阻力|趋势)/i.test(rawText);
+  const hasBtcSymbol = /\bBTCUSD[T]?\b|\bBTC\b/i.test(rawText);
+  const hasHorizon = /(\d{1,3})\s*(m|min|minute|minutes|h|hr|hour|hours|分钟|分|小时)/i.test(rawText);
   const hasInfo = /(消息|news|sentiment|舆情|资讯|headline|digest|x-reader|http:\/\/|https:\/\/)/i.test(rawText);
+  const hasTech = hasTechKeyword || (hasBtcSymbol && hasHorizon && !hasInfo);
   const askHelp = /(help|功能|怎么用|命令|示例)/i.test(rawText);
   if (!rawText || askHelp) {
     return { intent: 'help', symbol: 'BTCUSDT', horizonMin: 60, source: 'hyperliquid', topic: '' };
@@ -4651,6 +4673,14 @@ function classifyAgent001IntentFallback(text = '') {
   else if (hasTech && hasInfo) intent = 'both';
   else if (hasTech) intent = 'technical';
   else if (hasInfo) intent = 'info';
+  if (overrides.infoOnly) intent = 'info';
+  if (overrides.technicalOnly) intent = 'technical';
+  if (overrides.noTrade && intent === 'trade') {
+    if (hasTech && hasInfo) intent = 'both';
+    else if (hasInfo) intent = 'info';
+    else if (hasTech) intent = 'technical';
+    else intent = 'chat';
+  }
   const url = extractFirstUrlFromText(rawText);
   const topic = url || rawText;
   return {
@@ -4663,10 +4693,16 @@ function classifyAgent001IntentFallback(text = '') {
 }
 
 function resolveAgent001Intent(text = '', llmIntent = null) {
+  const overrides = detectAgent001IntentOverrides(text);
   const fallback = classifyAgent001IntentFallback(text);
   if (!llmIntent || typeof llmIntent !== 'object') return fallback;
-  const intent = String(llmIntent.intent || '').trim().toLowerCase();
+  let intent = String(llmIntent.intent || '').trim().toLowerCase();
   if (!['technical', 'info', 'both', 'trade', 'chat', 'help'].includes(intent)) return fallback;
+  if (overrides.infoOnly) intent = 'info';
+  if (overrides.technicalOnly) intent = 'technical';
+  if (overrides.noTrade && intent === 'trade') {
+    intent = fallback.intent === 'trade' ? 'chat' : fallback.intent;
+  }
   return {
     intent,
     symbol: String(llmIntent.symbol || fallback.symbol || 'BTCUSDT').trim().toUpperCase() || 'BTCUSDT',
