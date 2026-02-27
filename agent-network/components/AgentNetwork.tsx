@@ -106,6 +106,9 @@ interface NetworkEdgeData {
   lane: "a2a" | "atapi" | "both";
   active?: boolean;
   dimmed?: boolean;
+  labelOffsetX?: number;
+  labelOffsetY?: number;
+  curvature?: number;
 }
 
 const COLORS: Record<EdgeChannel, string> = {
@@ -140,20 +143,20 @@ export const NETWORK_NODES: Node<NetworkNodeData>[] = [
 ];
 
 export const NETWORK_EDGES: Edge<NetworkEdgeData>[] = [
-  { id: "a2a-1", type: "glow", source: "a2a-agent001", target: "a2a-msgtech", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.xmtp }, data: { label: "① XMTP Negotiation (Task & Price)", channel: "xmtp", lane: "a2a" } },
-  { id: "a2a-2", type: "glow", source: "a2a-msgtech", target: "a2a-agent001", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "② x402 challenge", channel: "x402", lane: "a2a" } },
-  { id: "a2a-3", type: "glow", source: "a2a-agent001", target: "a2a-x402", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "③ pay + proof", channel: "x402", lane: "a2a" } },
-  { id: "a2a-4", type: "glow", source: "a2a-x402", target: "a2a-msgtech", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "④ unlock", channel: "x402", lane: "a2a" } },
-  { id: "a2a-5", type: "glow", source: "a2a-msgtech", target: "a2a-agent001", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.xmtp }, data: { label: "⑤ XMTP Result + receiptRef", channel: "xmtp", lane: "a2a" } },
-  { id: "api-1", type: "glow", source: "atapi-agent001", target: "atapi-api", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.http }, data: { label: "① HTTP Request", channel: "http", lane: "atapi" } },
-  { id: "api-2", type: "glow", source: "atapi-api", target: "atapi-agent001", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "② x402 challenge", channel: "x402", lane: "atapi" } },
-  { id: "api-3", type: "glow", source: "atapi-agent001", target: "atapi-x402", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "③ pay + proof", channel: "x402", lane: "atapi" } },
-  { id: "api-4", type: "glow", source: "atapi-x402", target: "atapi-api", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "④ unlock", channel: "x402", lane: "atapi" } },
-  { id: "api-5", type: "glow", source: "atapi-api", target: "atapi-agent001", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.atapi }, data: { label: "⑤ HTTP Result + receiptRef", channel: "atapi", lane: "atapi" } },
-  { id: "erc-a2a-agent", type: "glow", source: "erc8004", target: "a2a-agent001", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.erc8004 }, data: { label: "ERC8004 proof", channel: "erc8004", lane: "both" } },
-  { id: "erc-a2a-msg", type: "glow", source: "erc8004", target: "a2a-msgtech", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.erc8004 }, data: { label: "ERC8004 proof", channel: "erc8004", lane: "both" } },
-  { id: "erc-atapi-agent", type: "glow", source: "erc8004", target: "atapi-agent001", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.erc8004 }, data: { label: "ERC8004 proof", channel: "erc8004", lane: "both" } },
-  { id: "erc-atapi-api", type: "glow", source: "erc8004", target: "atapi-api", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.erc8004 }, data: { label: "ERC8004 proof", channel: "erc8004", lane: "both" } },
+  { id: "a2a-1", type: "glow", source: "a2a-agent001", target: "a2a-msgtech", sourceHandle: "s-right", targetHandle: "t-left", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.xmtp }, data: { label: "① XMTP Negotiation (Task & Price)", channel: "xmtp", lane: "a2a", labelOffsetY: -16, curvature: 0.22 } },
+  { id: "a2a-2", type: "glow", source: "a2a-msgtech", target: "a2a-agent001", sourceHandle: "s-top", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "② x402 challenge", channel: "x402", lane: "a2a", labelOffsetY: -34, curvature: 0.35 } },
+  { id: "a2a-3", type: "glow", source: "a2a-agent001", target: "a2a-x402", sourceHandle: "s-bottom", targetHandle: "t-left", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "③ pay + proof", channel: "x402", lane: "a2a", labelOffsetX: -10, labelOffsetY: -2, curvature: 0.22 } },
+  { id: "a2a-4", type: "glow", source: "a2a-x402", target: "a2a-msgtech", sourceHandle: "s-right", targetHandle: "t-bottom", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "④ unlock", channel: "x402", lane: "a2a", labelOffsetX: 16, labelOffsetY: 0, curvature: 0.2 } },
+  { id: "a2a-5", type: "glow", source: "a2a-msgtech", target: "a2a-agent001", sourceHandle: "s-bottom", targetHandle: "t-bottom", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.xmtp }, data: { label: "⑤ XMTP Result + receiptRef", channel: "xmtp", lane: "a2a", labelOffsetY: 32, curvature: 0.35 } },
+  { id: "api-1", type: "glow", source: "atapi-agent001", target: "atapi-api", sourceHandle: "s-right", targetHandle: "t-left", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.http }, data: { label: "① HTTP Request", channel: "http", lane: "atapi", labelOffsetY: -14, curvature: 0.2 } },
+  { id: "api-2", type: "glow", source: "atapi-api", target: "atapi-agent001", sourceHandle: "s-top", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "② x402 challenge", channel: "x402", lane: "atapi", labelOffsetY: -34, curvature: 0.33 } },
+  { id: "api-3", type: "glow", source: "atapi-agent001", target: "atapi-x402", sourceHandle: "s-bottom", targetHandle: "t-left", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "③ pay + proof", channel: "x402", lane: "atapi", labelOffsetX: -10, curvature: 0.22 } },
+  { id: "api-4", type: "glow", source: "atapi-x402", target: "atapi-api", sourceHandle: "s-right", targetHandle: "t-bottom", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.x402 }, data: { label: "④ unlock", channel: "x402", lane: "atapi", labelOffsetX: 18, labelOffsetY: 4, curvature: 0.2 } },
+  { id: "api-5", type: "glow", source: "atapi-api", target: "atapi-agent001", sourceHandle: "s-bottom", targetHandle: "t-bottom", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.atapi }, data: { label: "⑤ HTTP Result + receiptRef", channel: "atapi", lane: "atapi", labelOffsetY: 30, curvature: 0.33 } },
+  { id: "erc-a2a-agent", type: "glow", source: "erc8004", target: "a2a-agent001", sourceHandle: "s-left", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.erc8004 }, data: { label: "ERC8004 proof", channel: "erc8004", lane: "both", labelOffsetX: -16, labelOffsetY: -10, curvature: 0.26 } },
+  { id: "erc-a2a-msg", type: "glow", source: "erc8004", target: "a2a-msgtech", sourceHandle: "s-bottom", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.erc8004 }, data: { label: "ERC8004 proof", channel: "erc8004", lane: "both", labelOffsetX: 14, labelOffsetY: -2, curvature: 0.2 } },
+  { id: "erc-atapi-agent", type: "glow", source: "erc8004", target: "atapi-agent001", sourceHandle: "s-right", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.erc8004 }, data: { label: "ERC8004 proof", channel: "erc8004", lane: "both", labelOffsetX: -10, labelOffsetY: 10, curvature: 0.3 } },
+  { id: "erc-atapi-api", type: "glow", source: "erc8004", target: "atapi-api", sourceHandle: "s-right", targetHandle: "t-top", markerEnd: { type: MarkerType.ArrowClosed, color: COLORS.erc8004 }, data: { label: "ERC8004 proof", channel: "erc8004", lane: "both", labelOffsetX: 26, labelOffsetY: -8, curvature: 0.22 } },
 ];
 
 const ICONS: Record<NodeKind, typeof Bot> = { agent: Bot, protocol: ShieldCheck, settlement: Wallet, api: Server, decision: Cpu };
@@ -213,10 +216,14 @@ function NetworkNode({ data }: NodeProps<NetworkNodeData>) {
       className={cn("min-w-[210px] rounded-2xl border bg-black/55 px-4 py-3 text-white backdrop-blur-lg", dim && "opacity-40")}
       style={{ borderColor: BORDERS[data.kind] }}
     >
-      <Handle type="target" position={Position.Top} className="!opacity-0" />
-      <Handle type="target" position={Position.Left} className="!opacity-0" />
-      <Handle type="source" position={Position.Bottom} className="!opacity-0" />
-      <Handle type="source" position={Position.Right} className="!opacity-0" />
+      <Handle id="t-top" type="target" position={Position.Top} className="!opacity-0" />
+      <Handle id="t-left" type="target" position={Position.Left} className="!opacity-0" />
+      <Handle id="t-right" type="target" position={Position.Right} className="!opacity-0" />
+      <Handle id="t-bottom" type="target" position={Position.Bottom} className="!opacity-0" />
+      <Handle id="s-top" type="source" position={Position.Top} className="!opacity-0" />
+      <Handle id="s-left" type="source" position={Position.Left} className="!opacity-0" />
+      <Handle id="s-right" type="source" position={Position.Right} className="!opacity-0" />
+      <Handle id="s-bottom" type="source" position={Position.Bottom} className="!opacity-0" />
       <div className="mb-1 flex items-center gap-2">
         <span className="inline-flex size-7 items-center justify-center rounded-full border" style={{ borderColor: BORDERS[data.kind] }}>
           <Icon className="size-4" />
@@ -229,11 +236,20 @@ function NetworkNode({ data }: NodeProps<NetworkNodeData>) {
 }
 
 function GlowEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, markerEnd, data }: EdgeProps<NetworkEdgeData>) {
-  const [path, x, y] = getBezierPath({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition });
+  const [path, x, y] = getBezierPath({
+    sourceX,
+    sourceY,
+    targetX,
+    targetY,
+    sourcePosition,
+    targetPosition,
+    curvature: data?.curvature ?? 0.24,
+  });
   const color = COLORS[data?.channel ?? "http"];
   const active = Boolean(data?.active);
   const dim = Boolean(data?.dimmed);
   const dashed = data?.channel === "erc8004";
+  const showLabel = !dim || active;
   return (
     <>
       <BaseEdge
@@ -249,20 +265,22 @@ function GlowEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targ
           animation: active ? "edge-dash 1.2s linear infinite" : undefined,
         }}
       />
-      <EdgeLabelRenderer>
-        <div
-          className="nodrag nopan rounded-full border border-white/20 bg-black/70 px-2 py-1 text-[11px] text-white"
-          style={{
-            position: "absolute",
-            left: 0,
-            top: 0,
-            whiteSpace: "nowrap",
-            transform: `translate(-50%, -50%) translate(${x}px, ${y - 8}px)`,
-          }}
-        >
-          {data?.label}
-        </div>
-      </EdgeLabelRenderer>
+      {showLabel ? (
+        <EdgeLabelRenderer>
+          <div
+            className="nodrag nopan rounded-full border border-white/20 bg-black/70 px-2 py-1 text-[11px] text-white"
+            style={{
+              position: "absolute",
+              left: 0,
+              top: 0,
+              whiteSpace: "nowrap",
+              transform: `translate(-50%, -50%) translate(${x + (data?.labelOffsetX ?? 0)}px, ${y + (data?.labelOffsetY ?? -8)}px)`,
+            }}
+          >
+            {data?.label}
+          </div>
+        </EdgeLabelRenderer>
+      ) : null}
     </>
   );
 }
