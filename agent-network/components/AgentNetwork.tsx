@@ -1036,13 +1036,20 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
             setShouldOrder(approved);
             shouldOrderRef.current = approved;
             const basis = approved
-              ? `Order approved. Combined service score ${combined} >= ${EXECUTION_THRESHOLD}. Trigger x402(API) gate, then call API endpoint.`
+              ? `Order approved. Combined service score ${combined} >= ${EXECUTION_THRESHOLD}. Trigger x402(API) gate, then call Hyperliquid order API.`
               : `Order rejected. Combined service score ${combined} < ${EXECUTION_THRESHOLD}.`;
-            setDecision(basis);
+            let finalBasis = basis;
+            setDecision(finalBasis);
             let orderRef = "";
             let apiGateReceipt = "";
             let apiGateTxHash = "";
             let apiGatePaidAt = "";
+            let orderSimulated: boolean | null = null;
+            const orderSide = combined >= 0.72 ? "buy" : "sell";
+            const orderType = "market";
+            const orderSize = 0.001;
+            let orderSummary = "";
+            let orderError = "";
             if (approved) {
               setX402Open(true);
               let p = 0;
@@ -1060,42 +1067,85 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
               apiGateReceipt = `api_receipt_${randomHex(8).slice(2)}`;
               orderRef = "";
               try {
-                const apiRun = await fetchJSON<Record<string, unknown>>(
-                  `${baseUrl}/api/workflow/btc-price/run`,
-                  {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ pair: "BTCUSDT", source: "hyperliquid" }),
-                  },
-                  180_000
-                );
+                const runOrder = async (simulate: boolean): Promise<Record<string, unknown>> =>
+                  fetchJSON<Record<string, unknown>>(
+                    `${baseUrl}/api/agent001/hyperliquid/order`,
+                    {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        symbol: "BTCUSDT",
+                        side: orderSide,
+                        orderType,
+                        size: orderSize,
+                        tif: "Ioc",
+                        reduceOnly: false,
+                        simulate,
+                      }),
+                    },
+                    240_000
+                  );
+
+                let apiRun: Record<string, unknown>;
+                try {
+                  apiRun = await runOrder(false);
+                  orderSimulated = false;
+                } catch (realError) {
+                  const realReason = String((realError as Error)?.message || "real_order_failed").trim();
+                  apiRun = await runOrder(true);
+                  orderSimulated = true;
+                  orderError = `real_order_failed:${realReason}`;
+                }
+
                 orderRef = String(apiRun["requestId"] || "").trim();
                 apiGateTxHash = String(apiRun["txHash"] || "").trim();
-                const receipt =
-                  apiRun["receipt"] && typeof apiRun["receipt"] === "object" ? (apiRun["receipt"] as Record<string, unknown>) : {};
-                const timing =
-                  receipt["timing"] && typeof receipt["timing"] === "object"
-                    ? (receipt["timing"] as Record<string, unknown>)
-                    : {};
                 const payment =
-                  receipt["payment"] && typeof receipt["payment"] === "object"
-                    ? (receipt["payment"] as Record<string, unknown>)
+                  apiRun["payment"] && typeof apiRun["payment"] === "object" ? (apiRun["payment"] as Record<string, unknown>) : {};
+                const orderResult =
+                  apiRun["orderResult"] && typeof apiRun["orderResult"] === "object"
+                    ? (apiRun["orderResult"] as Record<string, unknown>)
+                    : {};
+                const workflow =
+                  apiRun["workflow"] && typeof apiRun["workflow"] === "object"
+                    ? (apiRun["workflow"] as Record<string, unknown>)
                     : {};
                 if (!apiGateTxHash) {
                   apiGateTxHash = String(payment["txHash"] || "").trim();
                 }
-                apiGatePaidAt = String(timing["paidAt"] || "").trim();
+                if (!orderRef) {
+                  orderRef = String(payment["requestId"] || "").trim();
+                }
+                orderSummary = String(
+                  (workflow["result"] && typeof workflow["result"] === "object"
+                    ? ((workflow["result"] as Record<string, unknown>)["summary"] || "")
+                    : "") || apiRun["reason"] || ""
+                ).trim();
+                const simulatedRaw =
+                  orderResult["simulated"] ?? (workflow["input"] && typeof workflow["input"] === "object"
+                    ? (workflow["input"] as Record<string, unknown>)["simulate"]
+                    : null);
+                if (typeof simulatedRaw === "boolean") {
+                  orderSimulated = simulatedRaw;
+                }
+
                 if (!apiGatePaidAt) {
                   const reqTime = await fetchRequestTiming(orderRef);
                   apiGatePaidAt = reqTime.paidAtIso;
                 }
+                if (!apiGatePaidAt) {
+                  apiGatePaidAt = String(payment["verifiedAt"] || workflow["updatedAt"] || "").trim();
+                }
                 if (orderRef && apiGateTxHash) {
                   apiGateReceipt = `${orderRef}:${apiGateTxHash}`;
                 }
+                finalBasis = `${basis} Hyperliquid ${orderType} ${orderSide} submitted${orderSimulated ? " (simulated fallback)." : " (real mode)."}`;
+                setDecision(finalBasis);
               } catch (error) {
                 const reason = String((error as Error)?.message || "api_gate_run_failed").trim();
                 apiGateReceipt = apiGateReceipt || `api_gate_failed_${Date.now()}`;
-                setDecision(`API gate run failed: ${reason}`);
+                orderError = reason;
+                finalBasis = `${basis} Hyperliquid API execution failed: ${reason}`;
+                setDecision(finalBasis);
               }
               if (apiGateReceipt) setReceiptRef(apiGateReceipt);
             }
@@ -1107,12 +1157,19 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
               receiptRef: apiGateReceipt || receiptRef || orderRef || undefined,
               apiGateTxHash: apiGateTxHash || undefined,
               apiGatePaidAt: apiGatePaidAt || undefined,
-              decisionBasis: basis,
+              decisionBasis: finalBasis,
               payload: {
                 messageScore,
                 technicalScore,
                 combined,
                 apiCalled: approved,
+                orderEndpoint: "/api/agent001/hyperliquid/order",
+                orderType,
+                orderSide,
+                orderSize,
+                orderSimulated,
+                orderSummary,
+                orderError,
                 apiGateReceipt,
                 apiGateTxHash,
                 apiGatePaidAt,
