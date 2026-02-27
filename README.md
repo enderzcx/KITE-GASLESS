@@ -340,7 +340,7 @@ Create a queued command:
 ```powershell
 curl.exe -sS -X POST "http://127.0.0.1:3001/api/network/commands" `
   -H "Content-Type: application/json" `
-  --data-binary "{\"type\":\"router-risk\",\"label\":\"demo-router-risk\",\"payload\":{\"autoStart\":false,\"waitMs\":1200}}"
+  --data-binary "{\"type\":\"router-info-technical\",\"label\":\"demo-router-info-technical\",\"payload\":{\"autoStart\":false,\"waitMs\":1200}}"
 ```
 
 Use `type="router-info-technical"` to orchestrate info + technical analysis in one command.

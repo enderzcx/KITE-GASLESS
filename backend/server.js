@@ -3625,6 +3625,54 @@ function extractNetworkCommandRefs(result = {}, fallback = {}) {
   };
 }
 
+function summarizeNetworkCommandExecution(result = {}) {
+  const tasks = result?.tasks && typeof result.tasks === 'object' && !Array.isArray(result.tasks) ? result.tasks : null;
+  if (!tasks) {
+    const resultReceived = Boolean(result?.resultReceived);
+    return {
+      resultReceived,
+      partialFailure: Boolean(result?.partialFailure),
+      successCount: resultReceived ? 1 : 0,
+      failureCount: resultReceived ? 0 : 1
+    };
+  }
+
+  const failStatuses = ['failed', 'error', 'rejected', 'timeout'];
+  const taskItems = Object.values(tasks).filter((item) => item && typeof item === 'object' && !Array.isArray(item));
+  if (taskItems.length === 0) {
+    const resultReceived = Boolean(result?.resultReceived);
+    return {
+      resultReceived,
+      partialFailure: Boolean(result?.partialFailure),
+      successCount: resultReceived ? 1 : 0,
+      failureCount: resultReceived ? 0 : 1
+    };
+  }
+
+  let successCount = 0;
+  let failureCount = 0;
+  let resultReceived = false;
+  for (const task of taskItems) {
+    const hasResult = Boolean(task?.resultReceived || task?.resultEvent || task?.taskResult);
+    resultReceived = resultReceived || hasResult;
+    const status = String(task?.status || task?.taskResult?.status || '').trim().toLowerCase();
+    const explicitSuccess = typeof task?.success === 'boolean' ? task.success : null;
+    const isFailure = explicitSuccess === false || Boolean(task?.failure) || failStatuses.includes(status) || !hasResult;
+    if (isFailure) {
+      failureCount += 1;
+      continue;
+    }
+    successCount += 1;
+  }
+
+  return {
+    resultReceived,
+    partialFailure: successCount > 0 && failureCount > 0,
+    successCount,
+    failureCount
+  };
+}
+
 async function invokeNetworkCommandTarget({ type = 'router-info-technical', payload = {} } = {}) {
   const commandType = normalizeNetworkCommandType(type);
   let endpoint = '/api/network/demo/router-info-technical/run';
@@ -3708,15 +3756,21 @@ async function executeNetworkCommand(command = {}, options = {}) {
       type: running.type,
       payload
     });
+    const executionSummary = summarizeNetworkCommandExecution(invokeResult.body);
     const refs = extractNetworkCommandRefs(invokeResult.body, running);
     const doneEvents = appendNetworkCommandEvent(
       running,
       'done',
       'complete',
-      `command done via ${invokeResult.endpoint}`,
+      executionSummary.partialFailure
+        ? `command partial done via ${invokeResult.endpoint}`
+        : `command done via ${invokeResult.endpoint}`,
       {
         statusCode: invokeResult.statusCode,
-        resultReceived: Boolean(invokeResult.body?.resultReceived)
+        resultReceived: executionSummary.resultReceived,
+        partialFailure: executionSummary.partialFailure,
+        successCount: executionSummary.successCount,
+        failureCount: executionSummary.failureCount
       }
     );
     const finishedAt = new Date().toISOString();
@@ -3739,7 +3793,10 @@ async function executeNetworkCommand(command = {}, options = {}) {
       execution: {
         endpoint: invokeResult.endpoint,
         statusCode: invokeResult.statusCode,
-        resultReceived: Boolean(invokeResult.body?.resultReceived)
+        resultReceived: executionSummary.resultReceived,
+        partialFailure: executionSummary.partialFailure,
+        successCount: executionSummary.successCount,
+        failureCount: executionSummary.failureCount
       }
     };
   } catch (error) {
@@ -12891,15 +12948,88 @@ app.post('/api/network/demo/router-info-technical/run', requireRole('agent'), as
     confidenceCandidates.length > 0
       ? Number((confidenceCandidates.reduce((sum, item) => sum + item, 0) / confidenceCandidates.length).toFixed(4))
       : null;
+  const failedStatuses = ['failed', 'error', 'rejected'];
+  const buildTaskDispatchState = ({ label = 'task', event = null, taskResult = null, retrySent = null, retryEvent = null }) => {
+    const resultReceived = Boolean(event);
+    if (!resultReceived) {
+      return {
+        status: 'timeout',
+        success: false,
+        resultReceived: false,
+        failure: {
+          code: 'task_result_timeout',
+          reason: `${label} no task-result within ${waitMsLimit}ms`,
+          retryAttempted: Boolean(retrySent),
+          retrySucceeded: Boolean(retryEvent)
+        }
+      };
+    }
+    if (!taskResult || typeof taskResult !== 'object' || Array.isArray(taskResult)) {
+      return {
+        status: 'failed',
+        success: false,
+        resultReceived: true,
+        failure: {
+          code: 'task_result_invalid',
+          reason: `${label} returned invalid task-result payload`,
+          retryAttempted: Boolean(retrySent),
+          retrySucceeded: Boolean(retryEvent)
+        }
+      };
+    }
+    const statusRaw = String(taskResult?.status || '').trim().toLowerCase();
+    if (failedStatuses.includes(statusRaw)) {
+      const reason =
+        String(taskResult?.error || taskResult?.result?.summary || '').trim() || `${label} returned failed task-result`;
+      return {
+        status: 'failed',
+        success: false,
+        resultReceived: true,
+        failure: {
+          code: 'task_result_failed',
+          reason,
+          retryAttempted: Boolean(retrySent),
+          retrySucceeded: Boolean(retryEvent)
+        }
+      };
+    }
+    return {
+      status: 'success',
+      success: true,
+      resultReceived: true,
+      failure: null
+    };
+  };
 
-  return res.json({
-    ok: true,
+  const infoState = buildTaskDispatchState({
+    label: 'info',
+    event: infoEvent,
+    taskResult: infoTaskResult,
+    retrySent: infoRetrySent,
+    retryEvent: infoRetryEvent
+  });
+  const technicalState = buildTaskDispatchState({
+    label: 'technical',
+    event: technicalEvent,
+    taskResult: technicalTaskResult,
+    retrySent: technicalRetrySent,
+    retryEvent: technicalRetryEvent
+  });
+  const successCount = Number(infoState.success) + Number(technicalState.success);
+  const failureCount = 2 - successCount;
+  const anyResultReceived = Boolean(infoState.resultReceived || technicalState.resultReceived);
+  const partialFailure = successCount > 0 && failureCount > 0;
+  const failReasons = [infoState.failure?.reason, technicalState.failure?.reason].filter(Boolean);
+
+  const responsePayload = {
     traceId: req.traceId || '',
     command: {
       type: 'router-info-technical',
       traceId,
       requestId
     },
+    resultReceived: anyResultReceived,
+    partialFailure,
     tasks: {
       info: {
         taskId: infoResolvedTaskId,
@@ -12907,7 +13037,10 @@ app.post('/api/network/demo/router-info-technical/run', requireRole('agent'), as
         toAgentId: infoEnvelope.toAgentId,
         capability: infoEnvelope.capability,
         sent: infoSent,
-        resultReceived: Boolean(infoEvent),
+        status: infoState.status,
+        success: infoState.success,
+        failure: infoState.failure,
+        resultReceived: infoState.resultReceived,
         retrySent: infoRetrySent,
         retryResultEvent: infoRetryEvent,
         resultEvent: infoEvent,
@@ -12919,7 +13052,10 @@ app.post('/api/network/demo/router-info-technical/run', requireRole('agent'), as
         toAgentId: technicalEnvelope.toAgentId,
         capability: technicalEnvelope.capability,
         sent: technicalSent,
-        resultReceived: Boolean(technicalEvent),
+        status: technicalState.status,
+        success: technicalState.success,
+        failure: technicalState.failure,
+        resultReceived: technicalState.resultReceived,
         retrySent: technicalRetrySent,
         retryResultEvent: technicalRetryEvent,
         resultEvent: technicalEvent,
@@ -12929,7 +13065,9 @@ app.post('/api/network/demo/router-info-technical/run', requireRole('agent'), as
     summary: {
       infoSummary: String(infoTaskResult?.result?.summary || '').trim(),
       technicalSummary: String(technicalTaskResult?.result?.summary || '').trim(),
-      confidenceBlend
+      confidenceBlend,
+      successCount,
+      failureCount
     },
     analysis: {
       info: infoAnalysis,
@@ -12945,6 +13083,20 @@ app.post('/api/network/demo/router-info-technical/run', requireRole('agent'), as
       ...retryWarnings
     ],
     runtime: getAllXmtpRuntimeStatuses()
+  };
+
+  if (successCount <= 0) {
+    return res.status(502).json({
+      ok: false,
+      ...responsePayload,
+      error: 'all_tasks_failed',
+      reason: failReasons.join(' | ') || `info/technical no task-result within ${waitMsLimit}ms`
+    });
+  }
+
+  return res.json({
+    ok: true,
+    ...responsePayload
   });
 });
 
