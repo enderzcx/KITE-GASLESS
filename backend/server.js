@@ -11,6 +11,75 @@ import { createHyperliquidAdapter } from './services/hyperliquidAdapter.js';
 import { createPersistenceStore } from './services/persistenceStore.js';
 import { createXmtpAgentRuntime } from './services/xmtpAgentRuntime.js';
 
+function resolveSharedTokenFromMarkdown(repoRoot = '') {
+  const normalizedRoot = String(repoRoot || '').trim();
+  if (!normalizedRoot) return '';
+  const explicitCandidates = [
+    path.resolve(normalizedRoot, '重要信息.md'),
+    path.resolve(normalizedRoot, 'IMPORTANT.md'),
+    path.resolve(normalizedRoot, 'IMPORTANT_INFO.md')
+  ];
+  const visited = new Set();
+  for (const targetPath of explicitCandidates) {
+    const normalizedPath = path.normalize(targetPath);
+    if (visited.has(normalizedPath)) continue;
+    visited.add(normalizedPath);
+    try {
+      if (!fs.existsSync(normalizedPath) || !fs.statSync(normalizedPath).isFile()) continue;
+      const lines = fs.readFileSync(normalizedPath, 'utf8').split(/\r?\n/);
+      const matchedLines = lines
+        .map((line) => String(line || '').trim())
+        .filter((line) => /^OPENNEWS_TOKEN\/TWITTER_TOKEN\s*=/.test(line));
+      const matched = matchedLines.length > 0 ? matchedLines[matchedLines.length - 1] : '';
+      if (!matched) continue;
+      const token = String(matched.split('=', 2)[1] || '').trim();
+      if (token) return token;
+    } catch {
+      // ignore token file read failure
+    }
+  }
+  try {
+    const mdFiles = fs
+      .readdirSync(normalizedRoot, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && /\.md$/i.test(entry.name))
+      .map((entry) => path.resolve(normalizedRoot, entry.name));
+    for (const mdPath of mdFiles) {
+      const normalizedPath = path.normalize(mdPath);
+      if (visited.has(normalizedPath)) continue;
+      visited.add(normalizedPath);
+      try {
+        const lines = fs.readFileSync(normalizedPath, 'utf8').split(/\r?\n/);
+        const matchedLines = lines
+          .map((line) => String(line || '').trim())
+          .filter((line) => /^OPENNEWS_TOKEN\/TWITTER_TOKEN\s*=/.test(line));
+        const matched = matchedLines.length > 0 ? matchedLines[matchedLines.length - 1] : '';
+        if (!matched) continue;
+        const token = String(matched.split('=', 2)[1] || '').trim();
+        if (token) return token;
+      } catch {
+        // ignore per-file read failures
+      }
+    }
+  } catch {
+    // ignore root read failures
+  }
+  return '';
+}
+
+function hydrateMessageProviderTokenFromLocalDocs() {
+  const hasOpenNewsToken = Boolean(String(process.env.OPENNEWS_TOKEN || '').trim());
+  const hasTwitterToken = Boolean(String(process.env.TWITTER_TOKEN || '').trim());
+  const hasSharedToken = Boolean(String(process.env.KITE_MESSAGE_PROVIDER_TOKEN || '').trim());
+  if (hasOpenNewsToken || hasTwitterToken || hasSharedToken) return;
+  const repoRoot = path.resolve(process.cwd(), '..');
+  const token = resolveSharedTokenFromMarkdown(repoRoot);
+  if (!token) return;
+  process.env.OPENNEWS_TOKEN = token;
+  process.env.TWITTER_TOKEN = token;
+}
+
+hydrateMessageProviderTokenFromLocalDocs();
+
 const app = express();
 const PORT = String(process.env.PORT || 3001).trim() || '3001';
 const dataPath = path.resolve('data', 'records.json');
@@ -125,7 +194,7 @@ const MESSAGE_PROVIDER_DISABLE_CLAWFEED = !/^(0|false|no|off)$/i.test(
   String(process.env.MESSAGE_PROVIDER_DISABLE_CLAWFEED || '1').trim()
 );
 const MESSAGE_PROVIDER_MARKET_DATA_FALLBACK = !/^(0|false|no|off)$/i.test(
-  String(process.env.MESSAGE_PROVIDER_MARKET_DATA_FALLBACK || '1').trim()
+  String(process.env.MESSAGE_PROVIDER_MARKET_DATA_FALLBACK || '0').trim()
 );
 const ERC8004_IDENTITY_REGISTRY = process.env.ERC8004_IDENTITY_REGISTRY || '';
 const ERC8004_AGENT_ID_RAW = process.env.ERC8004_AGENT_ID || '';

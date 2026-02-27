@@ -117,6 +117,9 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
   - `reader`
   - `price`
   - `executor`
+- Message-side provider runtime now prefers strict upstream mode for local `npm start`:
+  - when `OPENNEWS_TOKEN/TWITTER_TOKEN` are absent in env, backend auto-loads the latest `OPENNEWS_TOKEN/TWITTER_TOKEN=` line from repo markdown docs (`重要信息.md` preferred),
+  - default `MESSAGE_PROVIDER_MARKET_DATA_FALLBACK` is now `0` (disabled), so failures return provider errors instead of silently downgrading to market-data summary.
 - AGENT001 analysis path is now quote-first (`service-quote`) before strict x402 prebind for both:
   - `technical-analysis-feed`
   - `info-analysis-feed`
