@@ -408,13 +408,17 @@ function shouldRetrySessionPayReason(reason = '') {
     text.includes('timeout') ||
     text.includes('fetch failed') ||
     text.includes('econnreset') ||
+    text.includes('econnrefused') ||
     text.includes('socket hang up') ||
-    text.includes('network')
+    text.includes('network') ||
+    text.includes('tls') ||
+    text.includes('secure connection') ||
+    text.includes('client network socket disconnected')
   );
 }
 
 async function postSessionPayWithRetry(payload = {}, options = {}) {
-  const maxAttempts = Math.max(1, Math.min(Number(options.maxAttempts || 3), 5));
+  const maxAttempts = Math.max(1, Math.min(Number(options.maxAttempts || 5), 5));
   const timeoutMs = Math.max(30_000, Math.min(Number(options.timeoutMs || 210_000), 300_000));
   const internalApiKey = getInternalAgentApiKey();
   const headers = { 'Content-Type': 'application/json' };
@@ -444,7 +448,7 @@ async function postSessionPayWithRetry(payload = {}, options = {}) {
       err.retryable = shouldRetrySessionPayReason(reason);
       lastError = err;
       if (!err.retryable || i >= maxAttempts - 1) throw err;
-      await waitMs(700 * attempt);
+      await waitMs(1200 * attempt);
     } catch (error) {
       const reason = String(error?.message || '').trim();
       const retryable = shouldRetrySessionPayReason(reason) || error?.name === 'AbortError';
@@ -453,7 +457,7 @@ async function postSessionPayWithRetry(payload = {}, options = {}) {
       wrapped.retryable = retryable;
       lastError = wrapped;
       if (!retryable || i >= maxAttempts - 1) throw wrapped;
-      await waitMs(700 * attempt);
+      await waitMs(1200 * attempt);
     } finally {
       clearTimeout(timer);
     }
@@ -8096,7 +8100,7 @@ app.post('/api/workflow/stop-order/run', requireRole('agent'), async (req, res) 
             hasQuantity ? ` qty=${quantity}` : ''
           }`
         },
-        { maxAttempts: 3, timeoutMs: 210_000 }
+        { maxAttempts: 5, timeoutMs: 210_000 }
       );
       payBody = pay.body || {};
     } catch (error) {
@@ -8335,7 +8339,7 @@ app.post('/api/workflow/btc-price/run', requireRole('agent'), async (req, res) =
           action: 'btc-price-feed',
         query: `ATAPI BTC price ${pair} source=${source}`
         },
-        { maxAttempts: 3, timeoutMs: 210_000 }
+        { maxAttempts: 5, timeoutMs: 210_000 }
       );
       payBody = pay.body || {};
     } catch (error) {
@@ -8572,7 +8576,7 @@ app.post('/api/workflow/risk-score/run', requireRole('agent'), async (req, res) 
           action: workflowAction,
           query: `A2A risk-score ${normalizedTask.symbol} horizon=${normalizedTask.horizonMin} source=${normalizedTask.source}`
         },
-        { maxAttempts: 3, timeoutMs: 210_000 }
+        { maxAttempts: 5, timeoutMs: 210_000 }
       );
       payBody = pay.body || {};
     } catch (error) {
@@ -8790,7 +8794,7 @@ app.post('/api/workflow/x-reader/run', requireRole('agent'), async (req, res) =>
           action: workflowAction,
           query: `ATAPI x-reader ${normalizedTask.url}`
         },
-        { maxAttempts: 3, timeoutMs: 210_000 }
+        { maxAttempts: 5, timeoutMs: 210_000 }
       );
       payBody = pay.body || {};
     } catch (error) {
@@ -9026,7 +9030,7 @@ app.post('/api/workflow/hyperliquid-order/run', requireRole('agent'), async (req
         action: 'hyperliquid-order-testnet',
         query: `ATAPI hyperliquid order ${symbol} ${side} ${orderType} size=${size}`
       },
-      { maxAttempts: 3, timeoutMs: 210_000 }
+      { maxAttempts: 5, timeoutMs: 210_000 }
     );
     const payBody = pay.body || {};
     const txHash = String(payBody?.payment?.txHash || '').trim();
@@ -9217,7 +9221,7 @@ async function runAgent001PrebindWorkflowWithRetry({
   label = 'agent001 prebind'
 } = {}) {
   const url = `http://127.0.0.1:${PORT}${String(endpoint || '').trim()}`;
-  const maxAttempts = Math.max(1, Math.min(Number(process.env.AGENT001_PREBIND_RETRIES || 3), 5));
+  const maxAttempts = Math.max(1, Math.min(Number(process.env.AGENT001_PREBIND_RETRIES || 5), 5));
   let lastError = null;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
@@ -9239,7 +9243,7 @@ async function runAgent001PrebindWorkflowWithRetry({
       lastError.attempt = attempt;
       lastError.retryable = retryable;
       if (!retryable || attempt >= maxAttempts) break;
-      await waitMs(700 * attempt);
+      await waitMs(1200 * attempt);
     }
   }
   throw lastError || new Error('agent001_prebind_failed');
