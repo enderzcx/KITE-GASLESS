@@ -7,7 +7,6 @@ import crypto from 'crypto';
 import { ethers } from 'ethers';
 import { GokiteAASDK } from '../frontend/src/gokite-aa-sdk.js';
 import { createOpenClawAdapter } from './services/openclawAdapter.js';
-import { createOpenAliceAdapter } from './services/openAliceAdapter.js';
 import { createHyperliquidAdapter } from './services/hyperliquidAdapter.js';
 import { createPersistenceStore } from './services/persistenceStore.js';
 import { createXmtpAgentRuntime } from './services/xmtpAgentRuntime.js';
@@ -84,29 +83,6 @@ const OPENCLAW_TIMEOUT_MS = Number(process.env.OPENCLAW_TIMEOUT_MS || 12_000);
 const OPENCLAW_CHAT_PROTOCOL = String(process.env.OPENCLAW_CHAT_PROTOCOL || 'auto').trim().toLowerCase();
 const OPENCLAW_MODEL = String(process.env.OPENCLAW_MODEL || '').trim();
 const OPENCLAW_SYSTEM_PROMPT = String(process.env.OPENCLAW_SYSTEM_PROMPT || '').trim();
-const OPENALICE_BASE_URL = String(process.env.OPENALICE_BASE_URL || '').trim();
-const OPENALICE_API_KEY = String(process.env.OPENALICE_API_KEY || '').trim();
-const OPENALICE_INFO_BASE_URL = String(
-  process.env.OPENALICE_INFO_BASE_URL || process.env.OPENALICE_MESSAGE_BASE_URL || OPENALICE_BASE_URL
-).trim();
-const OPENALICE_INFO_API_KEY = String(
-  process.env.OPENALICE_INFO_API_KEY || process.env.OPENALICE_MESSAGE_API_KEY || OPENALICE_API_KEY
-).trim();
-const OPENALICE_TECHNICAL_BASE_URL = String(
-  process.env.OPENALICE_TECHNICAL_BASE_URL || process.env.OPENALICE_TECH_BASE_URL || OPENALICE_BASE_URL
-).trim();
-const OPENALICE_TECHNICAL_API_KEY = String(
-  process.env.OPENALICE_TECHNICAL_API_KEY || process.env.OPENALICE_TECH_API_KEY || OPENALICE_API_KEY
-).trim();
-const OPENALICE_TIMEOUT_MS = Math.max(
-  30_000,
-  Math.min(Number(process.env.OPENALICE_TIMEOUT_MS || 30_000), 120_000)
-);
-const OPENALICE_RETRY = Number(process.env.OPENALICE_RETRY || 1);
-const OPENALICE_ENABLED = /^(1|true|yes|on)$/i.test(String(process.env.OPENALICE_ENABLED || '0').trim());
-const OPENALICE_STRICT_REQUIRED =
-  OPENALICE_ENABLED &&
-  !/^(0|false|no|off)$/i.test(String(process.env.OPENALICE_STRICT_REQUIRED || '0').trim());
 const HYPERLIQUID_TESTNET_ENABLED = /^(1|true|yes|on)$/i.test(
   String(process.env.HYPERLIQUID_TESTNET_ENABLED || '0').trim()
 );
@@ -148,7 +124,6 @@ const AUTO_BTC_PRICE_PAIR = String(process.env.AUTO_BTC_PRICE_PAIR || 'BTCUSDT')
 const AUTO_BTC_PRICE_SOURCE = String(process.env.AUTO_BTC_PRICE_SOURCE || 'hyperliquid').trim().toLowerCase();
 const AUTO_BTC_PRICE_PAYER = String(process.env.AUTO_BTC_PRICE_PAYER || '').trim();
 const X_READER_MAX_CHARS_DEFAULT = Math.max(200, Math.min(8000, Number(process.env.X_READER_MAX_CHARS_DEFAULT || 1200)));
-const X_READER_TIMEOUT_MS = Math.max(3000, Math.min(20000, Number(process.env.X_READER_TIMEOUT_MS || 12000)));
 const XMTP_ENABLED = /^(1|true|yes|on)$/i.test(String(process.env.XMTP_ENABLED || '').trim());
 const XMTP_AUTO_ACK = /^(1|true|yes|on)$/i.test(String(process.env.XMTP_AUTO_ACK || '').trim());
 const XMTP_EVENT_RETENTION = Math.max(50, Math.min(Number(process.env.XMTP_EVENT_RETENTION || 600), 5000));
@@ -224,78 +199,6 @@ const openclawAdapter = createOpenClawAdapter({
   model: OPENCLAW_MODEL,
   systemPrompt: OPENCLAW_SYSTEM_PROMPT
 });
-
-function createDisabledOpenAliceAdapter() {
-  const disabledReason = 'openalice_disabled_by_config';
-  return {
-    info() {
-      return {
-        mode: 'disabled',
-        hasRemote: false,
-        reason: disabledReason
-      };
-    },
-    async health() {
-      return {
-        ok: false,
-        connected: false,
-        reason: disabledReason,
-        checkedAt: new Date().toISOString(),
-        roles: {
-          message: {
-            role: 'message',
-            ok: false,
-            connected: false,
-            reason: disabledReason,
-            checkedAt: new Date().toISOString()
-          },
-          technical: {
-            role: 'technical',
-            ok: false,
-            connected: false,
-            reason: disabledReason,
-            checkedAt: new Date().toISOString()
-          }
-        }
-      };
-    },
-    async analyzeInfo() {
-      return {
-        ok: false,
-        error: disabledReason,
-        reason: 'OpenAlice disabled'
-      };
-    },
-    async analyzeTechnical() {
-      return {
-        ok: false,
-        error: disabledReason,
-        reason: 'OpenAlice disabled'
-      };
-    },
-    async chatMessage() {
-      return {
-        ok: false,
-        error: disabledReason,
-        reason: 'OpenAlice disabled',
-        text: ''
-      };
-    }
-  };
-}
-
-const openAliceAdapter = OPENALICE_ENABLED
-  ? createOpenAliceAdapter({
-      baseUrl: OPENALICE_BASE_URL,
-      apiKey: OPENALICE_API_KEY,
-      infoBaseUrl: OPENALICE_INFO_BASE_URL,
-      infoApiKey: OPENALICE_INFO_API_KEY,
-      technicalBaseUrl: OPENALICE_TECHNICAL_BASE_URL,
-      technicalApiKey: OPENALICE_TECHNICAL_API_KEY,
-      timeoutMs: OPENALICE_TIMEOUT_MS,
-      retry: OPENALICE_RETRY
-    })
-  : createDisabledOpenAliceAdapter();
 
 const hyperliquidAdapter = createHyperliquidAdapter({
   enabled: HYPERLIQUID_TESTNET_ENABLED,
@@ -4420,7 +4323,6 @@ function buildAgent001DispatchSummary(results = {}) {
 }
 
 function shouldUseAgent001LocalFallback(result = null) {
-  if (OPENALICE_STRICT_REQUIRED) return false;
   if (!result || result.ok) return false;
   return isRecoverableXmtpFailure(result?.error, result?.reason);
 }
@@ -13663,15 +13565,12 @@ app.get('/api/market/btc/price', requireRole('viewer'), async (req, res) => {
 });
 
 app.get('/api/openalice/health', requireRole('viewer'), async (req, res) => {
-  const info = openAliceAdapter.info();
-  const health = await openAliceAdapter.health();
-  return res.status(health.ok ? 200 : 503).json({
-    ok: health.ok,
+  const reason = 'openalice_removed_from_runtime';
+  return res.status(410).json({
+    ok: false,
     traceId: req.traceId || '',
     provider: ANALYSIS_PROVIDER,
-    strictRequired: OPENALICE_STRICT_REQUIRED,
-    adapter: info,
-    health
+    reason
   });
 });
 

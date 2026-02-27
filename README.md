@@ -280,12 +280,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-xmtp-workers-capability-d
   -ViewerApiKey "<viewer_key>"
 ```
 
-### OpenAlice Info/Technical Verify (Local)
+### Market-Data Info/Technical Verify (Local)
 
 ```powershell
-curl.exe -sS "http://127.0.0.1:3001/api/openalice/health" `
-  -H "x-api-key: <viewer_key>"
-
 curl.exe -sS -X POST "http://127.0.0.1:3001/api/analysis/info/run" `
   -H "x-api-key: <agent_key>" `
   -H "Content-Type: application/json" `
@@ -483,25 +480,9 @@ OPENCLAW_MODEL=<your_model_id>
 # e.g. kimi-coding/k2p5 | qwen2.5-coder | deepseek-chat
 ```
 
-OpenAlice sidecar (required for full info + technical quality):
-
-```env
-ANALYSIS_PROVIDER=openalice
-OPENALICE_BASE_URL=
-OPENALICE_API_KEY=
-# Recommended split deployment:
-# - message/info agent runtime
-OPENALICE_INFO_BASE_URL=http://127.0.0.1:3212
-OPENALICE_INFO_API_KEY=
-# - technical agent runtime
-OPENALICE_TECHNICAL_BASE_URL=http://127.0.0.1:3312
-OPENALICE_TECHNICAL_API_KEY=
-OPENALICE_TIMEOUT_MS=30000
-OPENALICE_RETRY=1
-# Optional outbound proxy if direct access to OpenAI/Google is blocked:
-OPENALICE_PROXY_URL=http://127.0.0.1:7890
-OPENALICE_NO_PROXY=127.0.0.1,localhost
-```
+Analysis provider:
+- The backend now uses built-in `market-data` analysis (Binance/CoinGecko/Fear&Greed + local indicators).
+- OpenAlice/OpenBB sidecar is removed from runtime.
 
 Hyperliquid testnet trading (optional, for live order/cancel API):
 
@@ -517,52 +498,12 @@ HYPERLIQUID_TESTNET_TIMEOUT_MS=12000
 HYPERLIQUID_TESTNET_MARKET_SLIPPAGE_BPS=30
 ```
 
-Local dual-runtime quickstart (Windows PowerShell):
-
-```powershell
-# one-time: prepare two OpenAlice workdirs
-# G:\KKK\services\openalice-message
-# G:\KKK\services\openalice-technical
-
-# start both runtimes
-cd "G:\KKK\KITE GASLESS\backend"
-powershell -ExecutionPolicy Bypass -File .\scripts\start-openalice-dual.ps1
-
-# verify both runtimes + backend adapter
-powershell -ExecutionPolicy Bypass -File .\scripts\verify-openalice-dual.ps1
-
-# stop both runtimes
-powershell -ExecutionPolicy Bypass -File .\scripts\stop-openalice-dual.ps1
-```
-
 Notes:
 - `OPENCLAW_CHAT_PROTOCOL` and `OPENCLAW_CHAT_PATH` must match your runtime API shape.
 - `OPENCLAW_MODEL` should be your local/remote model id (do not hardcode one contributor's model in shared deployments).
 - If `OPENCLAW_HEALTH_PATH=/v1/models` returns HTML instead of JSON, you likely hit a control UI route instead of an OpenAI-compatible API route.
-- Info analysis no longer uses Jina x-reader path; backend routes info tasks to OpenAlice adapter.
-- If OpenAlice only exposes `/api/chat`, backend adapter will auto-switch to chat mode and parse strict JSON contracts.
-- Technical analysis with tool-calling LLM often needs >12s; backend enforces a `30s` minimum timeout for OpenAlice requests.
-- OpenBB is optional. Without OpenBB, OpenAlice can still answer, but quantitative indicator depth/market coverage is usually weaker.
+- Info/technical analysis no longer depends on OpenAlice/OpenBB.
 - For XMTP local backend, you can additionally set `XMTP_API_URL/XMTP_HISTORY_SYNC_URL/XMTP_GATEWAY_HOST`.
-
-OpenBB local sidecar (Docker, Windows PowerShell):
-
-```powershell
-cd "G:\KKK\KITE GASLESS\backend"
-
-# start/build local OpenBB container on 6900
-powershell -ExecutionPolicy Bypass -File .\scripts\start-openbb-local.ps1
-
-# verify OpenBB + BTCUSD historical endpoint
-powershell -ExecutionPolicy Bypass -File .\scripts\verify-openbb-local.ps1
-
-# stop container
-powershell -ExecutionPolicy Bypass -File .\scripts\stop-openbb-local.ps1
-```
-
-Notes for OpenBB:
-- `start-openbb-local.ps1` reads `OPENALICE_PROXY_URL` and `OPENALICE_NO_PROXY` from `backend/.env`.
-- If proxy is `127.0.0.1`/`localhost`, the script auto-converts it to `host.docker.internal` for container networking.
 
 ## Tencent Lighthouse Web Deployment (Low Cost)
 
