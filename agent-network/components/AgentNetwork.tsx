@@ -146,6 +146,7 @@ const X402_PHASES: PaymentPhase[] = ["challenge", "pay+proof", "verify", "unlock
 const QUOTE_CAP = 0.0003;
 const EXECUTION_THRESHOLD = 0.62;
 const TX_STALE_MS = 60 * 60 * 1000;
+const FORCE_ORDER_DEMO = true;
 
 export const FLOW_STEPS: FlowStep[] = [
   { id: "erc8004_verify", index: 1, title: "Step 1 · ERC8004 Verification", description: "Agent001 verifies collaborator agents on-chain.", durationMs: 1300 },
@@ -473,7 +474,7 @@ const edgeTypes = { glow: GlowEdge };
 
 export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: AgentNetworkProps) {
   const mode: FlowMode = "unified";
-  const [demoView, setDemoView] = useState<DemoView>("general");
+  const [demoView, setDemoView] = useState<DemoView>("detailed");
   const [nodes, setNodes, onNodesChange] = useNodesState(NETWORK_NODES);
   const [edges, setEdges, onEdgesChange] = useEdgesState(NETWORK_EDGES);
   const [playback, setPlayback] = useState<PlaybackState>("idle");
@@ -894,8 +895,8 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
             if (demoView === "general") {
               serviceTxHashA = live?.info.txHash || live?.technical.txHash || "";
               servicePaidAtA = live?.info.paidAtIso || live?.technical.paidAtIso || "";
-              serviceTxHashB = "";
-              servicePaidAtB = "";
+              serviceTxHashB = live?.technical.txHash || live?.info.txHash || "";
+              servicePaidAtB = live?.technical.paidAtIso || live?.info.paidAtIso || "";
             }
             if (live?.info.requestId && serviceTxHashA) {
               receipt = `${live.info.requestId}:${serviceTxHashA}`;
@@ -928,20 +929,20 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
               receiptRef: receipt,
               messageServiceTxHash: demoView === "general" ? serviceTxHashA : serviceTxHashA,
               messageServicePaidAt: servicePaidAtA || undefined,
-              technicalServiceTxHash: demoView === "general" ? undefined : serviceTxHashB,
-              technicalServicePaidAt: demoView === "general" ? undefined : servicePaidAtB || undefined,
+              technicalServiceTxHash: serviceTxHashB || undefined,
+              technicalServicePaidAt: servicePaidAtB || undefined,
               decisionBasis:
                 staleNotes.length > 0
                   ? `x402 payment evidence loaded. ${staleNotes.join("; ")}.`
-                  : "x402 payment evidence loaded from latest on-chain records.",
+                  : "x402 payment evidence loaded from this live run.",
               payload: {
                 phases: X402_PHASES,
                 receipt,
                 executed: true,
                 messageServiceTxHash: serviceTxHashA,
                 messageServicePaidAt: servicePaidAtA || null,
-                technicalServiceTxHash: demoView === "general" ? null : serviceTxHashB,
-                technicalServicePaidAt: demoView === "general" ? null : servicePaidAtB || null,
+                technicalServiceTxHash: serviceTxHashB || null,
+                technicalServicePaidAt: servicePaidAtB || null,
                 stale: { message: staleA, technical: staleB },
               },
             });
@@ -1049,14 +1050,17 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
             });
           } else {
             const combined = demoView === "general" ? Number(messageScore.toFixed(3)) : Number((messageScore * 0.5 + technicalScore * 0.5).toFixed(3));
-            const approved =
+            const ruleApproved =
               demoView === "general"
                 ? combined >= EXECUTION_THRESHOLD && messageScore >= 0.45
                 : combined >= EXECUTION_THRESHOLD && messageScore >= 0.45 && technicalScore >= 0.45;
+            const approved = FORCE_ORDER_DEMO ? true : ruleApproved;
             setShouldOrder(approved);
             shouldOrderRef.current = approved;
             const basis = approved
-              ? `Order approved. Combined service score ${combined} >= ${EXECUTION_THRESHOLD}. Trigger x402(API) gate, then call Hyperliquid order API.`
+              ? FORCE_ORDER_DEMO
+                ? `Order approved by demo override. ruleApproved=${ruleApproved}. Trigger x402(API) gate, then call Hyperliquid order API.`
+                : `Order approved. Combined service score ${combined} >= ${EXECUTION_THRESHOLD}. Trigger x402(API) gate, then call Hyperliquid order API.`
               : `Order rejected. Combined service score ${combined} < ${EXECUTION_THRESHOLD}.`;
             let finalBasis = basis;
             setDecision(finalBasis);
@@ -1159,6 +1163,8 @@ export default function AgentNetwork({ backendBaseUrl, auditMaxEntries = 200 }: 
                 technicalScore,
                 combined,
                 apiCalled: approved,
+                forceOrderDemo: FORCE_ORDER_DEMO,
+                ruleApproved,
                 orderEndpoint: "/api/agent001/hyperliquid/order",
                 orderType,
                 orderSide,

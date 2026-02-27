@@ -9753,6 +9753,13 @@ app.get('/api/evidence/export', requireRole('viewer'), (req, res) => {
     }
   };
 
+  const shouldDownload = /^(1|true|yes|download)$/i.test(String(req.query.download || '').trim());
+  if (shouldDownload) {
+    const fileName = `kiteclaw_evidence_${traceId}.json`;
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename=\"${fileName}\"`);
+  }
+
   return res.json({ ok: true, traceId, evidence: exportPayload });
 });
 
