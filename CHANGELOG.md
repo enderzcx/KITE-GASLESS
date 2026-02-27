@@ -118,6 +118,7 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 ### Changed
 - Further slimmed backend server composition:
   - extracted AGENT001 provider/quote/payment orchestration into `backend/services/agent001Orchestrator.js`
+  - extracted x402 receipt/KPI/network-graph helpers into `backend/services/x402ReceiptService.js`
   - removed legacy auto BTC per-minute polling module from backend startup and APIs (`/api/automation/btc-price/*`).
 - Continued backend slimming:
   - extracted AGENT001 execution/delivery helpers into `backend/services/agent001ExecutionService.js`
