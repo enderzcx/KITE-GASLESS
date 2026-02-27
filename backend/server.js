@@ -6190,15 +6190,14 @@ async function maybeSendAgent001TradePlanDm({
   const infoTxHash = String(infoPayment?.txHash || '').trim();
   const technicalRequestId = String(technicalPayment?.requestId || '').trim();
   const technicalTxHash = String(technicalPayment?.txHash || '').trim();
-  const lines = [
-    'AGENT001 交易计划',
-    planText,
-    '',
-    `消息面 x402: requestId=${infoRequestId || '-'} txHash=${infoTxHash || '-'}`,
-    `技术面 x402: requestId=${technicalRequestId || '-'} txHash=${technicalTxHash || '-'}`
-  ];
-  if (infoRequestId) lines.push(`消息面 pull: /api/agent001/results/${infoRequestId}`);
-  if (technicalRequestId) lines.push(`技术面 pull: /api/agent001/results/${technicalRequestId}`);
+  const lines = ['AGENT001 交易计划', planText];
+  if (infoRequestId || infoTxHash || technicalRequestId || technicalTxHash) {
+    lines.push('');
+    lines.push(`消息面 x402: requestId=${infoRequestId || '-'} txHash=${infoTxHash || '-'}`);
+    lines.push(`技术面 x402: requestId=${technicalRequestId || '-'} txHash=${technicalTxHash || '-'}`);
+    if (infoRequestId) lines.push(`消息面 pull: /api/agent001/results/${infoRequestId}`);
+    if (technicalRequestId) lines.push(`技术面 pull: /api/agent001/results/${technicalRequestId}`);
+  }
   const result = await xmtpRuntime.sendDm({
     fromAgentId: 'router-agent',
     toAddress: senderAddress,
@@ -6272,6 +6271,146 @@ async function handleRouterRuntimeTextMessage({ text = '', context = null } = {}
     const payer = normalizeAddress(runtime?.aaWallet || '');
     if (!payer) {
       return '交易执行前置条件不足：未配置可用 AA payer。请先在 Agent Settings 完成 Session/AA 同步。';
+    }
+    const orderDirectives = parseAgent001OrderDirectives(rawText);
+    const directOrderMode = orderDirectives.explicitOrder === true;
+    if (directOrderMode) {
+      const baseDirectPlan = {
+        text: ['直连下单模式', '说明: 检测到明确下单口令，已跳过消息面/技术面分析。'].join('\n'),
+        symbol: String(intent?.symbol || extractTradingSymbolFromText(rawText) || 'BTCUSDT').trim().toUpperCase() || 'BTCUSDT',
+        canPlaceOrder: false
+      };
+      const directPlan = coerceAgent001ForcedTradePlan({
+        rawText,
+        tradePlan: baseDirectPlan,
+        technical: null,
+        info: null,
+        directives: orderDirectives
+      });
+      const lines = [String(directPlan?.text || '').trim() || '直连下单模式初始化失败。'];
+      if (!directPlan?.canPlaceOrder) {
+        lines.push(`执行阻断: ${String(directPlan?.forceOrderReason || '下单参数不足').trim()}`);
+        lines.push('执行结果: 直连下单失败，请补充完整参数（side/orderType/size/price）。');
+        const reply = lines.join('\n');
+        await maybeSendAgent001TradePlanDm({
+          context,
+          tradePlanText: reply,
+          infoPayment: null,
+          technicalPayment: null
+        });
+        return reply;
+      }
+
+      try {
+        const orderResult = await runAgent001HyperliquidOrderWorkflow({
+          plan: directPlan,
+          payer,
+          sourceAgentId: 'router-agent',
+          targetAgentId: 'executor-agent',
+          traceId: createTraceId('agent001_trade_order_direct')
+        });
+        const payment = orderResult?.payment || null;
+        const receiptRef = orderResult?.receiptRef || null;
+        if (!hasStrictX402Evidence(payment)) {
+          return buildAgent001FailureReply({
+            stage: 'trade_order_direct',
+            capability: 'hyperliquid-order-testnet',
+            reason: 'order stage missing strict x402 evidence',
+            requestId: String(payment?.requestId || orderResult?.requestId || '').trim(),
+            txHash: String(payment?.txHash || orderResult?.txHash || '').trim()
+          });
+        }
+        lines.push('');
+        lines.push('下单执行: 已触发 Hyperliquid 测试网下单。');
+        lines.push(`order state: ${String(orderResult?.state || orderResult?.workflow?.state || '').trim() || '-'}`);
+        lines.push(`x402 requestId: ${String(payment?.requestId || orderResult?.requestId || '').trim() || '-'}`);
+        lines.push(`x402 txHash: ${String(payment?.txHash || orderResult?.txHash || '').trim() || '-'}`);
+        lines.push(`receipt: ${String(receiptRef?.endpoint || '').trim() || '-'}`);
+
+        const takePrice = Number(directPlan?.takePrice ?? NaN);
+        const stopPrice = Number(directPlan?.stopPrice ?? NaN);
+        const stopOrderEnabled =
+          Number.isFinite(takePrice) &&
+          takePrice > 0 &&
+          Number.isFinite(stopPrice) &&
+          stopPrice > 0 &&
+          (directPlan?.stopOrderEnabled === true || orderDirectives.wantsStopOrder === true);
+        if (stopOrderEnabled) {
+          try {
+            const stopOrder = await runAgent001StopOrderWorkflow({
+              symbol: directPlan.symbol || 'BTCUSDT',
+              takeProfit: takePrice,
+              stopLoss: stopPrice,
+              quantity: Number(directPlan?.size ?? NaN),
+              payer,
+              sourceAgentId: 'router-agent',
+              targetAgentId: 'risk-agent',
+              traceId: createTraceId('agent001_trade_stop_direct')
+            });
+            const stopRequestId = String(stopOrder?.requestId || '').trim();
+            const stopTxHash = String(stopOrder?.txHash || '').trim();
+            if (stopRequestId && stopTxHash) {
+              upsertAgent001ResultRecord({
+                requestId: stopRequestId,
+                capability: 'reactive-stop-orders',
+                stage: 'dispatch',
+                status: 'done',
+                toAgentId: 'risk-agent',
+                payer,
+                input: {
+                  symbol: directPlan.symbol || 'BTCUSDT',
+                  takeProfit: takePrice,
+                  stopLoss: stopPrice,
+                  quantity: Number(directPlan?.size ?? NaN)
+                },
+                payment: {
+                  requestId: stopRequestId,
+                  txHash: stopTxHash
+                },
+                receiptRef: {
+                  requestId: stopRequestId,
+                  txHash: stopTxHash,
+                  endpoint: `/api/receipt/${stopRequestId}`
+                },
+                result: {
+                  summary: `Reactive TP/SL configured: ${directPlan.symbol || 'BTCUSDT'} TP ${takePrice} SL ${stopPrice}`,
+                  workflowTraceId: String(stopOrder?.traceId || '').trim(),
+                  workflowState: String(stopOrder?.state || stopOrder?.workflow?.state || '').trim()
+                },
+                source: 'agent001_trade_direct'
+              });
+            }
+            lines.push('');
+            lines.push('止盈止损: 已触发 TP/SL 工作流。');
+            lines.push(`tp/sl x402: requestId=${stopRequestId || '-'} txHash=${stopTxHash || '-'}`);
+            if (stopRequestId) {
+              lines.push(`tp/sl pull: /api/agent001/results/${stopRequestId}`);
+            }
+          } catch (stopError) {
+            lines.push('');
+            lines.push(`止盈止损设置失败: ${String(stopError?.message || 'unknown').trim()}`);
+          }
+        }
+        const reply = lines.join('\n');
+        await maybeSendAgent001TradePlanDm({
+          context,
+          tradePlanText: reply,
+          infoPayment: null,
+          technicalPayment: null
+        });
+        return reply;
+      } catch (error) {
+        lines.push('');
+        lines.push(`下单执行失败: ${String(error?.message || 'unknown').trim()}`);
+        const reply = lines.join('\n');
+        await maybeSendAgent001TradePlanDm({
+          context,
+          tradePlanText: reply,
+          infoPayment: null,
+          technicalPayment: null
+        });
+        return reply;
+      }
     }
 
     const [technicalProvider, infoProvider] = await Promise.all([
@@ -6601,7 +6740,6 @@ async function handleRouterRuntimeTextMessage({ text = '', context = null } = {}
       info,
       returnObject: true
     });
-    const orderDirectives = parseAgent001OrderDirectives(rawText);
     const forceOrderRequested = isAgent001ForceOrderRequested(rawText) || orderDirectives.forceExecute;
     const explicitOrderRequested = orderDirectives.explicitOrder;
     const shouldCoercePlan = forceOrderRequested || explicitOrderRequested;
