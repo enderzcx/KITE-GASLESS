@@ -158,6 +158,12 @@ const AA_V2_VERSION_TAG = String(
 const KITE_REQUIRE_AA_V2 = !/^(0|false|no|off)$/i.test(
   String(process.env.KITE_REQUIRE_AA_V2 || '1').trim()
 );
+const KITE_ALLOW_EOA_RELAY_FALLBACK = /^(1|true|yes|on)$/i.test(
+  String(process.env.KITE_ALLOW_EOA_RELAY_FALLBACK || '0').trim()
+);
+const KITE_ALLOW_BACKEND_USEROP_SIGN = /^(1|true|yes|on)$/i.test(
+  String(process.env.KITE_ALLOW_BACKEND_USEROP_SIGN || '0').trim()
+);
 const PROOF_RPC_TIMEOUT_MS = Number(process.env.KITE_PROOF_RPC_TIMEOUT_MS || 10_000);
 const PROOF_RPC_RETRIES = Number(process.env.KITE_PROOF_RPC_RETRIES || 3);
 const OPENCLAW_BASE_URL = String(process.env.OPENCLAW_BASE_URL || '').trim();
@@ -11459,6 +11465,13 @@ app.get('/api/skill/openclaw/evidence/:requestId', requireRole('agent'), (req, r
 });
 
 app.post('/api/signer/sign-userop-hash', requireRole('agent'), async (req, res) => {
+  if (!KITE_ALLOW_BACKEND_USEROP_SIGN) {
+    return res.status(403).json({
+      ok: false,
+      error: 'backend_userop_sign_disabled',
+      reason: 'Backend userOp signing is disabled by policy. Use session key signing path.'
+    });
+  }
   if (!assertBackendSigner(res)) return;
   const userOpHash = String(req.body?.userOpHash || '').trim();
   if (!/^0x[0-9a-fA-F]{64}$/.test(userOpHash)) {
@@ -14378,7 +14391,7 @@ app.post('/api/session/pay', requireRole('agent'), async (req, res) => {
     let fallbackReason = '';
 
     if (!finalResult || finalResult.status !== 'success' || !finalResult.transactionHash) {
-      if (shouldFallbackToEoaRelay(primaryReason)) {
+      if (KITE_ALLOW_EOA_RELAY_FALLBACK && shouldFallbackToEoaRelay(primaryReason)) {
         fallbackAttempted = true;
         const fallback = await sendSessionTransferViaEoaRelay({
           provider,
@@ -14411,13 +14424,18 @@ app.post('/api/session/pay', requireRole('agent'), async (req, res) => {
       return res.status(500).json({
         ok: false,
         error: 'aa_session_payment_failed',
-        reason: fallbackReason ? `${reason}; eoa_relay_failed: ${fallbackReason}` : reason,
+        reason: fallbackReason
+          ? `${reason}; eoa_relay_failed: ${fallbackReason}`
+          : !KITE_ALLOW_EOA_RELAY_FALLBACK
+            ? `${reason}; eoa_relay_disabled`
+            : reason,
         details: {
           userOpHash: extractedUserOpHash,
           sessionId,
           payer: runtime.aaWallet,
           attempts,
           payElapsedMs,
+          eoaRelayEnabled: KITE_ALLOW_EOA_RELAY_FALLBACK,
           fallbackAttempted,
           fallbackReason
         }
@@ -14463,6 +14481,7 @@ app.post('/api/session/pay', requireRole('agent'), async (req, res) => {
         txHash: finalResult.transactionHash,
         userOpHash: extractedUserOpHash,
         payElapsedMs,
+        eoaRelayEnabled: KITE_ALLOW_EOA_RELAY_FALLBACK,
         signerMode,
         relaySender,
         fallbackAttempted
