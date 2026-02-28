@@ -249,7 +249,7 @@ export class GokiteAASDK {
         receipt: receipt
       };
     } catch (error) {
-      return { status: 'failed', reason: error.message, error: error };
+      return { status: 'failed', reason: this.formatErrorReason(error), error: error };
     }
   }
 
@@ -304,7 +304,7 @@ export class GokiteAASDK {
         receipt: receipt
       };
     } catch (error) {
-      return { status: 'failed', reason: error.message, error: error };
+      return { status: 'failed', reason: this.formatErrorReason(error), error: error };
     }
   }
 
@@ -456,7 +456,7 @@ export class GokiteAASDK {
     const result = await response.json();
     
     if (result.error) {
-      throw new Error(`Bundler error: ${result.error.message}`);
+      throw this.createBundlerError('Bundler error', result.error);
     }
 
     return result.result;
@@ -503,7 +503,7 @@ export class GokiteAASDK {
 
     const result = await response.json();
     if (result.error) {
-      throw new Error(`Bundler precheck failed: ${result.error.message}`);
+      throw this.createBundlerError('Bundler precheck failed', result.error);
     }
     return result.result;
   }
@@ -556,7 +556,7 @@ export class GokiteAASDK {
     const result = await response.json();
     
     if (result.error) {
-      throw new Error(`Bundler error: ${result.error.message}`);
+      throw this.createBundlerError('Bundler error', result.error);
     }
 
     return result.result;
@@ -578,7 +578,7 @@ export class GokiteAASDK {
 
     const result = await response.json();
     if (result.error) {
-      throw new Error(`Bundler error: ${result.error.message}`);
+      throw this.createBundlerError('Bundler error', result.error);
     }
     return result.result;
   }
@@ -599,6 +599,49 @@ export class GokiteAASDK {
       maxPriorityFeePerGas: priority,
       maxFeePerGas: maxFee
     };
+  }
+
+  createBundlerError(prefix, bundlerError = {}) {
+    const message = String(bundlerError?.message || 'unknown bundler error').trim();
+    const codePart =
+      bundlerError?.code === undefined || bundlerError?.code === null
+        ? ''
+        : `; code=${String(bundlerError.code)}`;
+    let dataPart = '';
+    if (bundlerError?.data !== undefined) {
+      try {
+        const data =
+          typeof bundlerError.data === 'string'
+            ? bundlerError.data
+            : JSON.stringify(bundlerError.data);
+        dataPart = `; data=${data}`;
+      } catch {
+        dataPart = '; data=[unserializable]';
+      }
+    }
+    const error = new Error(`${prefix}: ${message}${codePart}${dataPart}`);
+    error.bundlerError = bundlerError;
+    return error;
+  }
+
+  formatErrorReason(error) {
+    const primary = String(error?.message || 'unknown error').trim();
+    const details = [];
+    if (error?.name && error.name !== 'Error') {
+      details.push(`name=${String(error.name)}`);
+    }
+    const cause = error?.cause;
+    if (cause) {
+      const causeMessage = String(cause?.message || '').trim();
+      if (causeMessage) details.push(`cause=${causeMessage}`);
+      if (cause?.code !== undefined && cause?.code !== null) {
+        details.push(`causeCode=${String(cause.code)}`);
+      }
+      if (cause?.errno !== undefined && cause?.errno !== null) {
+        details.push(`causeErrno=${String(cause.errno)}`);
+      }
+    }
+    return details.length > 0 ? `${primary}; ${details.join('; ')}` : primary;
   }
 }
 
