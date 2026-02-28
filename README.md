@@ -310,6 +310,10 @@ bash deploy/scripts/backup-data.sh
 - constrained session execution
 - repeated payments without repeated wallet popups
 
+Session payment policy (must-read):
+- `backend/docs/aa-session-policy.md`
+- Default posture: `KITE_ALLOW_BACKEND_USEROP_SIGN=0`, `KITE_ALLOW_EOA_RELAY_FALLBACK=0`
+
 Useful scripts:
 - `npm --prefix backend run aa:ensure`
 - `npm --prefix backend run aa:session:router`
