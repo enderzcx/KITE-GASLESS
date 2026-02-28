@@ -19,6 +19,16 @@ const DEFAULT_FACTORY_ABI = [
   'function createAccount(address owner, uint256 salt) returns (address)'
 ];
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function toBoundedInt(value, fallback, min, max) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return fallback;
+  return Math.max(min, Math.min(Math.round(num), max));
+}
+
 const ERC1967_PROXY_CREATION_CODE =
   '0x60806040526102a88038038061001481610168565b92833981016040828203126101645781516001600160a01b03811692909190838303610164576020810151906001600160401b03821161016457019281601f8501121561016457835161006e610069826101a1565b610168565b9481865260208601936020838301011161016457815f926020809301865e86010152823b15610152577f360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc80546001600160a01b031916821790557fbc7cd75a20ee27fd9adebab32041f755214dbc6bffa90cc0225b39da2e5c2d3b5f80a282511561013a575f8091610122945190845af43d15610132573d91610113610069846101a1565b9283523d5f602085013e6101bc565b505b604051608d908161021b8239f35b6060916101bc565b50505034156101245763b398979f60e01b5f5260045ffd5b634c9c8ce360e01b5f5260045260245ffd5b5f80fd5b6040519190601f01601f191682016001600160401b0381118382101761018d57604052565b634e487b7160e01b5f52604160045260245ffd5b6001600160401b03811161018d57601f01601f191660200190565b906101e057508051156101d157602081519101fd5b63d6bda27560e01b5f5260045ffd5b81511580610211575b6101f1575090565b639996b31560e01b5f9081526001600160a01b0391909116600452602490fd5b50803b156101e956fe60806040525f8073ffffffffffffffffffffffffffffffffffffffff7f360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc5416368280378136915af43d5f803e156053573d5ff35b3d5ffdfea2646970667358221220359eac519e2625610420a0e3cfdfe26e6cc711dbb451880735ac4544d4ccdcf264736f6c634300081c0033';
 
@@ -32,6 +42,13 @@ export class GokiteAASDK {
       ...config
     };
     this.provider = new ethers.JsonRpcProvider(config.rpcUrl);
+    this.bundlerRpcConfig = {
+      timeoutMs: toBoundedInt(config.bundlerRpcTimeoutMs, 15_000, 2_000, 180_000),
+      retries: toBoundedInt(config.bundlerRpcRetries, 3, 1, 8),
+      backoffBaseMs: toBoundedInt(config.bundlerRpcBackoffBaseMs, 650, 100, 10_000),
+      backoffMaxMs: toBoundedInt(config.bundlerRpcBackoffMaxMs, 6_000, 200, 30_000),
+      receiptPollIntervalMs: toBoundedInt(config.bundlerReceiptPollIntervalMs, 3_000, 800, 15_000)
+    };
     
     this.entryPointAbi = [
       'function getNonce(address sender, uint192 key) view returns (uint256)',
@@ -425,11 +442,9 @@ export class GokiteAASDK {
       return '0x' + BigInt(value).toString(16);
     };
 
-    const request = {
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'eth_sendUserOperation',
-      params: [
+    return this.callBundlerRpc(
+      'eth_sendUserOperation',
+      [
         {
           sender: userOp.sender,
           nonce: formatHex(userOp.nonce),
@@ -444,22 +459,9 @@ export class GokiteAASDK {
           signature: userOp.signature
         },
         this.config.entryPointAddress
-      ]
-    };
-
-    const response = await fetch(this.config.bundlerUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request)
-    });
-
-    const result = await response.json();
-    
-    if (result.error) {
-      throw this.createBundlerError('Bundler error', result.error);
-    }
-
-    return result.result;
+      ],
+      { label: 'eth_sendUserOperation' }
+    );
   }
 
   async estimateUserOperationGas(userOp) {
@@ -473,11 +475,9 @@ export class GokiteAASDK {
       return '0x' + BigInt(value).toString(16);
     };
 
-    const request = {
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'eth_estimateUserOperationGas',
-      params: [
+    return this.callBundlerRpc(
+      'eth_estimateUserOperationGas',
+      [
         {
           sender: userOp.sender,
           nonce: formatHex(userOp.nonce),
@@ -492,41 +492,43 @@ export class GokiteAASDK {
           signature: userOp.signature
         },
         this.config.entryPointAddress
-      ]
-    };
-
-    const response = await fetch(this.config.bundlerUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request)
-    });
-
-    const result = await response.json();
-    if (result.error) {
-      throw this.createBundlerError('Bundler precheck failed', result.error);
-    }
-    return result.result;
+      ],
+      { label: 'eth_estimateUserOperationGas' }
+    );
   }
 
   async waitForUserOperation(userOpHash, timeout = 180000, pollInterval = 3000) {
     const startTime = Date.now();
+    const resolvedPollInterval = toBoundedInt(
+      pollInterval,
+      this.bundlerRpcConfig.receiptPollIntervalMs,
+      800,
+      15_000
+    );
+    let lastTransientError = null;
 
     while (Date.now() - startTime < timeout) {
-      const receipt = await this.getUserOperationReceipt(userOpHash);
-      
-      if (receipt) {
-        return {
-          success: receipt.success,
-          transactionHash: receipt.receipt.transactionHash,
-          blockNumber: receipt.receipt.blockNumber,
-          gasUsed: receipt.receipt.gasUsed,
-          actualGasCost: receipt.actualGasCost,
-          actualGasUsed: receipt.actualGasUsed,
-          receipt: receipt
-        };
+      try {
+        const receipt = await this.getUserOperationReceipt(userOpHash);
+        if (receipt) {
+          return {
+            success: receipt.success,
+            transactionHash: receipt.receipt.transactionHash,
+            blockNumber: receipt.receipt.blockNumber,
+            gasUsed: receipt.receipt.gasUsed,
+            actualGasCost: receipt.actualGasCost,
+            actualGasUsed: receipt.actualGasUsed,
+            receipt: receipt
+          };
+        }
+      } catch (error) {
+        if (!this.shouldRetryBundlerTransportError(error)) {
+          throw error;
+        }
+        lastTransientError = error;
       }
 
-      await new Promise(resolve => setTimeout(resolve, pollInterval));
+      await sleep(resolvedPollInterval);
     }
 
     let pendingInfo = null;
@@ -536,51 +538,22 @@ export class GokiteAASDK {
       pendingInfo = null;
     }
     const pendingMsg = pendingInfo ? ` Pending state: ${JSON.stringify(pendingInfo)}` : '';
-    throw new Error(`Timeout waiting for UserOperation ${userOpHash}.${pendingMsg}`);
+    const transientMsg = lastTransientError
+      ? ` Last transport issue: ${String(lastTransientError?.message || '').trim()}`
+      : '';
+    throw new Error(`Timeout waiting for UserOperation ${userOpHash}.${pendingMsg}${transientMsg}`);
   }
 
   async getUserOperationReceipt(userOpHash) {
-    const request = {
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'eth_getUserOperationReceipt',
-      params: [userOpHash]
-    };
-
-    const response = await fetch(this.config.bundlerUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request)
+    return this.callBundlerRpc('eth_getUserOperationReceipt', [userOpHash], {
+      label: 'eth_getUserOperationReceipt'
     });
-
-    const result = await response.json();
-    
-    if (result.error) {
-      throw this.createBundlerError('Bundler error', result.error);
-    }
-
-    return result.result;
   }
 
   async getUserOperationByHash(userOpHash) {
-    const request = {
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'eth_getUserOperationByHash',
-      params: [userOpHash]
-    };
-
-    const response = await fetch(this.config.bundlerUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request)
+    return this.callBundlerRpc('eth_getUserOperationByHash', [userOpHash], {
+      label: 'eth_getUserOperationByHash'
     });
-
-    const result = await response.json();
-    if (result.error) {
-      throw this.createBundlerError('Bundler error', result.error);
-    }
-    return result.result;
   }
 
   async getSuggestedGasFees() {
@@ -622,6 +595,144 @@ export class GokiteAASDK {
     const error = new Error(`${prefix}: ${message}${codePart}${dataPart}`);
     error.bundlerError = bundlerError;
     return error;
+  }
+
+  getBundlerBackoffMs(attempt) {
+    const index = Math.max(1, Number(attempt) || 1);
+    const base = this.bundlerRpcConfig.backoffBaseMs;
+    const max = this.bundlerRpcConfig.backoffMaxMs;
+    const exponential = Math.min(max, base * Math.pow(2, index - 1));
+    const jitter = Math.floor(Math.random() * Math.max(80, Math.round(base / 2)));
+    return Math.min(max, exponential + jitter);
+  }
+
+  shouldRetryBundlerRpcError(bundlerError = {}) {
+    const code = Number(bundlerError?.code);
+    if (Number.isFinite(code) && [-32603, -32005].includes(code)) return true;
+    const text = String(bundlerError?.message || '').trim().toLowerCase();
+    if (!text) return false;
+    return (
+      text.includes('timeout') ||
+      text.includes('temporarily unavailable') ||
+      text.includes('rate limit') ||
+      text.includes('too many requests') ||
+      text.includes('upstream') ||
+      text.includes('try again')
+    );
+  }
+
+  shouldRetryBundlerTransportError(error) {
+    const status = Number(error?.status || 0);
+    if ([408, 425, 429, 500, 502, 503, 504].includes(status)) return true;
+    const parts = [
+      String(error?.message || ''),
+      String(error?.code || ''),
+      String(error?.cause?.message || ''),
+      String(error?.cause?.code || ''),
+      String(error?.cause?.errno || '')
+    ];
+    const text = parts.join(' ').trim().toLowerCase();
+    if (!text) return false;
+    return (
+      text.includes('fetch failed') ||
+      text.includes('network') ||
+      text.includes('timeout') ||
+      text.includes('socket') ||
+      text.includes('tls') ||
+      text.includes('econnreset') ||
+      text.includes('econnrefused') ||
+      text.includes('etimedout') ||
+      text.includes('und_err_socket') ||
+      text.includes('und_err_connect_timeout') ||
+      text.includes('service unavailable') ||
+      text.includes('bad gateway') ||
+      text.includes('gateway timeout') ||
+      text.includes('too many requests')
+    );
+  }
+
+  normalizeBundlerTransportError(error, { label = 'bundler rpc', timeoutMs = 15000 } = {}) {
+    if (String(error?.name || '').trim() === 'AbortError') {
+      const wrapped = new Error(`${label} timeout after ${timeoutMs}ms`);
+      wrapped.code = 'BUNDLER_RPC_TIMEOUT';
+      wrapped.cause = error;
+      return wrapped;
+    }
+    if (error instanceof Error) return error;
+    return new Error(`${label} failed: ${String(error || 'unknown error').trim()}`);
+  }
+
+  async callBundlerRpc(method, params = [], options = {}) {
+    const label = String(options.label || method || 'bundler rpc').trim();
+    const timeoutMs = toBoundedInt(
+      options.timeoutMs,
+      this.bundlerRpcConfig.timeoutMs,
+      2_000,
+      180_000
+    );
+    const maxAttempts = toBoundedInt(options.maxAttempts, this.bundlerRpcConfig.retries, 1, 8);
+    const retryRpcErrors = options.retryRpcErrors !== false;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const body = JSON.stringify({
+          jsonrpc: '2.0',
+          id: Date.now(),
+          method,
+          params
+        });
+        const response = await fetch(this.config.bundlerUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body,
+          signal: controller.signal
+        });
+        const raw = await response.text();
+        let result = {};
+        if (raw) {
+          try {
+            result = JSON.parse(raw);
+          } catch {
+            const parseError = new Error(`${label} invalid JSON response`);
+            parseError.status = response.status;
+            parseError.responseBody = raw.slice(0, 500);
+            throw parseError;
+          }
+        }
+
+        if (!response.ok) {
+          const message = String(result?.error?.message || raw || '').trim();
+          const httpError = new Error(
+            `${label} HTTP ${response.status}${message ? `: ${message}` : ''}`
+          );
+          httpError.status = response.status;
+          httpError.responseBody = raw.slice(0, 500);
+          throw httpError;
+        }
+
+        if (result.error) {
+          const rpcError = this.createBundlerError(`${label} failed`, result.error);
+          if (retryRpcErrors && this.shouldRetryBundlerRpcError(result.error) && attempt < maxAttempts) {
+            await sleep(this.getBundlerBackoffMs(attempt));
+            continue;
+          }
+          throw rpcError;
+        }
+        return result.result;
+      } catch (error) {
+        const normalized = this.normalizeBundlerTransportError(error, { label, timeoutMs });
+        if (this.shouldRetryBundlerTransportError(normalized) && attempt < maxAttempts) {
+          await sleep(this.getBundlerBackoffMs(attempt));
+          continue;
+        }
+        throw normalized;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    throw new Error(`${label} failed after ${maxAttempts} attempts`);
   }
 
   formatErrorReason(error) {

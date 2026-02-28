@@ -164,6 +164,23 @@ const KITE_ALLOW_EOA_RELAY_FALLBACK = /^(1|true|yes|on)$/i.test(
 const KITE_ALLOW_BACKEND_USEROP_SIGN = /^(1|true|yes|on)$/i.test(
   String(process.env.KITE_ALLOW_BACKEND_USEROP_SIGN || '0').trim()
 );
+const KITE_BUNDLER_RPC_TIMEOUT_MS = Math.max(
+  2_000,
+  Math.min(Number(process.env.KITE_BUNDLER_RPC_TIMEOUT_MS || 15_000), 180_000)
+);
+const KITE_BUNDLER_RPC_RETRIES = Math.max(1, Math.min(Number(process.env.KITE_BUNDLER_RPC_RETRIES || 3), 8));
+const KITE_BUNDLER_RPC_BACKOFF_BASE_MS = Math.max(
+  100,
+  Math.min(Number(process.env.KITE_BUNDLER_RPC_BACKOFF_BASE_MS || 650), 10_000)
+);
+const KITE_BUNDLER_RPC_BACKOFF_MAX_MS = Math.max(
+  200,
+  Math.min(Number(process.env.KITE_BUNDLER_RPC_BACKOFF_MAX_MS || 6_000), 30_000)
+);
+const KITE_BUNDLER_RECEIPT_POLL_INTERVAL_MS = Math.max(
+  800,
+  Math.min(Number(process.env.KITE_BUNDLER_RECEIPT_POLL_INTERVAL_MS || 3_000), 15_000)
+);
 const PROOF_RPC_TIMEOUT_MS = Number(process.env.KITE_PROOF_RPC_TIMEOUT_MS || 10_000);
 const PROOF_RPC_RETRIES = Number(process.env.KITE_PROOF_RPC_RETRIES || 3);
 const OPENCLAW_BASE_URL = String(process.env.OPENCLAW_BASE_URL || '').trim();
@@ -516,11 +533,20 @@ function shouldRetrySessionPayReason(reason = '') {
     text.includes('fetch failed') ||
     text.includes('econnreset') ||
     text.includes('econnrefused') ||
+    text.includes('etimedout') ||
+    text.includes('und_err_socket') ||
+    text.includes('und_err_connect_timeout') ||
     text.includes('socket hang up') ||
     text.includes('network') ||
     text.includes('tls') ||
     text.includes('secure connection') ||
-    text.includes('client network socket disconnected')
+    text.includes('client network socket disconnected') ||
+    text.includes('bad gateway') ||
+    text.includes('gateway timeout') ||
+    text.includes('service unavailable') ||
+    text.includes('http 502') ||
+    text.includes('http 503') ||
+    text.includes('http 504')
   );
 }
 
@@ -929,7 +955,12 @@ async function ensureAAAccountDeployment({ owner, salt = 0n } = {}) {
     network: 'kite_testnet',
     rpcUrl: BACKEND_RPC_URL,
     bundlerUrl: BACKEND_BUNDLER_URL,
-    entryPointAddress: BACKEND_ENTRYPOINT_ADDRESS
+    entryPointAddress: BACKEND_ENTRYPOINT_ADDRESS,
+    bundlerRpcTimeoutMs: KITE_BUNDLER_RPC_TIMEOUT_MS,
+    bundlerRpcRetries: KITE_BUNDLER_RPC_RETRIES,
+    bundlerRpcBackoffBaseMs: KITE_BUNDLER_RPC_BACKOFF_BASE_MS,
+    bundlerRpcBackoffMaxMs: KITE_BUNDLER_RPC_BACKOFF_MAX_MS,
+    bundlerReceiptPollIntervalMs: KITE_BUNDLER_RECEIPT_POLL_INTERVAL_MS
   });
   const accountAddress = sdk.getAccountAddress(normalizedOwner, salt);
   const provider = backendSigner.provider || new ethers.JsonRpcProvider(BACKEND_RPC_URL);
@@ -6599,11 +6630,20 @@ function isTransientTransportError(reason = '') {
   return (
     text.includes('fetch failed') ||
     text.includes('econnreset') ||
+    text.includes('etimedout') ||
+    text.includes('und_err_socket') ||
+    text.includes('und_err_connect_timeout') ||
     text.includes('timeout') ||
     text.includes('socket hang up') ||
     text.includes('network') ||
     text.includes('tls') ||
-    text.includes('secure tls connection')
+    text.includes('secure tls connection') ||
+    text.includes('bad gateway') ||
+    text.includes('gateway timeout') ||
+    text.includes('service unavailable') ||
+    text.includes('http 502') ||
+    text.includes('http 503') ||
+    text.includes('http 504')
   );
 }
 
@@ -14320,7 +14360,12 @@ app.post('/api/session/pay', requireRole('agent'), async (req, res) => {
       rpcUrl: BACKEND_RPC_URL,
       bundlerUrl: BACKEND_BUNDLER_URL,
       entryPointAddress: BACKEND_ENTRYPOINT_ADDRESS,
-      proxyAddress: runtime.aaWallet
+      proxyAddress: runtime.aaWallet,
+      bundlerRpcTimeoutMs: KITE_BUNDLER_RPC_TIMEOUT_MS,
+      bundlerRpcRetries: KITE_BUNDLER_RPC_RETRIES,
+      bundlerRpcBackoffBaseMs: KITE_BUNDLER_RPC_BACKOFF_BASE_MS,
+      bundlerRpcBackoffMaxMs: KITE_BUNDLER_RPC_BACKOFF_MAX_MS,
+      bundlerReceiptPollIntervalMs: KITE_BUNDLER_RECEIPT_POLL_INTERVAL_MS
     });
     if (runtime.owner && ethers.isAddress(runtime.owner)) {
       sdk.config.ownerAddress = runtime.owner;
