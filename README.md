@@ -59,12 +59,112 @@ Where to inspect:
 Since `v1.9.0`, exported evidence now includes XMTP hop timeline:
 - `evidence.xmtp.total`
 - `evidence.xmtp.hops[]` (contains `conversationId/messageId/hopIndex/...`)
+- `evidence.xmtp.hops[].hopDigest` (per-hop digest for tamper checks)
+- `evidence.xmtp.digest` (global digest over normalized hop timeline)
+
+Current build exports schema-versioned and digest-bound evidence:
+- `evidence.schemaVersion`
+- `evidence.digest` (package-level digest)
+- `evidence.integrity.digestInput` (deterministic digest input)
+- `evidence.xmtp.integrity.hopFields` (XMTP hop digest field set)
 
 Quick verify:
 
 ```bash
 curl -sS "https://kiteclaw.duckdns.org/api/evidence/export?traceId=<TRACE_ID>" \
 | jq '.evidence.xmtp | {total, firstHop: (.hops[0] | {traceId,requestId,conversationId,messageId,hopIndex,kind})}'
+```
+
+Digest verify (package + XMTP timeline):
+
+```bash
+curl -sS "https://kiteclaw.duckdns.org/api/evidence/export?traceId=<TRACE_ID>" > /tmp/evidence.json
+
+node - <<'NODE'
+const fs = require('fs');
+const crypto = require('crypto');
+
+function stableSerialize(value) {
+  if (value === null || value === undefined) return 'null';
+  if (typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map((item) => stableSerialize(item)).join(',')}]`;
+  const entries = Object.entries(value).filter(([, v]) => v !== undefined).sort(([a], [b]) => a.localeCompare(b));
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableSerialize(v)}`).join(',')}}`;
+}
+function sha256Stable(value) {
+  return crypto.createHash('sha256').update(stableSerialize(value), 'utf8').digest('hex');
+}
+function pickHopMaterial(hop) {
+  return {
+    id: hop.id || '',
+    createdAt: hop.createdAt || '',
+    runtimeName: hop.runtimeName || '',
+    direction: (hop.direction || '').toLowerCase(),
+    kind: (hop.kind || '').toLowerCase(),
+    fromAgentId: hop.fromAgentId || '',
+    toAgentId: hop.toAgentId || '',
+    channel: hop.channel || '',
+    hopIndex: Number.isFinite(Number(hop.hopIndex)) ? Number(hop.hopIndex) : null,
+    traceId: hop.traceId || '',
+    requestId: hop.requestId || '',
+    taskId: hop.taskId || '',
+    conversationId: hop.conversationId || '',
+    messageId: hop.messageId || '',
+    status: (hop.status || '').toLowerCase(),
+    phase: (hop.phase || '').toLowerCase(),
+    detail: hop.detail || '',
+    resultSummary: hop.resultSummary || '',
+    error: hop.error || '',
+    payment: hop.payment
+      ? {
+          mode: (hop.payment.mode || '').toLowerCase(),
+          requestId: hop.payment.requestId || '',
+          txHash: hop.payment.txHash || '',
+          block: Number.isFinite(Number(hop.payment.block)) ? Number(hop.payment.block) : null,
+          status: (hop.payment.status || '').toLowerCase(),
+          explorer: hop.payment.explorer || '',
+          verifiedAt: hop.payment.verifiedAt || ''
+        }
+      : null,
+    receiptRef: hop.receiptRef
+      ? {
+          requestId: hop.receiptRef.requestId || '',
+          txHash: hop.receiptRef.txHash || '',
+          block: Number.isFinite(Number(hop.receiptRef.block)) ? Number(hop.receiptRef.block) : null,
+          status: (hop.receiptRef.status || '').toLowerCase(),
+          explorer: hop.receiptRef.explorer || '',
+          verifiedAt: hop.receiptRef.verifiedAt || '',
+          endpoint: hop.receiptRef.endpoint || ''
+        }
+      : null
+  };
+}
+
+const payload = JSON.parse(fs.readFileSync('/tmp/evidence.json', 'utf8'));
+const e = payload.evidence || {};
+const x = e.xmtp || {};
+
+const xmtpInput = {
+  scope: 'xmtp-hop-core-v1',
+  traceId: String(x.integrity?.digestInput?.traceId || e.traceId || ''),
+  requestId: String(x.integrity?.digestInput?.requestId || ''),
+  taskId: String(x.integrity?.digestInput?.taskId || ''),
+  total: Number(x.total || 0),
+  hops: Array.isArray(x.hops) ? x.hops.map((h) => pickHopMaterial(h)) : []
+};
+const xmtpDigest = sha256Stable(xmtpInput);
+const evidenceDigest = sha256Stable(e.integrity?.digestInput || {});
+
+console.log({
+  schemaVersion: e.schemaVersion || '',
+  xmtpDigest,
+  xmtpDigestExported: x.digest?.value || '',
+  xmtpDigestMatch: xmtpDigest === String(x.digest?.value || ''),
+  evidenceDigest,
+  evidenceDigestExported: e.digest?.value || '',
+  evidenceDigestMatch: evidenceDigest === String(e.digest?.value || '')
+});
+NODE
 ```
 
 ## Core API Surface

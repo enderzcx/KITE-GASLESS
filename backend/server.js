@@ -6258,6 +6258,19 @@ function stableSerialize(value) {
   return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableSerialize(v)}`).join(',')}}`;
 }
 
+function sha256HexFromUtf8(input = '') {
+  return crypto.createHash('sha256').update(String(input || ''), 'utf8').digest('hex');
+}
+
+function digestStableObject(value) {
+  const canonical = stableSerialize(value);
+  return {
+    algorithm: 'sha256',
+    canonicalization: 'stableSerialize',
+    value: sha256HexFromUtf8(canonical)
+  };
+}
+
 function buildResponseHash(requestId = '', action = '', resultPayload = {}) {
   const envelope = {
     requestId: String(requestId || '').trim(),
@@ -9474,6 +9487,91 @@ function taskIdSafeToken(value = '') {
     .slice(0, 24);
 }
 
+const XMTP_HOP_DIGEST_FIELDS = Object.freeze([
+  'id',
+  'createdAt',
+  'runtimeName',
+  'direction',
+  'kind',
+  'fromAgentId',
+  'toAgentId',
+  'channel',
+  'hopIndex',
+  'traceId',
+  'requestId',
+  'taskId',
+  'conversationId',
+  'messageId',
+  'status',
+  'phase',
+  'detail',
+  'resultSummary',
+  'error',
+  'payment.mode',
+  'payment.requestId',
+  'payment.txHash',
+  'payment.block',
+  'payment.status',
+  'payment.explorer',
+  'payment.verifiedAt',
+  'receiptRef.requestId',
+  'receiptRef.txHash',
+  'receiptRef.block',
+  'receiptRef.status',
+  'receiptRef.explorer',
+  'receiptRef.verifiedAt',
+  'receiptRef.endpoint'
+]);
+
+function buildXmtpHopDigestMaterial(hop = {}) {
+  const payment = hop?.payment && typeof hop.payment === 'object' && !Array.isArray(hop.payment) ? hop.payment : null;
+  const receiptRef =
+    hop?.receiptRef && typeof hop.receiptRef === 'object' && !Array.isArray(hop.receiptRef) ? hop.receiptRef : null;
+  return {
+    id: String(hop?.id || '').trim(),
+    createdAt: String(hop?.createdAt || '').trim(),
+    runtimeName: String(hop?.runtimeName || '').trim(),
+    direction: String(hop?.direction || '').trim().toLowerCase(),
+    kind: String(hop?.kind || '').trim().toLowerCase(),
+    fromAgentId: String(hop?.fromAgentId || '').trim(),
+    toAgentId: String(hop?.toAgentId || '').trim(),
+    channel: String(hop?.channel || '').trim(),
+    hopIndex: Number.isFinite(Number(hop?.hopIndex)) ? Number(hop.hopIndex) : null,
+    traceId: String(hop?.traceId || '').trim(),
+    requestId: String(hop?.requestId || '').trim(),
+    taskId: String(hop?.taskId || '').trim(),
+    conversationId: String(hop?.conversationId || '').trim(),
+    messageId: String(hop?.messageId || '').trim(),
+    status: String(hop?.status || '').trim().toLowerCase(),
+    phase: String(hop?.phase || '').trim().toLowerCase(),
+    detail: String(hop?.detail || '').trim(),
+    resultSummary: String(hop?.resultSummary || '').trim(),
+    error: String(hop?.error || '').trim(),
+    payment: payment
+      ? {
+          mode: String(payment.mode || '').trim().toLowerCase(),
+          requestId: String(payment.requestId || '').trim(),
+          txHash: String(payment.txHash || '').trim(),
+          block: Number.isFinite(Number(payment.block)) ? Number(payment.block) : null,
+          status: String(payment.status || '').trim().toLowerCase(),
+          explorer: String(payment.explorer || '').trim(),
+          verifiedAt: String(payment.verifiedAt || '').trim()
+        }
+      : null,
+    receiptRef: receiptRef
+      ? {
+          requestId: String(receiptRef.requestId || '').trim(),
+          txHash: String(receiptRef.txHash || '').trim(),
+          block: Number.isFinite(Number(receiptRef.block)) ? Number(receiptRef.block) : null,
+          status: String(receiptRef.status || '').trim().toLowerCase(),
+          explorer: String(receiptRef.explorer || '').trim(),
+          verifiedAt: String(receiptRef.verifiedAt || '').trim(),
+          endpoint: String(receiptRef.endpoint || '').trim()
+        }
+      : null
+  };
+}
+
 function buildTraceXmtpEvidence({ traceId = '', requestId = '', taskId = '' } = {}) {
   const normalizedTraceId = String(traceId || '').trim();
   const normalizedRequestId = String(requestId || '').trim();
@@ -9521,7 +9619,7 @@ function buildTraceXmtpEvidence({ traceId = '', requestId = '', taskId = '' } = 
         parsed?.receiptRef && typeof parsed.receiptRef === 'object' && !Array.isArray(parsed.receiptRef)
           ? parsed.receiptRef
           : null;
-      return {
+      const hop = {
         id: String(row?.id || '').trim(),
         createdAt: String(row?.createdAt || '').trim(),
         runtimeName: String(row?.runtimeName || '').trim(),
@@ -9564,12 +9662,40 @@ function buildTraceXmtpEvidence({ traceId = '', requestId = '', taskId = '' } = 
             }
           : null
       };
+      const hopDigest = digestStableObject(buildXmtpHopDigestMaterial(hop));
+      hop.hopDigest = hopDigest.value;
+      return hop;
     })
     .sort((a, b) => Date.parse(a.createdAt || 0) - Date.parse(b.createdAt || 0));
 
+  const xmtpDigestInput = {
+    scope: 'xmtp-hop-core-v1',
+    traceId: normalizedTraceId,
+    requestId: normalizedRequestId,
+    taskId: normalizedTaskId,
+    total: hops.length,
+    hops: hops.map((hop) => buildXmtpHopDigestMaterial(hop))
+  };
+  const xmtpDigest = digestStableObject(xmtpDigestInput);
   const latestTaskResult = [...hops].reverse().find((row) => row.kind === 'task-result') || null;
   return {
     total: hops.length,
+    digest: {
+      algorithm: xmtpDigest.algorithm,
+      canonicalization: xmtpDigest.canonicalization,
+      scope: 'xmtp-hop-core-v1',
+      value: xmtpDigest.value
+    },
+    integrity: {
+      hopFields: XMTP_HOP_DIGEST_FIELDS,
+      digestInput: {
+        scope: 'xmtp-hop-core-v1',
+        traceId: normalizedTraceId,
+        requestId: normalizedRequestId,
+        taskId: normalizedTaskId,
+        total: hops.length
+      }
+    },
     hops,
     latestTaskResult: latestTaskResult
       ? {
@@ -9743,9 +9869,66 @@ app.get('/api/evidence/export', requireRole('viewer'), (req, res) => {
     requestId: String(workflow?.requestId || reqItem?.requestId || '').trim()
   });
 
+  const evidenceSchemaVersion = 'kiteclaw-evidence-v1.1.0';
+  const digestInput = {
+    scope: 'evidence-core-v1',
+    schemaVersion: evidenceSchemaVersion,
+    traceId,
+    workflow: {
+      traceId: String(workflow?.traceId || '').trim(),
+      type: String(workflow?.type || '').trim(),
+      state: String(workflow?.state || '').trim().toLowerCase(),
+      requestId: String(workflow?.requestId || '').trim(),
+      txHash: String(workflow?.txHash || '').trim(),
+      userOpHash: String(workflow?.userOpHash || '').trim()
+    },
+    x402: reqItem
+      ? {
+          requestId: String(reqItem.requestId || '').trim(),
+          status: String(reqItem.status || '').trim().toLowerCase(),
+          action: String(reqItem.action || '').trim().toLowerCase(),
+          amount: String(reqItem.amount || '').trim(),
+          payer: String(reqItem.payer || '').trim(),
+          recipient: String(reqItem.recipient || '').trim(),
+          tokenAddress: String(reqItem.tokenAddress || '').trim(),
+          paymentTxHash: String(reqItem.paymentTxHash || reqItem?.paymentProof?.txHash || '').trim()
+        }
+      : null,
+    xmtp: {
+      total: Number(xmtp?.total || 0),
+      digest: String(xmtp?.digest?.value || '').trim()
+    },
+    paymentRecord: paymentRecord
+      ? {
+          txHash: String(paymentRecord.txHash || '').trim(),
+          status: String(paymentRecord.status || '').trim().toLowerCase(),
+          requestId: String(paymentRecord.requestId || '').trim()
+        }
+      : null,
+    runtimeSnapshot: {
+      aaWallet: runtime.aaWallet || '',
+      sessionAddress: runtime.sessionAddress || '',
+      sessionId: runtime.sessionId || '',
+      maxPerTx: runtime.maxPerTx || 0,
+      dailyLimit: runtime.dailyLimit || 0,
+      gatewayRecipient: runtime.gatewayRecipient || ''
+    }
+  };
+  const evidenceDigest = digestStableObject(digestInput);
+
   const exportPayload = {
+    schemaVersion: evidenceSchemaVersion,
     traceId,
     exportedAt: new Date().toISOString(),
+    digest: {
+      algorithm: evidenceDigest.algorithm,
+      canonicalization: evidenceDigest.canonicalization,
+      scope: 'evidence-core-v1',
+      value: evidenceDigest.value
+    },
+    integrity: {
+      digestInput
+    },
     workflow: workflow || null,
     a2aReceipt: reqItem?.a2a ? buildA2AReceipt(reqItem, workflow, { traceId }) : null,
     x402: reqItem
