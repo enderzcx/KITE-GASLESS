@@ -182,6 +182,42 @@ const KITE_BUNDLER_RECEIPT_POLL_INTERVAL_MS = toBoundedIntEnv(
   15_000
 );
 const KITE_SESSION_PAY_RETRIES = toBoundedIntEnv(process.env.KITE_SESSION_PAY_RETRIES, 3, 1, 8);
+const KITE_SESSION_PAY_TRANSPORT_BACKOFF_BASE_MS = toBoundedIntEnv(
+  process.env.KITE_SESSION_PAY_TRANSPORT_BACKOFF_BASE_MS,
+  400,
+  0,
+  10_000
+);
+const KITE_SESSION_PAY_TRANSPORT_BACKOFF_MAX_MS = toBoundedIntEnv(
+  process.env.KITE_SESSION_PAY_TRANSPORT_BACKOFF_MAX_MS,
+  2_500,
+  0,
+  30_000
+);
+const KITE_SESSION_PAY_TRANSPORT_BACKOFF_JITTER_MS = toBoundedIntEnv(
+  process.env.KITE_SESSION_PAY_TRANSPORT_BACKOFF_JITTER_MS,
+  250,
+  0,
+  5_000
+);
+const KITE_SESSION_PAY_REPLACEMENT_BACKOFF_BASE_MS = toBoundedIntEnv(
+  process.env.KITE_SESSION_PAY_REPLACEMENT_BACKOFF_BASE_MS,
+  2_000,
+  0,
+  20_000
+);
+const KITE_SESSION_PAY_REPLACEMENT_BACKOFF_MAX_MS = toBoundedIntEnv(
+  process.env.KITE_SESSION_PAY_REPLACEMENT_BACKOFF_MAX_MS,
+  6_000,
+  0,
+  30_000
+);
+const KITE_SESSION_PAY_REPLACEMENT_BACKOFF_JITTER_MS = toBoundedIntEnv(
+  process.env.KITE_SESSION_PAY_REPLACEMENT_BACKOFF_JITTER_MS,
+  500,
+  0,
+  10_000
+);
 const KITE_SESSION_PAY_METRICS_RECENT_LIMIT = toBoundedIntEnv(
   process.env.KITE_SESSION_PAY_METRICS_RECENT_LIMIT,
   80,
@@ -667,9 +703,50 @@ function markSessionPayRetry({ reason = '', errorCode = '' } = {}) {
   return category;
 }
 
+function buildRetryBackoffMs({ attempt = 1, baseMs = 0, maxMs = 0, jitterMs = 0, factor = 2 } = {}) {
+  const index = Math.max(1, Number(attempt) || 1);
+  const base = Math.max(0, Number(baseMs) || 0);
+  const max = Math.max(base, Number(maxMs) || 0);
+  if (base === 0 || max === 0) return 0;
+  const retryFactor = Math.max(1, Number(factor) || 1);
+  const exponential = Math.min(max, Math.round(base * Math.pow(retryFactor, index - 1)));
+  const jitterCap = Math.max(0, Number(jitterMs) || 0);
+  const jitter = jitterCap > 0 ? Math.floor(Math.random() * (jitterCap + 1)) : 0;
+  return Math.min(max, exponential + jitter);
+}
+
+function getSessionPayRetryBackoffMs({ attempt = 1, category = 'unknown' } = {}) {
+  const kind = String(category || '').trim().toLowerCase();
+  if (kind === 'replacement_fee') {
+    return buildRetryBackoffMs({
+      attempt,
+      baseMs: KITE_SESSION_PAY_REPLACEMENT_BACKOFF_BASE_MS,
+      maxMs: KITE_SESSION_PAY_REPLACEMENT_BACKOFF_MAX_MS,
+      jitterMs: KITE_SESSION_PAY_REPLACEMENT_BACKOFF_JITTER_MS,
+      factor: 2
+    });
+  }
+  if (kind === 'transport') {
+    return buildRetryBackoffMs({
+      attempt,
+      baseMs: KITE_SESSION_PAY_TRANSPORT_BACKOFF_BASE_MS,
+      maxMs: KITE_SESSION_PAY_TRANSPORT_BACKOFF_MAX_MS,
+      jitterMs: KITE_SESSION_PAY_TRANSPORT_BACKOFF_JITTER_MS,
+      factor: 3
+    });
+  }
+  return 0;
+}
+
 function sessionPayConfigSnapshot() {
   return {
     sessionPayRetries: KITE_SESSION_PAY_RETRIES,
+    sessionPayTransportBackoffBaseMs: KITE_SESSION_PAY_TRANSPORT_BACKOFF_BASE_MS,
+    sessionPayTransportBackoffMaxMs: KITE_SESSION_PAY_TRANSPORT_BACKOFF_MAX_MS,
+    sessionPayTransportBackoffJitterMs: KITE_SESSION_PAY_TRANSPORT_BACKOFF_JITTER_MS,
+    sessionPayReplacementBackoffBaseMs: KITE_SESSION_PAY_REPLACEMENT_BACKOFF_BASE_MS,
+    sessionPayReplacementBackoffMaxMs: KITE_SESSION_PAY_REPLACEMENT_BACKOFF_MAX_MS,
+    sessionPayReplacementBackoffJitterMs: KITE_SESSION_PAY_REPLACEMENT_BACKOFF_JITTER_MS,
     bundlerRpcTimeoutMs: KITE_BUNDLER_RPC_TIMEOUT_MS,
     bundlerRpcRetries: KITE_BUNDLER_RPC_RETRIES,
     bundlerRpcBackoffBaseMs: KITE_BUNDLER_RPC_BACKOFF_BASE_MS,
@@ -713,7 +790,9 @@ async function postSessionPayWithRetry(payload = {}, options = {}) {
       err.reasonCategory = classifySessionPayFailure({ reason, errorCode: String(body?.error || '').trim() });
       lastError = err;
       if (!err.retryable || i >= maxAttempts - 1) throw err;
-      markSessionPayRetry({ reason, errorCode: String(body?.error || '').trim() });
+      const retryCategory = markSessionPayRetry({ reason, errorCode: String(body?.error || '').trim() });
+      const retryDelayMs = getSessionPayRetryBackoffMs({ attempt, category: retryCategory });
+      if (retryDelayMs > 0) await waitMs(retryDelayMs);
       continue;
     } catch (error) {
       const reason = String(error?.message || '').trim();
@@ -724,7 +803,9 @@ async function postSessionPayWithRetry(payload = {}, options = {}) {
       wrapped.reasonCategory = classifySessionPayFailure({ reason });
       lastError = wrapped;
       if (!retryable || i >= maxAttempts - 1) throw wrapped;
-      markSessionPayRetry({ reason });
+      const retryCategory = markSessionPayRetry({ reason });
+      const retryDelayMs = getSessionPayRetryBackoffMs({ attempt, category: retryCategory });
+      if (retryDelayMs > 0) await waitMs(retryDelayMs);
       continue;
     } finally {
       clearTimeout(timer);
@@ -14612,7 +14693,9 @@ app.post('/api/session/pay', requireRole('agent'), async (req, res) => {
         const reason = String(innerResult?.reason || '').trim();
         const retriable = isTransientTransportError(reason) || isUserOpReplacementFeeError(reason);
         if (!retriable || i >= maxAttempts - 1) break;
-        markSessionPayRetry({ reason, errorCode: String(innerResult?.error || '').trim() });
+        const retryCategory = markSessionPayRetry({ reason, errorCode: String(innerResult?.error || '').trim() });
+        const retryDelayMs = getSessionPayRetryBackoffMs({ attempt: innerAttempts, category: retryCategory });
+        if (retryDelayMs > 0) await waitMs(retryDelayMs);
         continue;
       }
       return { result: innerResult, attempts: innerAttempts };
