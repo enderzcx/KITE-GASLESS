@@ -8,6 +8,12 @@ Last updated: 2026-03-01 (Asia/Shanghai)
 
 ## Runtime Knobs
 - `KITE_SESSION_PAY_RETRIES` (default: `3`)
+- `KITE_SESSION_PAY_TRANSPORT_BACKOFF_BASE_MS` (default: `400`)
+- `KITE_SESSION_PAY_TRANSPORT_BACKOFF_MAX_MS` (default: `2500`)
+- `KITE_SESSION_PAY_TRANSPORT_BACKOFF_JITTER_MS` (default: `250`)
+- `KITE_SESSION_PAY_REPLACEMENT_BACKOFF_BASE_MS` (default: `2000`)
+- `KITE_SESSION_PAY_REPLACEMENT_BACKOFF_MAX_MS` (default: `6000`)
+- `KITE_SESSION_PAY_REPLACEMENT_BACKOFF_JITTER_MS` (default: `500`)
 - `KITE_BUNDLER_RPC_TIMEOUT_MS` (default: `15000`)
 - `KITE_BUNDLER_RPC_RETRIES` (default: `3`)
 - `KITE_BUNDLER_RPC_BACKOFF_BASE_MS` (default: `650`)
@@ -37,7 +43,10 @@ Last updated: 2026-03-01 (Asia/Shanghai)
 - `unknown`
 
 ## Retry Governance Notes
-- Session pay retry path is **no-backoff** by design (immediate retry on retryable failures).
+- Session pay retry path uses category-based wait strategy:
+  - `transport`: 400ms -> 1200ms -> 2500ms (capped, +jitter up to 250ms)
+  - `replacement_fee`: 2000ms -> 4000ms -> 6000ms (capped, +jitter up to 500ms)
+  - non-retry categories: no wait, fail fast
 - Track retry shape with `metrics.retriesByCategory`; if `replacement_fee` dominates, prioritize fee-bump and nonce/order diagnostics.
 
 ## Operational Checks
