@@ -13,7 +13,8 @@
     "aa:ensure": "node scripts/aa-ensure-account.js",
     "aa:session:router": "node scripts/aa-create-router-session.js",
     "aa:preflight": "node scripts/aa-preflight.js",
-    "aa:upgrade": "node scripts/aa-upgrade.js"
+    "aa:upgrade": "node scripts/aa-upgrade.js",
+    "parity:hopledger": "node scripts/parity-hopledger-reference.mjs --rounds 5"
   },
   "dependencies": {
     "@nktkas/hyperliquid": "^0.31.0",
