@@ -35,6 +35,13 @@ const ERC1967_PROXY_CREATION_CODE =
 export class GokiteAASDK {
   constructor(config) {
     const networkConfig = NETWORKS[config.network || 'kite_testnet'] || NETWORKS.kite_testnet;
+    const backoffBaseMs = toBoundedInt(config.bundlerRpcBackoffBaseMs, 650, 100, 10_000);
+    const backoffMaxMs = Math.max(backoffBaseMs, toBoundedInt(config.bundlerRpcBackoffMaxMs, 6_000, 200, 30_000));
+    const backoffJitterFallback = Math.max(80, Math.round(backoffBaseMs / 2));
+    const backoffJitterMs = Math.min(
+      backoffMaxMs,
+      toBoundedInt(config.bundlerRpcBackoffJitterMs, backoffJitterFallback, 0, 10_000)
+    );
     this.config = {
       network: config.network || 'kite_testnet',
       accountFactoryAddress: config.accountFactoryAddress || networkConfig.accountFactory,
@@ -45,8 +52,10 @@ export class GokiteAASDK {
     this.bundlerRpcConfig = {
       timeoutMs: toBoundedInt(config.bundlerRpcTimeoutMs, 15_000, 2_000, 180_000),
       retries: toBoundedInt(config.bundlerRpcRetries, 3, 1, 8),
-      backoffBaseMs: toBoundedInt(config.bundlerRpcBackoffBaseMs, 650, 100, 10_000),
-      backoffMaxMs: toBoundedInt(config.bundlerRpcBackoffMaxMs, 6_000, 200, 30_000),
+      backoffBaseMs,
+      backoffMaxMs,
+      backoffFactor: toBoundedInt(config.bundlerRpcBackoffFactor, 2, 1, 6),
+      backoffJitterMs,
       receiptPollIntervalMs: toBoundedInt(config.bundlerReceiptPollIntervalMs, 3_000, 800, 15_000)
     };
     
@@ -601,8 +610,10 @@ export class GokiteAASDK {
     const index = Math.max(1, Number(attempt) || 1);
     const base = this.bundlerRpcConfig.backoffBaseMs;
     const max = this.bundlerRpcConfig.backoffMaxMs;
-    const exponential = Math.min(max, base * Math.pow(2, index - 1));
-    const jitter = Math.floor(Math.random() * Math.max(80, Math.round(base / 2)));
+    const factor = Math.max(1, Number(this.bundlerRpcConfig.backoffFactor) || 1);
+    const exponential = Math.min(max, Math.round(base * Math.pow(factor, index - 1)));
+    const jitterCap = Math.max(0, Number(this.bundlerRpcConfig.backoffJitterMs) || 0);
+    const jitter = jitterCap > 0 ? Math.floor(Math.random() * (jitterCap + 1)) : 0;
     return Math.min(max, exponential + jitter);
   }
 

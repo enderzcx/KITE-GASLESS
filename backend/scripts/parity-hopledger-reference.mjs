@@ -16,6 +16,11 @@ function getArg(name, fallback = "") {
   return fallback;
 }
 
+function hasFlag(name) {
+  const argv = process.argv.slice(2);
+  return argv.includes(`--${name}`);
+}
+
 function toInt(value, fallback, min, max) {
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
@@ -90,6 +95,8 @@ function collectHopLedgerGitMetadata(hopLedgerDir) {
 function main() {
   const explicitHopLedgerDir = getArg("hop-ledger-dir", "");
   const hopLedgerDir = path.resolve(repoRoot, explicitHopLedgerDir || "hop-ledger");
+  const requireCleanHopLedger = hasFlag("require-clean-hop-ledger");
+  const requireCleanBackend = hasFlag("require-clean-backend");
   if (!fs.existsSync(hopLedgerDir)) {
     throw new Error(`hop-ledger directory not found: ${hopLedgerDir}`);
   }
@@ -118,10 +125,23 @@ function main() {
     };
   });
 
+  const hopLedgerGit = collectHopLedgerGitMetadata(hopLedgerDir);
+  const backendGit = collectHopLedgerGitMetadata(repoRoot);
+  const parityOk = checks.every((item) => item.ok);
+  const hopLedgerCleanOk = !requireCleanHopLedger || !hopLedgerGit.dirty;
+  const backendCleanOk = !requireCleanBackend || !backendGit.dirty;
   const output = {
-    ok: checks.every((item) => item.ok),
+    ok: parityOk && hopLedgerCleanOk && backendCleanOk,
     hopLedgerDir,
-    hopLedgerGit: collectHopLedgerGitMetadata(hopLedgerDir),
+    hopLedgerGit,
+    backendGit,
+    checksGate: {
+      parityOk,
+      requireCleanHopLedger,
+      requireCleanBackend,
+      hopLedgerCleanOk,
+      backendCleanOk
+    },
     total: checks.length,
     passed: checks.filter((item) => item.ok).length,
     checks

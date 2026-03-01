@@ -11,13 +11,17 @@ Last updated: 2026-03-01 (Asia/Shanghai)
 - `KITE_SESSION_PAY_TRANSPORT_BACKOFF_BASE_MS` (default: `400`)
 - `KITE_SESSION_PAY_TRANSPORT_BACKOFF_MAX_MS` (default: `2500`)
 - `KITE_SESSION_PAY_TRANSPORT_BACKOFF_JITTER_MS` (default: `250`)
+- `KITE_SESSION_PAY_TRANSPORT_BACKOFF_FACTOR` (default: `3`)
 - `KITE_SESSION_PAY_REPLACEMENT_BACKOFF_BASE_MS` (default: `2000`)
 - `KITE_SESSION_PAY_REPLACEMENT_BACKOFF_MAX_MS` (default: `6000`)
 - `KITE_SESSION_PAY_REPLACEMENT_BACKOFF_JITTER_MS` (default: `500`)
+- `KITE_SESSION_PAY_REPLACEMENT_BACKOFF_FACTOR` (default: `2`)
 - `KITE_BUNDLER_RPC_TIMEOUT_MS` (default: `15000`)
 - `KITE_BUNDLER_RPC_RETRIES` (default: `3`)
 - `KITE_BUNDLER_RPC_BACKOFF_BASE_MS` (default: `650`)
 - `KITE_BUNDLER_RPC_BACKOFF_MAX_MS` (default: `6000`)
+- `KITE_BUNDLER_RPC_BACKOFF_FACTOR` (default: `2`)
+- `KITE_BUNDLER_RPC_BACKOFF_JITTER_MS` (default: `max(80, base/2)`)
 - `KITE_BUNDLER_RECEIPT_POLL_INTERVAL_MS` (default: `3000`)
 - `KITE_SESSION_PAY_METRICS_RECENT_LIMIT` (default: `80`)
 
@@ -27,9 +31,9 @@ Last updated: 2026-03-01 (Asia/Shanghai)
 - `GET /api/session/pay/metrics`
   - returns counters:
     - `totalRequests`, `totalSuccess`, `totalFailed`
-    - `totalRetryAttempts`, `totalRetriesUsed`
+    - `totalRetryAttempts`, `totalRetryDelayMs`, `averageRetryDelayMs`, `totalRetriesUsed`
     - `totalFallbackAttempted`, `totalFallbackSucceeded`
-    - `failuresByCategory`, `retriesByCategory`
+    - `failuresByCategory`, `retriesByCategory`, `retryDelayMsByCategory`
     - `recentFailures[]`
 
 ## Failure Categories
@@ -44,10 +48,10 @@ Last updated: 2026-03-01 (Asia/Shanghai)
 
 ## Retry Governance Notes
 - Session pay retry path uses category-based wait strategy:
-  - `transport`: 400ms -> 1200ms -> 2500ms (capped, +jitter up to 250ms)
-  - `replacement_fee`: 2000ms -> 4000ms -> 6000ms (capped, +jitter up to 500ms)
+  - `transport`: exponential by `base/factor/max` (default 400ms -> 1200ms -> 2500ms cap, +jitter up to 250ms)
+  - `replacement_fee`: exponential by `base/factor/max` (default 2000ms -> 4000ms -> 6000ms cap, +jitter up to 500ms)
   - non-retry categories: no wait, fail fast
-- Track retry shape with `metrics.retriesByCategory`; if `replacement_fee` dominates, prioritize fee-bump and nonce/order diagnostics.
+- Track retry shape with `metrics.retriesByCategory` + `metrics.retryDelayMsByCategory`; if `replacement_fee` dominates, prioritize fee-bump and nonce/order diagnostics.
 
 ## Operational Checks
 1. Verify config:
@@ -62,4 +66,7 @@ Last updated: 2026-03-01 (Asia/Shanghai)
   - `npm run parity:hopledger`
 - Optional explicit artifact:
   - `node scripts/parity-hopledger-reference.mjs --artifact artifacts/pilot/<timestamp>`
-- Parity output now includes `hopLedgerGit` metadata (`branch`, `commit`, `dirty`) for evidence traceability.
+- Optional strict clean-worktree gates:
+  - `node scripts/parity-hopledger-reference.mjs --require-clean-hop-ledger`
+  - `node scripts/parity-hopledger-reference.mjs --require-clean-hop-ledger --require-clean-backend`
+- Parity output now includes both `hopLedgerGit` and `backendGit` metadata (`branch`, `commit`, `dirty`) for evidence traceability.
