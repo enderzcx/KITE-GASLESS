@@ -55,6 +55,38 @@ function runParityScript(hopLedgerDir, artifactDir) {
   };
 }
 
+function runGitCommand(hopLedgerDir, args = []) {
+  const run = spawnSync("git", args, {
+    cwd: hopLedgerDir,
+    encoding: "utf8"
+  });
+  return {
+    ok: run.status === 0,
+    status: run.status,
+    stdout: String(run.stdout || "").trim(),
+    stderr: String(run.stderr || "").trim()
+  };
+}
+
+function collectHopLedgerGitMetadata(hopLedgerDir) {
+  const branch = runGitCommand(hopLedgerDir, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  const commit = runGitCommand(hopLedgerDir, ["rev-parse", "HEAD"]);
+  const status = runGitCommand(hopLedgerDir, ["status", "--porcelain"]);
+
+  return {
+    branch: branch.stdout || "",
+    commit: commit.stdout || "",
+    shortCommit: commit.stdout ? String(commit.stdout).slice(0, 12) : "",
+    dirty: Boolean(status.stdout),
+    statusSummary: status.stdout || "",
+    available: Boolean(branch.ok && commit.ok && status.ok),
+    error:
+      branch.ok && commit.ok && status.ok
+        ? ""
+        : String(branch.stderr || commit.stderr || status.stderr || "git metadata unavailable").trim()
+  };
+}
+
 function main() {
   const explicitHopLedgerDir = getArg("hop-ledger-dir", "");
   const hopLedgerDir = path.resolve(repoRoot, explicitHopLedgerDir || "hop-ledger");
@@ -89,6 +121,7 @@ function main() {
   const output = {
     ok: checks.every((item) => item.ok),
     hopLedgerDir,
+    hopLedgerGit: collectHopLedgerGitMetadata(hopLedgerDir),
     total: checks.length,
     passed: checks.filter((item) => item.ok).length,
     checks
