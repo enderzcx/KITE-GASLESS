@@ -95,6 +95,13 @@ function hydrateMessageProviderTokenFromLocalDocs() {
 
 hydrateMessageProviderTokenFromLocalDocs();
 
+function toBoundedIntEnv(raw, fallback, min, max) {
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return fallback;
+  const rounded = Math.round(parsed);
+  return Math.max(min, Math.min(rounded, max));
+}
+
 const app = express();
 const PORT = String(process.env.PORT || 3001).trim() || '3001';
 const dataPath = path.resolve('data', 'records.json');
@@ -164,27 +171,22 @@ const KITE_ALLOW_EOA_RELAY_FALLBACK = /^(1|true|yes|on)$/i.test(
 const KITE_ALLOW_BACKEND_USEROP_SIGN = /^(1|true|yes|on)$/i.test(
   String(process.env.KITE_ALLOW_BACKEND_USEROP_SIGN || '0').trim()
 );
-const KITE_BUNDLER_RPC_TIMEOUT_MS = Math.max(
-  2_000,
-  Math.min(Number(process.env.KITE_BUNDLER_RPC_TIMEOUT_MS || 15_000), 180_000)
-);
-const KITE_BUNDLER_RPC_RETRIES = Math.max(1, Math.min(Number(process.env.KITE_BUNDLER_RPC_RETRIES || 3), 8));
-const KITE_BUNDLER_RPC_BACKOFF_BASE_MS = Math.max(
-  100,
-  Math.min(Number(process.env.KITE_BUNDLER_RPC_BACKOFF_BASE_MS || 650), 10_000)
-);
-const KITE_BUNDLER_RPC_BACKOFF_MAX_MS = Math.max(
-  200,
-  Math.min(Number(process.env.KITE_BUNDLER_RPC_BACKOFF_MAX_MS || 6_000), 30_000)
-);
-const KITE_BUNDLER_RECEIPT_POLL_INTERVAL_MS = Math.max(
+const KITE_BUNDLER_RPC_TIMEOUT_MS = toBoundedIntEnv(process.env.KITE_BUNDLER_RPC_TIMEOUT_MS, 15_000, 2_000, 180_000);
+const KITE_BUNDLER_RPC_RETRIES = toBoundedIntEnv(process.env.KITE_BUNDLER_RPC_RETRIES, 3, 1, 8);
+const KITE_BUNDLER_RPC_BACKOFF_BASE_MS = toBoundedIntEnv(process.env.KITE_BUNDLER_RPC_BACKOFF_BASE_MS, 650, 100, 10_000);
+const KITE_BUNDLER_RPC_BACKOFF_MAX_MS = toBoundedIntEnv(process.env.KITE_BUNDLER_RPC_BACKOFF_MAX_MS, 6_000, 200, 30_000);
+const KITE_BUNDLER_RECEIPT_POLL_INTERVAL_MS = toBoundedIntEnv(
+  process.env.KITE_BUNDLER_RECEIPT_POLL_INTERVAL_MS,
+  3_000,
   800,
-  Math.min(Number(process.env.KITE_BUNDLER_RECEIPT_POLL_INTERVAL_MS || 3_000), 15_000)
+  15_000
 );
-const KITE_SESSION_PAY_RETRIES = Math.max(1, Math.min(Number(process.env.KITE_SESSION_PAY_RETRIES || 3), 8));
-const KITE_SESSION_PAY_METRICS_RECENT_LIMIT = Math.max(
+const KITE_SESSION_PAY_RETRIES = toBoundedIntEnv(process.env.KITE_SESSION_PAY_RETRIES, 3, 1, 8);
+const KITE_SESSION_PAY_METRICS_RECENT_LIMIT = toBoundedIntEnv(
+  process.env.KITE_SESSION_PAY_METRICS_RECENT_LIMIT,
+  80,
   10,
-  Math.min(Number(process.env.KITE_SESSION_PAY_METRICS_RECENT_LIMIT || 80), 500)
+  500
 );
 const PROOF_RPC_TIMEOUT_MS = Number(process.env.KITE_PROOF_RPC_TIMEOUT_MS || 10_000);
 const PROOF_RPC_RETRIES = Number(process.env.KITE_PROOF_RPC_RETRIES || 3);
@@ -548,10 +550,12 @@ const sessionPayMetrics = {
   totalRequests: 0,
   totalSuccess: 0,
   totalFailed: 0,
+  totalRetryAttempts: 0,
   totalRetriesUsed: 0,
   totalFallbackAttempted: 0,
   totalFallbackSucceeded: 0,
   failuresByCategory: buildSessionPayCategoryCounters(),
+  retriesByCategory: buildSessionPayCategoryCounters(),
   recentFailures: []
 };
 
@@ -653,6 +657,16 @@ function markSessionPayFailure({ errorCode = '', reason = '', traceId = '', requ
   return category;
 }
 
+function markSessionPayRetry({ reason = '', errorCode = '' } = {}) {
+  sessionPayMetrics.totalRetryAttempts += 1;
+  const category = classifySessionPayFailure({ reason, errorCode });
+  if (sessionPayMetrics.retriesByCategory[category] === undefined) {
+    sessionPayMetrics.retriesByCategory[category] = 0;
+  }
+  sessionPayMetrics.retriesByCategory[category] += 1;
+  return category;
+}
+
 function sessionPayConfigSnapshot() {
   return {
     sessionPayRetries: KITE_SESSION_PAY_RETRIES,
@@ -699,7 +713,8 @@ async function postSessionPayWithRetry(payload = {}, options = {}) {
       err.reasonCategory = classifySessionPayFailure({ reason, errorCode: String(body?.error || '').trim() });
       lastError = err;
       if (!err.retryable || i >= maxAttempts - 1) throw err;
-      await waitMs(1200 * attempt);
+      markSessionPayRetry({ reason, errorCode: String(body?.error || '').trim() });
+      continue;
     } catch (error) {
       const reason = String(error?.message || '').trim();
       const retryable = shouldRetrySessionPayReason(reason) || error?.name === 'AbortError';
@@ -709,7 +724,8 @@ async function postSessionPayWithRetry(payload = {}, options = {}) {
       wrapped.reasonCategory = classifySessionPayFailure({ reason });
       lastError = wrapped;
       if (!retryable || i >= maxAttempts - 1) throw wrapped;
-      await waitMs(1200 * attempt);
+      markSessionPayRetry({ reason });
+      continue;
     } finally {
       clearTimeout(timer);
     }
@@ -7255,6 +7271,7 @@ app.get('/api/session/pay/metrics', requireRole('viewer'), (req, res) => {
       totalRequests: sessionPayMetrics.totalRequests,
       totalSuccess: sessionPayMetrics.totalSuccess,
       totalFailed: sessionPayMetrics.totalFailed,
+      totalRetryAttempts: sessionPayMetrics.totalRetryAttempts,
       totalRetriesUsed: sessionPayMetrics.totalRetriesUsed,
       totalFallbackAttempted: sessionPayMetrics.totalFallbackAttempted,
       totalFallbackSucceeded: sessionPayMetrics.totalFallbackSucceeded,
@@ -7263,6 +7280,7 @@ app.get('/api/session/pay/metrics', requireRole('viewer'), (req, res) => {
           ? Number((sessionPayMetrics.totalFailed / sessionPayMetrics.totalRequests).toFixed(4))
           : 0,
       failuresByCategory: sessionPayMetrics.failuresByCategory,
+      retriesByCategory: sessionPayMetrics.retriesByCategory,
       recentFailures: sessionPayMetrics.recentFailures
     }
   });
@@ -14594,8 +14612,8 @@ app.post('/api/session/pay', requireRole('agent'), async (req, res) => {
         const reason = String(innerResult?.reason || '').trim();
         const retriable = isTransientTransportError(reason) || isUserOpReplacementFeeError(reason);
         if (!retriable || i >= maxAttempts - 1) break;
-        const backoffMs = isUserOpReplacementFeeError(reason) ? 2200 * (i + 1) : 700 * (i + 1);
-        await waitMs(backoffMs);
+        markSessionPayRetry({ reason, errorCode: String(innerResult?.error || '').trim() });
+        continue;
       }
       return { result: innerResult, attempts: innerAttempts };
     });
