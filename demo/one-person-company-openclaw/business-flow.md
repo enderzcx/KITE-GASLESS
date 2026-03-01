@@ -41,3 +41,11 @@
 - [ ] `/api/network/runs` 能看到该 trace
 - [ ] `/api/network/audit/:traceId` 包含 Quote/SLA/Rationale
 - [ ] parity 命令通过
+
+## 参考来源（外部）
+- OpenClaw Agent Loop（官方）：https://docs.openclaw.ai/concepts/agent-loop
+- OpenClaw Tools（官方）：https://docs.openclaw.ai/tools
+- OpenClaw Gateway Runbook（官方）：https://docs.openclaw.ai/gateway
+- OpenClaw GitHub README（官方仓库）：https://github.com/openclaw/openclaw
+
+备注：OpenClaw 官方文档没有“一人公司（one-person company）”现成模板；本流程是将官方运行机制映射到你当前 KITE 节点内部 demo 的业务闭环。
