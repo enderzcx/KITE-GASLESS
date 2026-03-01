@@ -181,6 +181,11 @@ const KITE_BUNDLER_RECEIPT_POLL_INTERVAL_MS = Math.max(
   800,
   Math.min(Number(process.env.KITE_BUNDLER_RECEIPT_POLL_INTERVAL_MS || 3_000), 15_000)
 );
+const KITE_SESSION_PAY_RETRIES = Math.max(1, Math.min(Number(process.env.KITE_SESSION_PAY_RETRIES || 3), 8));
+const KITE_SESSION_PAY_METRICS_RECENT_LIMIT = Math.max(
+  10,
+  Math.min(Number(process.env.KITE_SESSION_PAY_METRICS_RECENT_LIMIT || 80), 500)
+);
 const PROOF_RPC_TIMEOUT_MS = Number(process.env.KITE_PROOF_RPC_TIMEOUT_MS || 10_000);
 const PROOF_RPC_RETRIES = Number(process.env.KITE_PROOF_RPC_RETRIES || 3);
 const OPENCLAW_BASE_URL = String(process.env.OPENCLAW_BASE_URL || '').trim();
@@ -525,6 +530,31 @@ function getInternalAgentApiKey() {
   return API_KEY_AGENT || API_KEY_ADMIN || '';
 }
 
+function buildSessionPayCategoryCounters() {
+  return {
+    transport: 0,
+    replacement_fee: 0,
+    session_validation: 0,
+    funding: 0,
+    policy: 0,
+    aa_version: 0,
+    config: 0,
+    unknown: 0
+  };
+}
+
+const sessionPayMetrics = {
+  startedAt: new Date().toISOString(),
+  totalRequests: 0,
+  totalSuccess: 0,
+  totalFailed: 0,
+  totalRetriesUsed: 0,
+  totalFallbackAttempted: 0,
+  totalFallbackSucceeded: 0,
+  failuresByCategory: buildSessionPayCategoryCounters(),
+  recentFailures: []
+};
+
 function shouldRetrySessionPayReason(reason = '') {
   const text = String(reason || '').trim().toLowerCase();
   if (!text) return false;
@@ -550,8 +580,95 @@ function shouldRetrySessionPayReason(reason = '') {
   );
 }
 
+function classifySessionPayFailure({ reason = '', errorCode = '' } = {}) {
+  const code = String(errorCode || '').trim().toLowerCase();
+  const text = String(reason || '').trim().toLowerCase();
+  if (code === 'aa_version_mismatch' || text.includes('aa must be upgraded to v2')) return 'aa_version';
+  if (
+    [
+      'session_not_configured',
+      'invalid_session_id',
+      'session_not_found',
+      'session_agent_mismatch',
+      'session_rule_failed'
+    ].includes(code)
+  ) {
+    return 'session_validation';
+  }
+  if (['insufficient_funds', 'insufficient_kite_gas'].includes(code)) return 'funding';
+  if (
+    [
+      'unsupported_settlement_token',
+      'invalid_token_contract',
+      'invalid_tokenaddress',
+      'invalid_recipient',
+      'invalid_amount',
+      'aa_wallet_not_deployed_or_incompatible'
+    ].includes(code)
+  ) {
+    return 'config';
+  }
+  if (
+    code.includes('backend_signer') ||
+    text.includes('eoa_relay_disabled') ||
+    text.includes('backend userop signing is disabled')
+  ) {
+    return 'policy';
+  }
+  if (
+    text.includes('replacement fee too low') ||
+    text.includes('replacement underpriced') ||
+    text.includes('cannot be replaced') ||
+    text.includes('replacement transaction underpriced')
+  ) {
+    return 'replacement_fee';
+  }
+  if (shouldRetrySessionPayReason(text)) return 'transport';
+  return 'unknown';
+}
+
+function pushRecentSessionPayFailure(entry = {}) {
+  sessionPayMetrics.recentFailures.unshift(entry);
+  if (sessionPayMetrics.recentFailures.length > KITE_SESSION_PAY_METRICS_RECENT_LIMIT) {
+    sessionPayMetrics.recentFailures = sessionPayMetrics.recentFailures.slice(0, KITE_SESSION_PAY_METRICS_RECENT_LIMIT);
+  }
+}
+
+function markSessionPayFailure({ errorCode = '', reason = '', traceId = '', requestId = '', attempts = 0 } = {}) {
+  sessionPayMetrics.totalFailed += 1;
+  const category = classifySessionPayFailure({ errorCode, reason });
+  if (sessionPayMetrics.failuresByCategory[category] === undefined) {
+    sessionPayMetrics.failuresByCategory[category] = 0;
+  }
+  sessionPayMetrics.failuresByCategory[category] += 1;
+  pushRecentSessionPayFailure({
+    time: new Date().toISOString(),
+    category,
+    errorCode: String(errorCode || '').trim(),
+    reason: String(reason || '').trim(),
+    traceId: String(traceId || '').trim(),
+    requestId: String(requestId || '').trim(),
+    attempts: Number.isFinite(Number(attempts)) ? Number(attempts) : 0
+  });
+  return category;
+}
+
+function sessionPayConfigSnapshot() {
+  return {
+    sessionPayRetries: KITE_SESSION_PAY_RETRIES,
+    bundlerRpcTimeoutMs: KITE_BUNDLER_RPC_TIMEOUT_MS,
+    bundlerRpcRetries: KITE_BUNDLER_RPC_RETRIES,
+    bundlerRpcBackoffBaseMs: KITE_BUNDLER_RPC_BACKOFF_BASE_MS,
+    bundlerRpcBackoffMaxMs: KITE_BUNDLER_RPC_BACKOFF_MAX_MS,
+    bundlerReceiptPollIntervalMs: KITE_BUNDLER_RECEIPT_POLL_INTERVAL_MS,
+    recentFailureLimit: KITE_SESSION_PAY_METRICS_RECENT_LIMIT,
+    eoaRelayFallbackEnabled: KITE_ALLOW_EOA_RELAY_FALLBACK,
+    backendUserOpSignEnabled: KITE_ALLOW_BACKEND_USEROP_SIGN
+  };
+}
+
 async function postSessionPayWithRetry(payload = {}, options = {}) {
-  const maxAttempts = Math.max(1, Math.min(Number(options.maxAttempts || 5), 5));
+  const maxAttempts = Math.max(1, Math.min(Number(options.maxAttempts || KITE_SESSION_PAY_RETRIES), 8));
   const timeoutMs = Math.max(30_000, Math.min(Number(options.timeoutMs || 210_000), 300_000));
   const internalApiKey = getInternalAgentApiKey();
   const headers = { 'Content-Type': 'application/json' };
@@ -579,6 +696,7 @@ async function postSessionPayWithRetry(payload = {}, options = {}) {
       err.status = resp.status;
       err.attempts = attempt;
       err.retryable = shouldRetrySessionPayReason(reason);
+      err.reasonCategory = classifySessionPayFailure({ reason, errorCode: String(body?.error || '').trim() });
       lastError = err;
       if (!err.retryable || i >= maxAttempts - 1) throw err;
       await waitMs(1200 * attempt);
@@ -588,6 +706,7 @@ async function postSessionPayWithRetry(payload = {}, options = {}) {
       const wrapped = error instanceof Error ? error : new Error(reason || 'session pay failed');
       wrapped.attempts = attempt;
       wrapped.retryable = retryable;
+      wrapped.reasonCategory = classifySessionPayFailure({ reason });
       lastError = wrapped;
       if (!retryable || i >= maxAttempts - 1) throw wrapped;
       await waitMs(1200 * attempt);
@@ -7115,6 +7234,36 @@ app.get('/api/session/runtime', requireRole('viewer'), (req, res) => {
       sessionPrivateKey: undefined,
       sessionPrivateKeyMasked: maskSecret(runtime.sessionPrivateKey),
       hasSessionPrivateKey: Boolean(runtime.sessionPrivateKey)
+    }
+  });
+});
+
+app.get('/api/session/pay/config', requireRole('viewer'), (req, res) => {
+  return res.json({
+    ok: true,
+    traceId: req.traceId || '',
+    config: sessionPayConfigSnapshot()
+  });
+});
+
+app.get('/api/session/pay/metrics', requireRole('viewer'), (req, res) => {
+  return res.json({
+    ok: true,
+    traceId: req.traceId || '',
+    metrics: {
+      startedAt: sessionPayMetrics.startedAt,
+      totalRequests: sessionPayMetrics.totalRequests,
+      totalSuccess: sessionPayMetrics.totalSuccess,
+      totalFailed: sessionPayMetrics.totalFailed,
+      totalRetriesUsed: sessionPayMetrics.totalRetriesUsed,
+      totalFallbackAttempted: sessionPayMetrics.totalFallbackAttempted,
+      totalFallbackSucceeded: sessionPayMetrics.totalFallbackSucceeded,
+      failureRate:
+        sessionPayMetrics.totalRequests > 0
+          ? Number((sessionPayMetrics.totalFailed / sessionPayMetrics.totalRequests).toFixed(4))
+          : 0,
+      failuresByCategory: sessionPayMetrics.failuresByCategory,
+      recentFailures: sessionPayMetrics.recentFailures
     }
   });
 });
@@ -14187,12 +14336,35 @@ app.post('/api/x402/maintenance/expire-stale', requireRole('admin'), (req, res) 
 
 // AA Session Payment Endpoint
 app.post('/api/session/pay', requireRole('agent'), async (req, res) => {
+  let failSessionPay = (status = 500, { error = 'payment_failed', reason = 'session pay failed', details = {} } = {}) =>
+    res.status(status).json({ ok: false, error, reason, details });
   try {
+    sessionPayMetrics.totalRequests += 1;
+    failSessionPay = (status = 500, { error = 'payment_failed', reason = 'session pay failed', details = {} } = {}) => {
+      const attemptsRaw = Number(details?.attempts || 0);
+      const attempts = Number.isFinite(attemptsRaw) ? attemptsRaw : 0;
+      const requestId = String(details?.requestId || '').trim();
+      const category = markSessionPayFailure({
+        errorCode: error,
+        reason,
+        traceId: req.traceId || '',
+        requestId,
+        attempts
+      });
+      return res.status(status).json({
+        ok: false,
+        error,
+        reason,
+        details: {
+          ...details,
+          reasonCategory: category
+        }
+      });
+    };
     const runtime = readSessionRuntime();
 
     if (!runtime.sessionPrivateKey || !runtime.aaWallet) {
-      return res.status(400).json({
-        ok: false,
+      return failSessionPay(400, {
         error: 'session_not_configured',
         reason: 'Session key not synced. Please configure via /api/session/runtime/sync first.'
       });
@@ -14209,7 +14381,7 @@ app.post('/api/session/pay', requireRole('agent'), async (req, res) => {
     } = req.body || {};
 
     if (!tokenAddress || !ethers.isAddress(tokenAddress)) {
-      return res.status(400).json({ ok: false, error: 'invalid_tokenAddress' });
+      return failSessionPay(400, { error: 'invalid_tokenAddress', reason: 'tokenAddress must be a valid address.' });
     }
     const expectedSettlementToken = normalizeAddress(SETTLEMENT_TOKEN || '');
     if (
@@ -14217,27 +14389,26 @@ app.post('/api/session/pay', requireRole('agent'), async (req, res) => {
       ethers.isAddress(expectedSettlementToken) &&
       normalizeAddress(tokenAddress) !== expectedSettlementToken
     ) {
-      return res.status(400).json({
-        ok: false,
+      return failSessionPay(400, {
         error: 'unsupported_settlement_token',
         reason: `Unsupported settlement token. expected=${expectedSettlementToken}, got=${normalizeAddress(tokenAddress)}`
       });
     }
     if (!recipient || !ethers.isAddress(recipient)) {
-      return res.status(400).json({ ok: false, error: 'invalid_recipient' });
+      return failSessionPay(400, { error: 'invalid_recipient', reason: 'recipient must be a valid address.' });
     }
     if (!amount || isNaN(Number(amount)) || Number(amount) <= 0) {
-      return res.status(400).json({ ok: false, error: 'invalid_amount' });
+      return failSessionPay(400, { error: 'invalid_amount', reason: 'amount must be a positive number.' });
     }
 
     const decimals = 18;
     const amountRaw = ethers.parseUnits(String(amount), decimals);
     const sessionId = String(bodySessionId || runtime.sessionId || '').trim();
     if (!/^0x[0-9a-fA-F]{64}$/.test(sessionId)) {
-      return res.status(400).json({
-        ok: false,
+      return failSessionPay(400, {
         error: 'invalid_session_id',
-        reason: 'sessionId is required. Sync runtime with sessionId from Agent Settings.'
+        reason: 'sessionId is required. Sync runtime with sessionId from Agent Settings.',
+        details: { requestId: String(requestId || '').trim() }
       });
     }
 
@@ -14248,13 +14419,13 @@ app.post('/api/session/pay', requireRole('agent'), async (req, res) => {
 
     const accountCode = await provider.getCode(runtime.aaWallet);
     if (!accountCode || accountCode === '0x') {
-      return res.status(400).json({
-        ok: false,
+      return failSessionPay(400, {
         error: 'aa_wallet_not_deployed_or_incompatible',
         reason: `No contract code found at runtime aaWallet: ${runtime.aaWallet}. Deploy AA account first, then recreate/sync session.`,
         details: {
           aaWallet: runtime.aaWallet,
-          sessionId
+          sessionId,
+          requestId: String(requestId || '').trim()
         }
       });
     }
@@ -14267,14 +14438,14 @@ app.post('/api/session/pay', requireRole('agent'), async (req, res) => {
       aaVersion = '';
     }
     if (KITE_REQUIRE_AA_V2 && aaVersion !== AA_V2_VERSION_TAG) {
-      return res.status(400).json({
-        ok: false,
+      return failSessionPay(400, {
         error: 'aa_version_mismatch',
         reason: `AA must be upgraded to V2 for session-userop payments. required=${AA_V2_VERSION_TAG}, current=${aaVersion || 'unknown_or_legacy'}`,
         details: {
           aaWallet: runtime.aaWallet,
           requiredVersion: AA_V2_VERSION_TAG,
-          currentVersion: aaVersion || ''
+          currentVersion: aaVersion || '',
+          requestId: String(requestId || '').trim()
         }
       });
     }
@@ -14291,40 +14462,41 @@ app.post('/api/session/pay', requireRole('agent'), async (req, res) => {
       account.checkSpendingRules(sessionId, amountRaw, serviceProvider)
     ]);
     if (!exists) {
-      return res.status(400).json({
-        ok: false,
+      return failSessionPay(400, {
         error: 'session_not_found',
-        reason: `Session not found on-chain: ${sessionId}`
+        reason: `Session not found on-chain: ${sessionId}`,
+        details: { requestId: String(requestId || '').trim(), sessionId }
       });
     }
     if (String(agentAddr || '').toLowerCase() !== String(sessionSignerAddress).toLowerCase()) {
-      return res.status(400).json({
-        ok: false,
+      return failSessionPay(400, {
         error: 'session_agent_mismatch',
-        reason: `On-chain session agent mismatch. expected=${agentAddr}, current=${sessionSignerAddress}`
+        reason: `On-chain session agent mismatch. expected=${agentAddr}, current=${sessionSignerAddress}`,
+        details: { requestId: String(requestId || '').trim(), sessionId }
       });
     }
 
     const erc20Abi = ['function balanceOf(address account) view returns (uint256)'];
     const tokenCode = await provider.getCode(tokenAddress);
     if (!tokenCode || tokenCode === '0x') {
-      return res.status(400).json({
-        ok: false,
+      return failSessionPay(400, {
         error: 'invalid_token_contract',
-        reason: `No contract code at tokenAddress: ${tokenAddress}`
+        reason: `No contract code at tokenAddress: ${tokenAddress}`,
+        details: { requestId: String(requestId || '').trim(), sessionId }
       });
     }
     const tokenContract = new ethers.Contract(tokenAddress, erc20Abi, provider);
     const aaBalance = await tokenContract.balanceOf(runtime.aaWallet);
     if (aaBalance < amountRaw) {
-      return res.status(400).json({
-        ok: false,
+      return failSessionPay(400, {
         error: 'insufficient_funds',
         reason: `AA wallet ${runtime.aaWallet} has insufficient balance`,
         details: {
           aaWallet: runtime.aaWallet,
           balance: ethers.formatUnits(aaBalance, decimals),
-          required: amount
+          required: amount,
+          requestId: String(requestId || '').trim(),
+          sessionId
         }
       });
     }
@@ -14336,22 +14508,23 @@ app.post('/api/session/pay', requireRole('agent'), async (req, res) => {
     }
     const nativeBalance = await provider.getBalance(runtime.aaWallet);
     if (nativeBalance < minNativeGas) {
-      return res.status(400).json({
-        ok: false,
+      return failSessionPay(400, {
         error: 'insufficient_kite_gas',
         reason: `AA wallet ${runtime.aaWallet} has insufficient KITE for gas. Need >= ${ethers.formatEther(minNativeGas)} KITE.`,
         details: {
           aaWallet: runtime.aaWallet,
           balance: ethers.formatEther(nativeBalance),
-          required: ethers.formatEther(minNativeGas)
+          required: ethers.formatEther(minNativeGas),
+          requestId: String(requestId || '').trim(),
+          sessionId
         }
       });
     }
     if (!rulePass) {
-      return res.status(400).json({
-        ok: false,
+      return failSessionPay(400, {
         error: 'session_rule_failed',
-        reason: 'Session spending rule precheck failed (amount/provider out of scope).'
+        reason: 'Session spending rule precheck failed (amount/provider out of scope).',
+        details: { requestId: String(requestId || '').trim(), sessionId }
       });
     }
 
@@ -14394,7 +14567,7 @@ app.post('/api/session/pay', requireRole('agent'), async (req, res) => {
     const signFunction = async (userOpHash) =>
       sessionWallet.signMessage(ethers.getBytes(userOpHash));
 
-    const maxAttempts = Math.max(1, Math.min(Number(process.env.KITE_SESSION_PAY_RETRIES || 3), 5));
+    const maxAttempts = Math.max(1, Math.min(KITE_SESSION_PAY_RETRIES, 5));
     const payerLockKey = normalizeAddress(runtime.aaWallet || '') || String(runtime.aaWallet || '').trim().toLowerCase();
     const lockStartedAt = Date.now();
     const { result, attempts } = await withSessionUserOpLock(payerLockKey, async () => {
@@ -14466,8 +14639,9 @@ app.post('/api/session/pay', requireRole('agent'), async (req, res) => {
 
     if (!finalResult || finalResult.status !== 'success' || !finalResult.transactionHash) {
       const reason = primaryReason || 'unknown';
-      return res.status(500).json({
-        ok: false,
+      sessionPayMetrics.totalRetriesUsed += Math.max(0, Number(attempts || 1) - 1);
+      if (fallbackAttempted) sessionPayMetrics.totalFallbackAttempted += 1;
+      return failSessionPay(500, {
         error: 'aa_session_payment_failed',
         reason: fallbackReason
           ? `${reason}; eoa_relay_failed: ${fallbackReason}`
@@ -14476,6 +14650,7 @@ app.post('/api/session/pay', requireRole('agent'), async (req, res) => {
             : reason,
         details: {
           userOpHash: extractedUserOpHash,
+          requestId: String(requestId || '').trim(),
           sessionId,
           payer: runtime.aaWallet,
           attempts,
@@ -14509,6 +14684,10 @@ app.post('/api/session/pay', requireRole('agent'), async (req, res) => {
     };
     records.unshift(record);
     writeRecords(records);
+    sessionPayMetrics.totalSuccess += 1;
+    sessionPayMetrics.totalRetriesUsed += Math.max(0, Number(attempts || 1) - 1);
+    if (fallbackAttempted) sessionPayMetrics.totalFallbackAttempted += 1;
+    if (signerMode === 'aa-session-eoa-relay') sessionPayMetrics.totalFallbackSucceeded += 1;
 
     return res.json({
       ok: true,
@@ -14536,10 +14715,9 @@ app.post('/api/session/pay', requireRole('agent'), async (req, res) => {
 
   } catch (error) {
     console.error('Session pay error:', error);
-    return res.status(500).json({
-      ok: false,
+    return failSessionPay(500, {
       error: 'payment_failed',
-      reason: error.message
+      reason: error?.message || 'session pay failed'
     });
   }
 });
