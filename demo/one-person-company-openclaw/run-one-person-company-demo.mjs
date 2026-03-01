@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 
-// Minimal internal-node demo runner for KITE agent network.
+// One-Person Company OpenClaw demo runner for KITE agent network.
 // It triggers router info/technical demo and fetches runs + audit timeline.
 
 const DEFAULT_BASE_URL = process.env.KITE_BACKEND_URL || 'http://127.0.0.1:3001';
+const DEMO_NAME = 'One-Person Company OpenClaw Demo';
 
 function parseArgs(argv) {
   const out = {
@@ -99,7 +100,7 @@ async function requestJson({ method, base, path, apiKey, body }) {
 }
 
 function printUsage() {
-  console.log('Usage: node demo/node-internal/run-demo.mjs [options]');
+  console.log('Usage: node demo/one-person-company-openclaw/run-one-person-company-demo.mjs [options]');
   console.log('Options:');
   console.log('  --base <url>               Backend base URL (default: http://127.0.0.1:3001)');
   console.log('  --api-key <key>            API key for protected endpoints');
@@ -145,6 +146,8 @@ async function main() {
     return;
   }
 
+  console.log(`=== ${DEMO_NAME} ===`);
+  console.log('Flow: Lead Intake -> Dual Analysis -> Quote/SLA/Rationale -> Audit Export');
   console.log('Step 1/3: trigger internal node demo run');
   const runResp = await requestJson({
     method: 'POST',
@@ -219,7 +222,7 @@ async function main() {
   console.log('Timeline preview:');
   renderTimeline(audit.timeline);
 
-  console.log('Demo complete.');
+  console.log(`${DEMO_NAME} complete.`);
 }
 
 main().catch((error) => {
