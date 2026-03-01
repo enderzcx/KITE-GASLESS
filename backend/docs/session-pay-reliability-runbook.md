@@ -21,9 +21,9 @@ Last updated: 2026-03-01 (Asia/Shanghai)
 - `GET /api/session/pay/metrics`
   - returns counters:
     - `totalRequests`, `totalSuccess`, `totalFailed`
-    - `totalRetriesUsed`
+    - `totalRetryAttempts`, `totalRetriesUsed`
     - `totalFallbackAttempted`, `totalFallbackSucceeded`
-    - `failuresByCategory`
+    - `failuresByCategory`, `retriesByCategory`
     - `recentFailures[]`
 
 ## Failure Categories
@@ -35,6 +35,10 @@ Last updated: 2026-03-01 (Asia/Shanghai)
 - `aa_version`
 - `config`
 - `unknown`
+
+## Retry Governance Notes
+- Session pay retry path is **no-backoff** by design (immediate retry on retryable failures).
+- Track retry shape with `metrics.retriesByCategory`; if `replacement_fee` dominates, prioritize fee-bump and nonce/order diagnostics.
 
 ## Operational Checks
 1. Verify config:
@@ -49,3 +53,4 @@ Last updated: 2026-03-01 (Asia/Shanghai)
   - `npm run parity:hopledger`
 - Optional explicit artifact:
   - `node scripts/parity-hopledger-reference.mjs --artifact artifacts/pilot/<timestamp>`
+- Parity output now includes `hopLedgerGit` metadata (`branch`, `commit`, `dirty`) for evidence traceability.
