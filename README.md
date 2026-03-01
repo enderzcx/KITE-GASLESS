@@ -319,6 +319,12 @@ Useful scripts:
 - `npm --prefix backend run aa:session:router`
 - `npm --prefix backend run aa:upgrade`
 
+Reliability and parity checks:
+- Session pay reliability runbook: `backend/docs/session-pay-reliability-runbook.md`
+- HopLedger digest parity check:
+  - `npm --prefix backend run parity:hopledger`
+  - `node backend/scripts/parity-hopledger-reference.mjs --artifact hop-ledger/artifacts/pilot/<timestamp>`
+
 ## Repository Layout
 
 ```text
